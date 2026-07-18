@@ -253,12 +253,16 @@ class ProMemory:
 
     def win_stats(self, symbol: str | None = None,
                   as_of=None) -> tuple[float, float, float] | None:
-        """(win_rate, avg_win, avg_loss) from closed trades; None below the
-        minimum sample (fabricating a Kelly from 2 trades is worse than none)."""
+        """(win_rate, avg_win, avg_loss) from LIVED closed trades; None below
+        the minimum sample (fabricating a Kelly from 2 trades is worse than
+        none). Retro-scored predictions are excluded (CI-5): Kelly sizes real
+        capital and must ride on real fills, not graded hypotheticals — the
+        same exclusion the blotter already applies (dashboard.service)."""
         pnls = [
             r.payload["pnl"]
             for r in self._records.values()
             if r.kind is MemoryKind.OUTCOME
+            and r.payload.get("mode", "paper") != "retro"
             and (symbol is None or r.symbol == symbol)
             and (as_of is None or r.effective_time <= as_of)
         ]

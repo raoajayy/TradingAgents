@@ -39,6 +39,24 @@ def _live_oms(tmp_path, fake=None):
     return oms, fake
 
 
+def _permissive_live_gates():
+    """Live routing now REQUIRES a wired gate chain (CI-1 fail-closed). These
+    routing/sizing tests aren't about the limits, so wire a permissive chain
+    that always passes and let the assertions focus on venue + size."""
+    from tradingagents.contracts import LiveRiskLimits
+    from tradingagents.pro.execution.live_gates import LiveGateChain
+
+    return LiveGateChain(LiveRiskLimits(
+        live_max_account_allocation_pct=100.0,
+        max_notional_per_trade=1e12,
+        max_orders_per_hour=1000,
+        max_orders_per_day=1000,
+        market_order_notional_cap=1e12,
+        max_cross_bps=1e6,
+        max_spread_bps=1e6,
+    ))
+
+
 class TestModeRouting:
     def test_paper_default_unchanged(self, tmp_path):
         service, _ = _service_with_arming(tmp_path)
@@ -77,6 +95,7 @@ class TestModeRouting:
         service, arming = _service_with_arming(tmp_path)
         live_oms, fake = _live_oms(tmp_path)
         service.router.live_oms = live_oms
+        service.router.live_gates = _permissive_live_gates()
         # canary applies to gold in this test: XAUUSD -> XAUTUSD, 1 contract
         arming.arm("XAUUSD", "canary", operator="t")
         summary = service.run_once()
@@ -101,6 +120,7 @@ class TestModeRouting:
         service, arming = _service_with_arming(tmp_path)
         live_oms, fake = _live_oms(tmp_path, fake=_RichVenue())
         service.router.live_oms = live_oms
+        service.router.live_gates = _permissive_live_gates()
         arming.arm("XAUUSD", "live", operator="t")
         service.run_once()
         entry = next(o for o in fake.orders.values()

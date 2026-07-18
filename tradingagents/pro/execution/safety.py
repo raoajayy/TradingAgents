@@ -72,10 +72,32 @@ class CircuitBreaker:
             raise ValueError("equity_base must be positive")
         self.limits = limits
         self.equity_base = equity_base
+        # live equity + high-water mark (CI-3/§8): the daily-loss dollar trip
+        # and the account-drawdown trip measure against live equity, not a
+        # frozen base. Both default to equity_base until update_equity runs.
+        self.current_equity = equity_base
+        self.high_water_mark = equity_base
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
         self._day: date | None = None
         self._tripped_reason = ""
+
+    def update_equity(self, equity: float) -> None:
+        """Feed live account equity: raises the high-water mark and trips the
+        breaker on a max_drawdown_pct breach (latching; drawdown from the peak
+        does not reset with the trading day, unlike the daily-loss counter)."""
+        if equity <= 0:
+            return
+        self.current_equity = equity
+        if equity > self.high_water_mark:
+            self.high_water_mark = equity
+        drawdown_pct = 100.0 * (self.high_water_mark - equity) / self.high_water_mark
+        if drawdown_pct >= self.limits.max_drawdown_pct:
+            self._tripped_reason = (
+                f"drawdown {drawdown_pct:.2f}% from high-water mark "
+                f"{self.high_water_mark:.2f} breached limit "
+                f"{self.limits.max_drawdown_pct}%"
+            )
 
     def _roll_day(self, today: date) -> None:
         if self._day != today:
@@ -94,7 +116,7 @@ class CircuitBreaker:
                 f"{self.consecutive_losses} consecutive losses "
                 f"(limit {self.limits.circuit_breaker_consecutive_losses})"
             )
-        daily_limit = self.equity_base * self.limits.max_daily_loss_pct / 100
+        daily_limit = self.current_equity * self.limits.max_daily_loss_pct / 100
         if -self.daily_pnl >= daily_limit:
             self._tripped_reason = (
                 f"daily loss {-self.daily_pnl:.2f} breached limit {daily_limit:.2f}"

@@ -15,6 +15,28 @@ from dataclasses import asdict, dataclass
 from tradingagents.pro.backtest.broker import ClosedTrade
 
 PERIODS_PER_YEAR = 252  # daily bars; callers scale for other timeframes
+TRADING_DAYS_PER_YEAR = 252
+
+# CI-7: an unbounded ratio (no losses / no downside) is capped to a large but
+# FINITE sentinel so it can't propagate as inf/NaN through window aggregates
+# (mean Sharpe, etc.). A profit factor or Sortino of 1e3 already reads as
+# "no meaningful losses in-sample" without poisoning the average.
+UNBOUNDED_RATIO = 1e3
+
+# bars per trading day, for timeframe-aware annualization (mirrors the
+# ingestion engine's map). Sharpe/Sortino scale by sqrt(periods_per_year);
+# a fixed 252 mis-annualizes intraday curves.
+_BARS_PER_DAY: dict[str, float] = {
+    "1m": 1440, "5m": 288, "15m": 96, "30m": 48,
+    "1h": 24, "4h": 6, "1d": 1, "1w": 1 / 5,
+}
+
+
+def periods_per_year_for(timeframe: str) -> int:
+    """Annualization factor for a bar timeframe (e.g. '1h' -> 6048). Falls
+    back to daily (252) for an unknown timeframe."""
+    bars_per_day = _BARS_PER_DAY.get(timeframe, 1.0)
+    return max(1, round(bars_per_day * TRADING_DAYS_PER_YEAR))
 
 
 @dataclass(frozen=True)
@@ -64,7 +86,8 @@ def sortino_ratio(returns: Sequence[float], periods_per_year: int = PERIODS_PER_
         return 0.0
     downside = [r for r in returns if r < 0]
     if not downside:
-        return float("inf") if statistics.mean(returns) > 0 else 0.0
+        # no downside in-sample: unbounded-good, capped finite (CI-7)
+        return UNBOUNDED_RATIO if statistics.mean(returns) > 0 else 0.0
     downside_dev = math.sqrt(math.fsum(r * r for r in downside) / len(returns))
     if downside_dev == 0:
         return 0.0
@@ -94,7 +117,7 @@ def performance_report(
         sortino=sortino_ratio(returns, periods_per_year),
         win_rate=len(wins) / len(pnls) if pnls else 0.0,
         profit_factor=gross_win / gross_loss if gross_loss > 0 else (
-            float("inf") if gross_win > 0 else 0.0
+            UNBOUNDED_RATIO if gross_win > 0 else 0.0  # capped finite (CI-7)
         ),
         expectancy=statistics.mean(pnls) if pnls else 0.0,
         n_trades=len(pnls),

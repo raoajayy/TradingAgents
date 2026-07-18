@@ -70,6 +70,10 @@ def make_buy(**overrides) -> TradeRecommendation:
         "vote_breakdown": make_votes(),
     }
     fields.update(overrides)
+    # directional tickets now require an invalidation_price; default it to the
+    # stop (valid-sided, zero overshoot) unless a test sets one explicitly
+    if "invalidation_price" not in overrides and fields.get("stop_loss") is not None:
+        fields.setdefault("invalidation_price", fields["stop_loss"])
     return TradeRecommendation(**fields)
 
 
@@ -135,6 +139,20 @@ def test_ladder_fractions_must_not_exceed_one():
 def test_buy_without_levels_rejected():
     with pytest.raises(ValidationError, match="requires entry, stop"):
         make_buy(entry_price=None, stop_loss=None, take_profits=[])
+
+
+def test_directional_without_invalidation_rejected():
+    # RISK-01 (R4.1): a BUY/SELL ticket may not ship without a thesis-death level
+    with pytest.raises(ValidationError, match="requires an invalidation_price"):
+        make_buy(invalidation_price=None)
+    with pytest.raises(ValidationError, match="requires an invalidation_price"):
+        make_buy(
+            action=TradeAction.SELL,
+            entry_price=60000.0,
+            stop_loss=61200.0,
+            take_profits=[TakeProfitLevel(price=58800.0, size_fraction=1.0)],
+            invalidation_price=None,
+        )
 
 
 def test_valid_sell_geometry():

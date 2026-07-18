@@ -76,6 +76,31 @@ class TestCircuitBreaker:
         breaker.reset(operator="ajay")
         assert not breaker.check(today=d2).tripped
 
+    def test_trips_on_account_drawdown_from_high_water_mark(self):
+        # CI-3/§8: max_drawdown_pct is now enforced, not just displayed.
+        limits = RiskLimits(max_drawdown_pct=15.0)
+        breaker = CircuitBreaker(limits, equity_base=100_000)
+        breaker.update_equity(120_000)  # new high-water mark
+        breaker.update_equity(110_000)  # -8.3% from peak: still fine
+        assert not breaker.check().tripped
+        breaker.update_equity(101_000)  # -15.8% from 120k peak: trips
+        state = breaker.check()
+        assert state.tripped and "drawdown" in state.reason
+        # latching: recovering equity does not clear the drawdown trip
+        breaker.update_equity(120_000)
+        assert breaker.check().tripped
+
+    def test_daily_loss_limit_tracks_live_equity(self):
+        # CI-3/§8: the daily-loss dollar trip measures against live equity,
+        # not a frozen 100k base. At 200k equity the 3% limit is 6k.
+        breaker = CircuitBreaker(self.LIMITS, equity_base=100_000)
+        breaker.update_equity(200_000)
+        d1 = date(2026, 7, 7)
+        breaker.record_trade_result(-4000.0, today=d1)  # under 6k live limit
+        assert not breaker.check(today=d1).tripped
+        breaker.record_trade_result(-2500.0, today=d1)  # net -6500 > 6k
+        assert breaker.check(today=d1).tripped
+
 
 class TestAuditLog:
     def test_chain_verifies_and_persists(self, tmp_path):

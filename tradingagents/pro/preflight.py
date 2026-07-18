@@ -160,7 +160,29 @@ def check_ip_whitelist_reminder(report: ReadinessReport) -> None:
                "IP-whitelisted in the Delta dashboard before arming")
 
 
-def go_live_readiness(adapter=None, audit=None) -> ReadinessReport:
+def check_live_config(report: ReadinessReport, config_path) -> None:
+    """CI-1: the same live.yaml the service enforces must load, with every
+    LiveRiskLimits field present, before we arm real capital. A missing or
+    malformed config is a FAIL — the running service would refuse live
+    routes anyway (gates unwired), so arming it would be a dead end."""
+    from tradingagents.pro.live_config import LiveConfigError, load_live_config
+
+    if config_path is None:
+        report.add("live_config", "fail",
+                   "no live config supplied — the service cannot wire the "
+                   "live-risk gate chain without one")
+        return
+    try:
+        cfg = load_live_config(config_path)
+        report.add("live_config", "pass",
+                   f"loaded {cfg.path.name}: risk limits complete, "
+                   f"breach_action={cfg.breach_action}")
+    except LiveConfigError as exc:
+        report.add("live_config", "fail", str(exc))
+
+
+def go_live_readiness(adapter=None, audit=None,
+                      live_config_path=None) -> ReadinessReport:
     """Full self-check. ``adapter`` = the live venue adapter (skipping it
     marks the venue checks failed — no adapter, no arming). Appends the
     signed report to the audit chain when provided."""
@@ -173,6 +195,7 @@ def go_live_readiness(adapter=None, audit=None) -> ReadinessReport:
         report.add("clock_skew", "fail", "no venue adapter supplied")
         report.add("venue_key_scope", "fail", "no venue adapter supplied")
     check_secrets_hygiene(report)
+    check_live_config(report, live_config_path)
     check_host(report)
     check_ip_whitelist_reminder(report)
     if audit is not None:

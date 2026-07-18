@@ -87,6 +87,30 @@ class TestSimBroker:
         assert trade.exit_price == pytest.approx(95.0)
         assert trade.pnl == pytest.approx((95 - 100) * 10)
 
+    def test_stop_gaps_through_fills_at_the_open(self):
+        # CI-7: the bar gaps BELOW the stop (opens at 90, stop is 95). A real
+        # stop fills at the gapped open, not the stop level — worse for the
+        # trader. Honest drawdowns depend on modeling this.
+        broker = make_broker()
+        broker.open_from_recommendation(buy_rec(), bar(100, 101, 99, 100))
+        trade = broker.process_bar(bar(90, 92, 88, 91, day=1))
+        assert trade is not None and trade.reason == "stop"
+        assert trade.exit_price == pytest.approx(90.0)  # gapped open, not 95
+        assert trade.pnl == pytest.approx((90 - 100) * 10)
+
+    def test_short_stop_gaps_through_fills_at_the_open(self):
+        broker = make_broker()
+        rec = make_recommendation(action=TradeAction.SELL).model_copy(update={
+            "entry_price": 100.0, "stop_loss": 105.0,
+            "take_profits": [TakeProfitLevel(price=90.0, size_fraction=1.0)],
+            "risk_reward": None,
+        })
+        broker.open_from_recommendation(rec, bar(100, 101, 99, 100))
+        # gaps ABOVE the stop (opens at 110, stop 105) -> fills at 110
+        trade = broker.process_bar(bar(110, 112, 108, 111, day=1))
+        assert trade is not None and trade.reason == "stop"
+        assert trade.exit_price == pytest.approx(110.0)
+
     def test_tp_ladder_closes_fractions_then_finalizes(self):
         broker = make_broker()
         broker.open_from_recommendation(buy_rec(qty=10), bar(100, 101, 99, 100))

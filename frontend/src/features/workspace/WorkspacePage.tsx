@@ -185,8 +185,18 @@ export default function WorkspacePage() {
   const alertClient = useQueryClient();
   const [alertToast, setAlertToast] = useState<string | null>(null);
 
-  // keep global symbol in sync with the route
-  if (useUiStore.getState().symbol !== symbol) setSymbol(symbol);
+  // keep the global symbol and the route in sync — in an effect, since a
+  // render-phase setSymbol makes React warn about updating Wiring while
+  // rendering WorkspacePage. The route wins on mount / param change; if
+  // the store changes while mounted (`x` shortcut, palette toggle), the
+  // workspace navigates to follow it instead of silently desyncing.
+  useEffect(() => {
+    if (useUiStore.getState().symbol !== symbol) setSymbol(symbol);
+    return useUiStore.subscribe((state, prev) => {
+      if (state.symbol !== prev.symbol && state.symbol !== symbol)
+        navigate(`/trade/${state.symbol}`);
+    });
+  }, [symbol, setSymbol, navigate]);
 
   const allBars = useMemo(() => bars.data ?? [], [bars.data]);
 

@@ -1,6 +1,17 @@
 import json
+from datetime import date, datetime
 
 from .alpha_vantage_common import _make_api_request
+
+
+def _is_past(curr_date: str | None) -> bool:
+    """True when curr_date is a real past date (i.e. a backtest as-of)."""
+    if not curr_date:
+        return False
+    try:
+        return datetime.strptime(curr_date, "%Y-%m-%d").date() < date.today()
+    except ValueError:
+        return False
 
 
 def _filter_reports_by_date(result, curr_date: str):
@@ -33,11 +44,25 @@ def get_fundamentals(ticker: str, curr_date: str = None) -> str:
 
     Args:
         ticker (str): Ticker symbol of the company
-        curr_date (str): Current date you are trading at, yyyy-mm-dd (not used for Alpha Vantage)
+        curr_date (str): Current date you are trading at, yyyy-mm-dd
 
     Returns:
         str: Company overview data including financial ratios and key metrics
     """
+    # CI-7: Alpha Vantage OVERVIEW is a CURRENT-ONLY snapshot (market cap, P/E,
+    # latest-quarter figures) with no point-in-time history. Returning it for a
+    # PAST curr_date leaks present-day fundamentals into a backtest. Disclose
+    # and withhold rather than silently leak.
+    if _is_past(curr_date):
+        return json.dumps({
+            "symbol": ticker,
+            "as_of_requested": curr_date,
+            "point_in_time": False,
+            "note": "Alpha Vantage OVERVIEW is a current-only snapshot with no "
+                    "historical as-of; withheld to avoid look-ahead leakage in "
+                    "a backtest. Use the dated statement endpoints instead.",
+        })
+
     params = {
         "symbol": ticker,
     }

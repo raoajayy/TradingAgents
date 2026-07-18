@@ -15,7 +15,7 @@ from tradingagents.pro.memory.memory import (
     describe_snapshot,
 )
 from tradingagents.pro.memory.records import MemoryKind, MemoryRecord
-from tradingagents.pro.memory.store import JsonlStore
+from tradingagents.pro.memory.store import JsonlStore, MemoryIntegrityError
 
 __all__ = [
     "EmbeddingFn",
@@ -35,4 +35,5 @@ __all__ = [
     "MemoryKind",
     "MemoryRecord",
     "JsonlStore",
+    "MemoryIntegrityError",
 ]

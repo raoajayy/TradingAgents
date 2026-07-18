@@ -69,6 +69,21 @@ class TestValidationGate:
         result = make_router().submit_recommendation(rec, equity=100_000)
         assert result.status == "rejected" and "not supported" in result.reason
 
+    def test_over_risk_per_trade_refused_on_paper(self):
+        # CI-3: per-trade risk enforced on the paper path. Stop distance 20 x
+        # qty 100 = 2000 risk = 2% of 100k, over the 1% limit; notional pinned
+        # under the position cap so only the risk check fires.
+        rec = sized_rec(quantity=100.0, notional=3_600.0)
+        result = make_router().submit_recommendation(rec, equity=100_000)
+        assert result.status == "rejected" and "per-trade risk" in result.reason
+
+    def test_max_open_positions_refused_on_paper(self):
+        # CI-3: max_open_positions (default 3) enforced on the paper path
+        router = make_router()
+        router.local_book.update({"A": 1.0, "B": 1.0, "C": 1.0})
+        result = router.submit_recommendation(sized_rec(), equity=100_000)
+        assert result.status == "rejected" and "at cap" in result.reason
+
 
 class TestSafetyGates:
     def test_kill_switch_blocks_before_adapter(self):
@@ -167,6 +182,19 @@ class TestVenues:
             quantity=0.0001, reference_price=60_000.0,
         ))
         assert result.status == "rejected" and "below venue minimum" in result.reason
+
+    def test_live_route_refused_when_gates_unwired(self):
+        # CI-1 fail-closed: a live-armed pair with a venue wired but no
+        # live-risk gate chain must be refused, never routed naked.
+        import types
+
+        router = make_router()
+        router.arming = types.SimpleNamespace(effective_tier=lambda s: "live")
+        router.live_oms = object()   # a live venue is wired...
+        router.live_gates = None     # ...but the gate chain is not
+        result = router.submit_recommendation(sized_rec(), equity=100_000)
+        assert result.status == "rejected"
+        assert "live_gates_unwired" in result.reason
 
     def test_live_stubs_refuse_everything(self):
         stub = LiveAdapterStub(VENUES["binance"])

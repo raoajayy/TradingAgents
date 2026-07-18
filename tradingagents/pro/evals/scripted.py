@@ -37,7 +37,10 @@ DEFAULT_DRAFTS = {
     CriticReport: CriticReport(verdict="pass", issues=[]),
     ReflectionNote: ReflectionNote(
         weaknesses="Momentum evidence is single-timeframe.",
-        invalidation="A close below the shown stop level.",
+        invalidation="A sustained close below 128.0 breaks the structure.",
+        # directional tickets now require a price-based thesis-death level;
+        # 128.0 sits just below the default BUY entry (last close 130.0)
+        invalidation_price=128.0,
     ),
     JudgeVerdict: JudgeVerdict(
         action="BUY", confidence=72,

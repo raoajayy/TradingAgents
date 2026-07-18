@@ -33,6 +33,9 @@ def make_recommendation(action=TradeAction.BUY, symbol="XAUUSD") -> TradeRecomme
         confidence=70,
         entry_price=2400.0 if directional else None,
         stop_loss=(2380.0 if action is TradeAction.BUY else 2420.0) if directional else None,
+        invalidation_price=(
+            (2380.0 if action is TradeAction.BUY else 2420.0) if directional else None
+        ),
         take_profits=(
             [TakeProfitLevel(
                 price=2440.0 if action is TradeAction.BUY else 2360.0,
@@ -140,6 +143,21 @@ class TestLessonsAndStats:
         for pnl in pnls:
             t = memory.record_trade(make_recommendation())
             memory.close_trade(t.id, pnl=pnl)
+        stats = memory.win_stats("XAUUSD")
+        assert stats == (pytest.approx(0.6), pytest.approx(2.0), pytest.approx(1.0))
+
+    def test_win_stats_excludes_retro_outcomes(self):
+        # CI-5: Kelly sizes real capital and must ride on lived fills only.
+        # Retro-scored predictions (mode="retro") feed calibration, not Kelly.
+        memory = ProMemory()
+        lived = [2.0, 2.0, 2.0, -1.0, -1.0]  # 60% win, avg win 2, avg loss 1
+        for pnl in lived:
+            t = memory.record_trade(make_recommendation())
+            memory.close_trade(t.id, pnl=pnl)
+        # a pile of retro "wins" must not move the lived stats
+        for _ in range(20):
+            t = memory.record_trade(make_recommendation())
+            memory.close_trade(t.id, pnl=5.0, details={"mode": "retro"})
         stats = memory.win_stats("XAUUSD")
         assert stats == (pytest.approx(0.6), pytest.approx(2.0), pytest.approx(1.0))
 

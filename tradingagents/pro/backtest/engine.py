@@ -21,7 +21,11 @@ from dataclasses import dataclass, field
 from tradingagents.contracts import ProConfig, TradeAction
 from tradingagents.pro.backtest.broker import ClosedTrade, SimBroker
 from tradingagents.pro.backtest.data import BarReplay
-from tradingagents.pro.backtest.metrics import PerformanceReport, performance_report
+from tradingagents.pro.backtest.metrics import (
+    PerformanceReport,
+    performance_report,
+    periods_per_year_for,
+)
 from tradingagents.pro.pipeline import build_pro_pipeline
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,7 @@ class BacktestEngine:
         memory=None,
         min_history: int = 60,
         decide_every: int = 1,
-        periods_per_year: int = 252,
+        periods_per_year: int | None = None,
         **pipeline_kwargs,
     ):
         if min_history < 3:
@@ -64,6 +68,11 @@ class BacktestEngine:
         self.memory = memory
         self.min_history = min_history
         self.decide_every = decide_every
+        # CI-7: annualize Sharpe/Sortino by the actual bar timeframe, not a
+        # fixed 252 (which mis-scales intraday curves). Explicit override wins.
+        if periods_per_year is None:
+            tf = replay.bars[0].timeframe.value if replay.bars else "1d"
+            periods_per_year = periods_per_year_for(tf)
         self.periods_per_year = periods_per_year
         self._pipeline = build_pro_pipeline(llm, config, memory=memory, **pipeline_kwargs)
 

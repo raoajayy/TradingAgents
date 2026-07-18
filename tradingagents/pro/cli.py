@@ -14,7 +14,9 @@ Commands:
   reconcile        resolve book-vs-venue drift (--accept-venue)
 
 Nothing here bypasses a gate. Arming grants no capability on its own; the
-router still runs every deterministic check.
+router runs every deterministic check on the tier's route, including the
+live-risk gate chain for canary/live — and refuses to route real capital
+when that chain is not wired (fail closed).
 """
 
 from __future__ import annotations
@@ -87,7 +89,8 @@ def readiness_report(
     except Exception as exc:
         typer.echo(f"(no venue adapter: {exc})")
         adapter = None
-    report = go_live_readiness(adapter=adapter, audit=_audit())
+    report = go_live_readiness(adapter=adapter, audit=_audit(),
+                               live_config_path=config)
     typer.echo(report.render())
 
     if config is not None:
@@ -160,7 +163,8 @@ def arm_live(
         typer.secho(f"cannot build venue adapter: {exc}", fg="red")
         raise typer.Exit(code=2) from exc
 
-    report = go_live_readiness(adapter=adapter, audit=_audit())
+    report = go_live_readiness(adapter=adapter, audit=_audit(),
+                               live_config_path=config)
     typer.echo(report.render())
     if not report.ok:
         typer.secho("\narming blocked — resolve every FAIL above.", fg="red")

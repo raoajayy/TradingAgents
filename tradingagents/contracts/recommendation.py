@@ -122,6 +122,14 @@ class TradeRecommendation(ContractModel):
 
         if self.entry_price is None or self.stop_loss is None or not self.take_profits:
             raise ValueError(f"{self.action.value} requires entry, stop, and >=1 take-profit")
+        # RISK-01 (R4.1): a directional ticket must name the price at which its
+        # thesis is dead. Optional invalidation let a trade ship with no
+        # structured "I'm wrong here" level — fail closed, like risk_reward.
+        if self.invalidation_price is None:
+            raise ValueError(
+                f"{self.action.value} requires an invalidation_price — the "
+                "thesis-death level; a directional ticket may not ship without one"
+            )
 
         prices = [tp.price for tp in self.take_profits]
         if self.action is TradeAction.BUY:

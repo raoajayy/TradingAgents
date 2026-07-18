@@ -1152,6 +1152,7 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             "journal": service.trade_journal(state.memory),
             "backtest": service.backtest_view(state.backtest, state.monte_carlo),
             "agents": service.agent_performance(state.runs, state.memory),
+            "calibration": service.calibration_score(state.memory),
             "memory": service.memory_insights(state.memory),
             "alerts": service.alert_feed(state.runs),
         }
@@ -1159,6 +1160,12 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
     @app.get("/api/agents")
     def agents() -> dict:
         return service.agent_performance(state.runs, state.memory)
+
+    @app.get("/api/calibration")
+    def calibration() -> dict:
+        """Brier + ECE over scored decisions (CI-6). None-ish until enough
+        trades accrue; the frontend shows the empirical p(win) meanwhile."""
+        return {"calibration": service.calibration_score(state.memory)}
 
     # SPA fallback: root-level build files (sw.js, manifest, icons) are
     # served as files; client routes (/trade/..., /decisions/...) get

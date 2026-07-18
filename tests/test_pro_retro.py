@@ -12,6 +12,7 @@ from tests.test_pro_memory_facade import make_recommendation
 from tradingagents.contracts import OHLCVBar, Timeframe
 from tradingagents.pro.analytics.retro import backfill_outcomes, simulate_ticket
 from tradingagents.pro.dashboard.service import (
+    calibration_score,
     estimate_p_win,
     trade_journal,
 )
@@ -127,3 +128,28 @@ class TestPWin:
         assert est["n"] == 6
         assert est["p_win"] == pytest.approx(4 / 6)
         assert est["median_hold_s"] is None or est["median_hold_s"] >= 0
+
+
+class TestCalibrationScore:
+    def test_below_sample_floor_returns_none(self):
+        memory = ProMemory()
+        for _ in range(5):
+            t = memory.record_trade(make_recommendation())
+            memory.close_trade(t.id, pnl=1.0, write_lesson=False)
+        assert calibration_score(memory) is None  # min_n=20
+
+    def test_brier_and_ece_over_scored_decisions(self):
+        # make_recommendation carries confidence 70 → forecast p=0.70.
+        # 30 trades, 21 wins (0.70 accuracy) => perfectly calibrated:
+        # Brier = 0.7*(0.3^2)+0.3*(0.7^2)=0.21; ECE ~ 0.
+        memory = ProMemory()
+        for i in range(30):
+            t = memory.record_trade(make_recommendation())
+            memory.close_trade(t.id, pnl=1.0 if i < 21 else -1.0,
+                               write_lesson=False)
+        cal = calibration_score(memory)
+        assert cal is not None
+        assert cal["n"] == 30
+        assert cal["brier"] == pytest.approx(0.21, abs=1e-6)
+        assert cal["ece"] == pytest.approx(0.0, abs=1e-9)
+        assert cal["reliability"]  # at least one populated bucket

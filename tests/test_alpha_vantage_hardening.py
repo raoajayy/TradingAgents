@@ -94,3 +94,44 @@ def test_fundamentals_no_curr_date_passes_through(monkeypatch):
 def test_fundamentals_non_json_body_unchanged(monkeypatch):
     monkeypatch.setattr(avf, "_make_api_request", lambda fn, params: "not-json")
     assert avf.get_cashflow("AAPL", curr_date="2024-01-01") == "not-json"
+
+
+@pytest.mark.unit
+def test_overview_withheld_for_past_date(monkeypatch):
+    # CI-7: OVERVIEW is a current-only snapshot; for a PAST curr_date it must
+    # not leak present-day fundamentals into a backtest.
+    monkeypatch.setattr(avf, "_make_api_request",
+                        lambda fn, params: '{"MarketCapitalization": "3T"}')
+    out = json.loads(avf.get_fundamentals("AAPL", curr_date="2020-01-01"))
+    assert out["point_in_time"] is False
+    assert "MarketCapitalization" not in out
+
+
+@pytest.mark.unit
+def test_overview_returned_live(monkeypatch):
+    # no curr_date (live use) still returns the real overview
+    monkeypatch.setattr(avf, "_make_api_request",
+                        lambda fn, params: '{"MarketCapitalization": "3T"}')
+    assert "MarketCapitalization" in avf.get_fundamentals("AAPL")
+
+
+@pytest.mark.unit
+def test_csv_filter_fails_closed_on_parse_error():
+    # CI-7: an unparseable CSV must raise, never return unfiltered rows that
+    # could include data after the analysis date.
+    with pytest.raises(ValueError, match="look-ahead"):
+        av._filter_csv_by_date_range("\x00not,a,valid\ncsv", "2024-01-01",
+                                     "2024-01-02")
+
+
+@pytest.mark.unit
+def test_insider_transactions_drops_future_rows(monkeypatch):
+    import tradingagents.dataflows.alpha_vantage_news as avn
+
+    payload = json.dumps({"data": [
+        {"transaction_date": "2023-12-01", "shares": "1"},  # past -> keep
+        {"transaction_date": "2024-06-01", "shares": "2"},  # future -> drop
+    ]})
+    monkeypatch.setattr(avn, "_make_api_request", lambda fn, params: payload)
+    out = json.loads(avn.get_insider_transactions("AAPL", curr_date="2024-01-01"))
+    assert [r["transaction_date"] for r in out["data"]] == ["2023-12-01"]

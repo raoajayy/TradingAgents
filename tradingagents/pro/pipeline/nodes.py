@@ -381,13 +381,18 @@ class PipelineNodes:
         raise into the graph. None = gate disabled/unavailable."""
         if self.config.event_block_hours <= 0 or self.calendar_fn is None:
             return None
+        calendar_available = True
         try:
             next_major = self.calendar_fn()
         except Exception:
-            logger.warning("calendar_fn failed; event gate passes open",
+            # CI-4: a wired calendar that fails to fetch is a DEGRADED feed,
+            # not "no event" — fail closed rather than silently pass open.
+            logger.warning("calendar_fn failed; event gate fails closed",
                            exc_info=True)
             next_major = None
-        return event_gate(next_major, utc_now(), self.config.event_block_hours)
+            calendar_available = False
+        return event_gate(next_major, utc_now(), self.config.event_block_hours,
+                          calendar_available=calendar_available)
 
     def risk_gate(self, state: dict) -> dict:
         # event backstop (review R2.6: the primary check now runs at
@@ -560,6 +565,19 @@ class PipelineNodes:
             return {"rejection": {"stage": "portfolio_manager",
                                   "reasons": list(gate.reasons)}}
 
+        # RISK-01 (R4.1) fail closed: a directional ticket needs a price-based
+        # thesis-death level. The engine emits INVALIDATION_PRICE only when the
+        # reflection supplied a correctly-sided level; without it we refuse the
+        # ticket rather than ship a stop with no thesis behind it.
+        if "INVALIDATION_PRICE" not in sided:
+            return {"rejection": {
+                "stage": "portfolio_manager",
+                "reasons": [
+                    "no thesis-death (invalidation) level — refusing directional "
+                    "ticket without a structured invalidation_price"
+                ],
+            }}
+
         try:
             recommendation = TradeRecommendation(
                 symbol=snapshot.symbol,
@@ -568,10 +586,7 @@ class PipelineNodes:
                 confidence=state["judge_confidence"],
                 entry_price=sided["ENTRY_REF_PRICE"].value,
                 stop_loss=sided["ATR_STOP"].value,
-                invalidation_price=(
-                    sided["INVALIDATION_PRICE"].value
-                    if "INVALIDATION_PRICE" in sided else None
-                ),
+                invalidation_price=sided["INVALIDATION_PRICE"].value,
                 take_profits=[
                     TakeProfitLevel(price=sided["ATR_TP1"].value, size_fraction=0.5),
                     TakeProfitLevel(price=sided["ATR_TP2"].value, size_fraction=0.5),

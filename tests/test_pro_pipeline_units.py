@@ -115,6 +115,16 @@ class TestEventGate:
         # the disease; honesty over paralysis
         assert event_gate(self.event(None), self.NOW, 4.0).passed
 
+    def test_unavailable_calendar_fails_closed(self):
+        # CI-4: a wired-but-down calendar cannot confirm the window is clear,
+        # so new entries are refused (empty calendar with a healthy feed still
+        # passes — see test_disabled_or_missing_calendar_passes_open).
+        result = event_gate(None, self.NOW, 4.0, calendar_available=False)
+        assert not result.passed
+        assert "calendar unavailable" in result.reasons[0]
+        # the gate stays disabled when block_hours is 0, even feed-down
+        assert event_gate(None, self.NOW, 0, calendar_available=False).passed
+
 
 class TestRiskGate:
     CONFIG = ProConfig(asset=AssetClass.GOLD)  # max_daily_loss 3%

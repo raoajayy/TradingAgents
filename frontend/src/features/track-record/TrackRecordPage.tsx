@@ -8,7 +8,12 @@ import { CalibrationChart } from "@/components/CalibrationChart";
 import { EmptyState } from "@/components/EmptyState";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAgents, useJournal, usePortfolioStats } from "@/lib/api/queries";
+import {
+  useAgents,
+  useCalibration,
+  useJournal,
+  usePortfolioStats,
+} from "@/lib/api/queries";
 import { fmtPct, fmtPnl } from "@/lib/format";
 
 const PROVEN_N = 100;
@@ -43,6 +48,8 @@ export default function TrackRecordPage() {
   const stats = usePortfolioStats();
   const journal = useJournal();
   const agents = useAgents();
+  const calibration = useCalibration();
+  const cal = calibration.data?.calibration ?? null;
 
   const n = stats.data?.n_trades ?? 0;
   const scored = agents.data
@@ -117,6 +124,21 @@ export default function TrackRecordPage() {
             <CardTitle>Calibration (retro-graded)</CardTitle>
           </CardHeader>
           <CardContent>
+            {/* Brier + ECE: the single-number verdict on whether stated
+                confidence has held up. Shown only past the sample floor —
+                a calibration score on a handful of trades is noise. */}
+            {cal ? (
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                <Stat label="Brier" value={cal.brier.toFixed(3)} />
+                <Stat label="ECE" value={fmtPct(cal.ece)} />
+                <Stat label="scored n" value={String(cal.n)} />
+              </div>
+            ) : (
+              <p className="mb-3 text-xs text-fg-subtle">
+                Brier / ECE appear once ≥20 decisions are scored — no
+                calibration number on a handful of trades.
+              </p>
+            )}
             {agents.isPending ? (
               <SkeletonCard lines={4} />
             ) : agents.data ? (

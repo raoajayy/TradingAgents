@@ -93,6 +93,16 @@ class ExecutionRouter:
                 f"pair armed '{tier}' but no live venue is wired — refusing "
                 "rather than silently filling on paper")
 
+        # CI-1 fail-closed: real capital never routes without the live-risk
+        # gate chain. `live_gates is None` used to no-op silently (the whole
+        # LiveRiskLimits tier — per-trade risk, notional, spread, loss limits —
+        # was skipped); refuse rather than route naked.
+        if tier in ("canary", "live") and self.live_gates is None:
+            return self._refuse(
+                rec, "live_gates_unwired",
+                f"pair armed '{tier}' but the live-risk gate chain is not "
+                "wired — refusing to route real capital without it")
+
         # leading gate (OMS wiring only): a process that has not accounted
         # for its outstanding orders does not trade
         entry_oms = self.live_oms if route_live else self.oms
@@ -121,7 +131,10 @@ class ExecutionRouter:
             if hasattr(self.adapter, "supported_symbols")
             else {getattr(rec, "symbol", "")}
         )
-        check = validate_recommendation(rec, self.limits, equity, supported)
+        check = validate_recommendation(
+            rec, self.limits, equity, supported,
+            open_positions=len(self.local_book),
+        )
         if not check.ok:
             return self._refuse(rec, "validation_failed", "; ".join(check.reasons))
 
@@ -211,6 +224,12 @@ class ExecutionRouter:
         breaker and clears the local book entry."""
         self.local_book.pop(symbol, None)
         self.breaker.record_trade_result(pnl)
+        # feed live equity so the daily-loss dollar trip and the drawdown trip
+        # measure against the real account, not a frozen base (CI-3/§8)
+        try:
+            self.breaker.update_equity(self.adapter.account().equity)
+        except Exception:
+            logger.exception("breaker equity update failed; continuing")
         self.audit.append("position_closed", {"symbol": symbol, "pnl": pnl})
         state = self.breaker.check()
         if state.tripped:

@@ -357,6 +357,25 @@ export const AgentPerfSchema = z.record(
 );
 export type AgentPerf = z.infer<typeof AgentPerfSchema>;
 
+export const CalibrationSchema = z.object({
+  calibration: z
+    .object({
+      brier: z.number(),
+      ece: z.number(),
+      n: z.number(),
+      reliability: z.array(
+        z.object({
+          bucket: z.string(),
+          n: z.number(),
+          avg_confidence: z.number(),
+          accuracy: z.number(),
+        }),
+      ),
+    })
+    .nullable(),
+});
+export type Calibration = z.infer<typeof CalibrationSchema>;
+
 export const SymbolSpecSchema = z.object({
   tradeable: z.boolean().optional(),
   symbol: z.string(),

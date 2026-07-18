@@ -116,7 +116,13 @@ class SimBroker:
 
         stop_hit = bar.low <= pos.stop if long else bar.high >= pos.stop
         if stop_hit:
-            exit_price = self.slippage.fill_price(pos.stop, "SELL" if long else "BUY")
+            # stop-gap realism (CI-7): when the bar OPENS beyond the stop (a
+            # gap through the level, e.g. a weekend/CPI gap), the real fill is
+            # at the open, not the stop — a stop never fills better than the
+            # gapped open. Fill at the worse of the two, then apply slippage.
+            gapped_stop = min(pos.stop, bar.open) if long else max(pos.stop, bar.open)
+            exit_price = self.slippage.fill_price(
+                gapped_stop, "SELL" if long else "BUY")
             self._exit(pos, pos.quantity, exit_price, bar.start, "stop")
             return self._finalize(pos, bar.start)
 

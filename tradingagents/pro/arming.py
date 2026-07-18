@@ -7,10 +7,12 @@ cleared by any disarm, expiry, or loss-limit breach. Every transition is
 persisted atomically to the /data volume and appended to the hash-chained
 audit log, so the arming decision and its evidence are tamper-evident.
 
-This module holds STATE only — it grants no capability. The router still
-runs every deterministic gate; arming just decides whether a pair's
-orders may leave the paper venue at all (Phase 6 wiring). Nothing here is
-an override path.
+This module holds STATE only — it grants no capability. Arming just decides
+whether a pair's orders may leave the paper venue at all (Phase 6 wiring).
+The router runs every deterministic gate on the route the tier selects,
+including the live-risk gate chain (LiveGateChain / LossLimitMonitor) for
+canary/live tiers — and REFUSES to route real capital if that chain is not
+wired (fail closed). Nothing here is an override path.
 """
 
 from __future__ import annotations

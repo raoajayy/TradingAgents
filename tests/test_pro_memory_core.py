@@ -8,6 +8,7 @@ from tradingagents.pro.memory import (
     HashingEmbedder,
     InMemoryVectorIndex,
     JsonlStore,
+    MemoryIntegrityError,
     KnowledgeGraph,
     MemoryKind,
     MemoryRecord,
@@ -77,14 +78,53 @@ class TestJsonlStore:
         assert len(loaded) == 2
         assert loaded[0] == r
 
-    def test_corrupt_lines_skipped(self, tmp_path):
+    def test_corrupt_line_fails_loud_by_default(self, tmp_path):
+        # CI-5: a money record must not silently vanish. Strict (default) load
+        # raises; lenient recovery is opt-in.
         path = tmp_path / "memory.jsonl"
         store = JsonlStore(path)
         store.append(record())
         with path.open("a") as f:
             f.write("{not json\n")
         store.append(record(text="second valid"))
-        assert len(store.load()) == 2
+        reopened = JsonlStore(path)
+        with pytest.raises(MemoryIntegrityError):
+            reopened.load()
+        # recovery path is explicit and salvages what it can
+        assert len(reopened.load(strict=False)) >= 1
+
+    def test_tampered_record_breaks_hash_chain(self, tmp_path):
+        # CI-5: editing a past record in place (e.g. flipping a loss to a win)
+        # breaks the sidecar hash chain and fails verification.
+        path = tmp_path / "memory.jsonl"
+        store = JsonlStore(path)
+        store.append(record(payload={"pnl": -5.0}))
+        store.append(record(text="second"))
+        lines = path.read_text().splitlines()
+        lines[0] = lines[0].replace('"pnl":-5.0', '"pnl":5.0')
+        path.write_text("\n".join(lines) + "\n")
+        reopened = JsonlStore(path)
+        assert reopened.verify() is False
+        with pytest.raises(MemoryIntegrityError):
+            reopened.load()
+
+    def test_clean_store_verifies(self, tmp_path):
+        path = tmp_path / "memory.jsonl"
+        store = JsonlStore(path)
+        store.append(record(payload={"pnl": 1.5}))
+        store.append(record(kind=MemoryKind.MISTAKE, text="chased entry"))
+        assert JsonlStore(path).verify() is True
+
+    def test_legacy_file_without_sidecar_migrates(self, tmp_path):
+        # a pre-hash-chain memory.jsonl loads and, on next append, extends a
+        # valid chain instead of misaligning (trust-on-first-use).
+        path = tmp_path / "memory.jsonl"
+        path.write_text(record(payload={"pnl": 2.0}).model_dump_json() + "\n")
+        store = JsonlStore(path)  # migrates on construction
+        assert len(store.load()) == 1
+        store.append(record(text="new"))
+        assert JsonlStore(path).verify() is True
+        assert len(JsonlStore(path).load()) == 2
 
     def test_missing_file_loads_empty(self, tmp_path):
         assert JsonlStore(tmp_path / "nope.jsonl").load() == []

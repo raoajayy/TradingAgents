@@ -146,6 +146,11 @@ def _filter_csv_by_date_range(csv_data: str, start_date: str, end_date: str) -> 
         return filtered_df.to_csv(index=False)
 
     except Exception as e:
-        # If filtering fails, return original data with a warning
-        print(f"Warning: Failed to filter CSV data by date range: {e}")
-        return csv_data
+        # CI-7: fail CLOSED. Returning the original, UNFILTERED data on a parse
+        # error silently disables the look-ahead cutoff — a backtest would then
+        # see rows after its analysis date. A cutoff that can't be applied must
+        # raise, not leak.
+        raise ValueError(
+            f"failed to apply date-range filter to Alpha Vantage CSV "
+            f"({e}); refusing to return unfiltered data (look-ahead risk)"
+        ) from e

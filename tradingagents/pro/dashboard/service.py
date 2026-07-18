@@ -324,6 +324,49 @@ def estimate_p_win(memory: ProMemory, confidence: int | None,
     return None
 
 
+def calibration_score(memory: ProMemory, min_n: int = 20) -> dict | None:
+    """Brier score + Expected Calibration Error over every scored decision
+    (lived + retro — retro grades exist to feed calibration). CI-6: the
+    headline confidence is the model's opinion; THIS is whether that opinion
+    has held up. Returns None below ``min_n`` — a calibration number on a
+    handful of trades is noise, the kind of figure this product refuses to
+    fake. ``brier`` in [0,1] lower is better; ``ece`` is the size-weighted
+    gap between stated confidence and realized accuracy."""
+    trades = {r.id: r for r in memory.records(MemoryKind.TRADE)}
+    forecasts: list[tuple[float, bool]] = []
+    for outcome in memory.records(MemoryKind.OUTCOME):
+        trade = trades.get(outcome.ref_id)
+        if trade is None:
+            continue
+        conf = trade.payload.get("confidence")
+        if conf is None:
+            continue
+        forecasts.append((conf / 100.0, bool(outcome.payload.get("won"))))
+    n = len(forecasts)
+    if n < min_n:
+        return None
+    brier = sum((p - (1.0 if won else 0.0)) ** 2 for p, won in forecasts) / n
+    bins = 10
+    ece = 0.0
+    reliability = []
+    for b in range(bins):
+        lo, hi = b / bins, (b + 1) / bins
+        bucket = [(p, won) for p, won in forecasts
+                  if p >= lo and (p < hi or (b == bins - 1 and p <= hi))]
+        if not bucket:
+            continue
+        avg_conf = sum(p for p, _ in bucket) / len(bucket)
+        accuracy = sum(1 for _, won in bucket if won) / len(bucket)
+        ece += (len(bucket) / n) * abs(avg_conf - accuracy)
+        reliability.append({
+            "bucket": f"{int(lo * 100)}-{int(hi * 100)}",
+            "n": len(bucket),
+            "avg_confidence": avg_conf,
+            "accuracy": accuracy,
+        })
+    return {"brier": brier, "ece": ece, "n": n, "reliability": reliability}
+
+
 def journal_performance(memory: ProMemory,
                         starting_equity: float = 100_000.0) -> dict:
     """Live-book performance over CLOSED trades (trader review): equity
@@ -404,7 +447,8 @@ def risk_budget(router) -> dict:
         return {"attached": False}
     breaker = router.breaker
     state = breaker.check()
-    limit_usd = breaker.equity_base * breaker.limits.max_daily_loss_pct / 100
+    # measure against live equity, matching the enforced trip (CI-3/§8)
+    limit_usd = breaker.current_equity * breaker.limits.max_daily_loss_pct / 100
     used_usd = max(0.0, -breaker.daily_pnl)
     return {
         "attached": True,

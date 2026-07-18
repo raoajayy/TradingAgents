@@ -67,6 +67,7 @@ def event_gate(
     next_major: dict | None,
     now: datetime,
     block_hours: float,
+    calendar_available: bool = True,
 ) -> GateResult:
     """No NEW entries inside the pre-event window of a major release.
 
@@ -74,12 +75,28 @@ def event_gate(
     day and none of its 41 evidence items mentioned the Fed. This gate is
     the structural fix — within ``block_hours`` of a scheduled major event
     (calendar's ``next_major``: FOMC/CPI/NFP/...), the run declines to open
-    anything new. Exits are never blocked (this runs pre-entry only), and
-    a missing calendar or an event without a known instant passes open —
-    a broken calendar must not silently halt trading; feed degradation is
-    already surfaced through missing_feeds.
+    anything new. Exits are never blocked (this runs pre-entry only).
+
+    CI-4 fail-closed: ``calendar_available=False`` means the operator wired a
+    calendar but the feed is DOWN this run. We cannot confirm the window is
+    clear, so we refuse new entries rather than silently pass open — the exact
+    failure (a broken calendar re-enabling FOMC-day trading) this gate exists
+    to prevent. A genuinely empty calendar (``next_major`` is None with the
+    feed healthy) still passes: no event means no window to block.
     """
-    if block_hours <= 0 or not next_major:
+    if block_hours <= 0:
+        return GateResult(passed=True, checks={"event_window_clear": True})
+    if not calendar_available:
+        return GateResult(
+            passed=False,
+            checks={"calendar_available": False},
+            reasons=(
+                "economic calendar unavailable — cannot confirm the pre-event "
+                "window is clear; refusing new entries until the feed recovers "
+                "(exits are unaffected)",
+            ),
+        )
+    if not next_major:
         return GateResult(passed=True, checks={"event_window_clear": True})
     at_raw = next_major.get("at") or next_major.get("ts_utc")
     if not at_raw:

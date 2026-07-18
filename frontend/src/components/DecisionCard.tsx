@@ -325,7 +325,10 @@ export function DecisionCard({
             {/* mockup hero stats: small-caps label over big mono value,
                 hairline dividers between stats */}
             <span className="border-l border-border pl-5">
-              <span className="block text-xs text-fg-subtle">confidence</span>
+              {/* CI-6: this is the model's own opinion, not a grounded
+                  probability — labeled "model view" so it isn't mistaken for
+                  the empirical p(win) shown below. */}
+              <span className="block text-xs text-fg-subtle">model view</span>
               <span className="font-mono text-2xl font-bold text-fg tabular">
                 {rec.confidence}
                 <span className="text-[13px] font-normal text-fg-subtle">/100</span>
@@ -366,7 +369,7 @@ export function DecisionCard({
         ) : (
           <>
             <span className="text-[13px] text-fg-muted">
-              confidence{" "}
+              model view{" "}
               <span className="font-mono tabular">{rec.confidence}</span>
               <span className="text-fg-subtle">/100</span>
             </span>

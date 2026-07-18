@@ -121,14 +121,18 @@ def test_event_gate_passes_when_no_event_is_near():
     assert state["gate_results"]["event"]["passed"] is True
 
 
-def test_broken_calendar_never_blocks_the_run():
+def test_broken_calendar_fails_closed():
+    # CI-4: a wired calendar that fails to fetch is a degraded feed — the
+    # event gate now refuses new entries rather than silently passing open
+    # (the exact failure that would re-enable FOMC-day trading).
     llm = FakePipelineLLM()
     state = run_pipeline(
         llm, CONFIG, pipeline_snapshot(),
         calendar_fn=lambda: (_ for _ in ()).throw(RuntimeError("calendar down")),
     )
-    assert state.get("rejection") is None
-    assert state["recommendation"] is not None
+    assert state.get("recommendation") is None
+    assert state["rejection"]["stage"] == "event_gate"
+    assert "calendar unavailable" in state["rejection"]["reasons"][0]
 
 
 def test_reflection_invalidation_price_derives_the_stop():
@@ -150,7 +154,10 @@ def test_reflection_invalidation_price_derives_the_stop():
     assert rec.stop_loss > 125.0
 
 
-def test_wrong_sided_invalidation_falls_back_to_atr_stop():
+def test_wrong_sided_invalidation_rejects_directional_ticket():
+    # RISK-01 (R4.1) strict fail-closed: a wrong-sided (or absent) thesis-death
+    # level no longer silently falls back to the ATR stop — the run is refused
+    # rather than ship a directional ticket with no valid invalidation.
     llm = FakePipelineLLM(overrides={
         ReflectionNote: ReflectionNote(
             weaknesses="Momentum evidence is single-timeframe.",
@@ -159,10 +166,9 @@ def test_wrong_sided_invalidation_falls_back_to_atr_stop():
         ),
     })
     state = run_pipeline(llm, CONFIG, pipeline_snapshot())
-    rec = state["recommendation"]
-    assert rec is not None and rec.action is TradeAction.BUY
-    assert rec.invalidation_price is None
-    assert rec.stop_loss == pytest.approx(125.0)  # 130 - 2*ATR(2.5)
+    assert state.get("recommendation") is None
+    assert state["rejection"]["stage"] == "portfolio_manager"
+    assert "invalidation" in state["rejection"]["reasons"][0].lower()
 
 
 def test_hold_ruling_yields_hold_recommendation_without_levels():
@@ -257,6 +263,12 @@ def test_sell_ruling_builds_sell_geometry():
         ),
         JudgeVerdict: JudgeVerdict(action="SELL", confidence=64,
                                    rationale="Bear side carried it."),
+        # a SELL's thesis-death level sits ABOVE entry (last close 130.0)
+        ReflectionNote: ReflectionNote(
+            weaknesses="Bear thesis is single-timeframe.",
+            invalidation="A sustained close above 132.0 breaks the short.",
+            invalidation_price=132.0,
+        ),
     })
     state = run_pipeline(llm, CONFIG, pipeline_snapshot())
     rec = state["recommendation"]

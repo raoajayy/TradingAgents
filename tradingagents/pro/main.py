@@ -17,6 +17,13 @@ Env:
                                 long as an LLM key is present
     TRADINGAGENTS_PRO_DATA      audit/prefs dir (volume in Docker)
     PRO_DASHBOARD_TOKEN         dashboard auth
+    PRO_LIVE_ENABLED=1          master switch for live routing — OFF by
+                                default; without it the service is paper/
+                                shadow only even if venue credentials exist
+    PRO_LIVE_CONFIG             path to live.yaml the service enforces
+                                (default: <data>/live.yaml); its LiveRiskLimits
+                                back the live-risk gate chain + loss monitor
+    PRO_LIVE_VENUE=production   use the production venue (default testnet)
     PORT                        uvicorn bind port (default 8600; Cloud Run
                                 injects its own value)
 """
@@ -318,6 +325,9 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     )
     state.router = router
     state.equity = router.adapter.account().equity  # reflects a reloaded book
+    # seed the breaker with the (possibly reloaded) live equity so the daily
+    # loss + drawdown trips measure against the real book, not the 100k base
+    router.breaker.update_equity(state.equity)
 
     # per-pair arming state (go-live Phase 4). Every pair defaults to
     # paper; the tradingagents-pro arm-live ceremony flips it, and the
@@ -382,6 +392,23 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     return service, state
 
 
+def _resolve_live_config(data_path):
+    """Locate the live.yaml the running service should enforce: PRO_LIVE_CONFIG
+    if set, else live.yaml in the data dir. Returns a LiveConfig or None (no
+    file / invalid → None, and the caller fails closed)."""
+    from tradingagents.pro.live_config import LiveConfigError, load_live_config
+
+    candidate = os.environ.get("PRO_LIVE_CONFIG")
+    path = Path(candidate) if candidate else (data_path / "live.yaml")
+    if not path.exists():
+        return None
+    try:
+        return load_live_config(path)
+    except LiveConfigError as exc:
+        logger.error("live config at %s rejected: %s", path, exc)
+        return None
+
+
 def _wire_staged_routing(state, router, service, data_path) -> None:
     """Phase 6: the router honors per-pair arming tiers. Shadow tracking
     is always wired (costs nothing until a pair is armed 'shadow'); the
@@ -400,6 +427,15 @@ def _wire_staged_routing(state, router, service, data_path) -> None:
         metrics=service.metrics,
     )
 
+    # CI-1 master switch: live routing is wired ONLY on explicit opt-in.
+    # Without PRO_LIVE_ENABLED=1 the service stays paper/shadow even if venue
+    # credentials happen to be present — real capital is never one stray
+    # env var away. Armed pairs are then refused (no live venue), honestly.
+    if os.environ.get("PRO_LIVE_ENABLED") != "1":
+        logger.info("live execution disabled (PRO_LIVE_ENABLED != 1) — "
+                    "paper/shadow only; any live-armed pair will be refused")
+        return
+
     testnet = os.environ.get("PRO_LIVE_VENUE", "testnet") != "production"
     try:
         from tradingagents.pro.execution import OrderManager
@@ -416,6 +452,20 @@ def _wire_staged_routing(state, router, service, data_path) -> None:
         logger.info("live route wired (%s) — orders go live only for "
                     "canary/live-armed pairs",
                     "testnet" if testnet else "PRODUCTION")
+        # CI-1: wire the live-risk gate chain from the same live.yaml the
+        # operator armed with. Without it the router now REFUSES live routes
+        # (fail closed) rather than skipping every LiveRiskLimits check.
+        live_cfg = _resolve_live_config(data_path)
+        if live_cfg is not None:
+            from tradingagents.pro.execution.live_gates import LiveGateChain
+            router.live_gates = LiveGateChain(live_cfg.risk)
+            state.live_config = live_cfg
+            logger.info("live-risk gate chain wired from %s", live_cfg.path)
+        else:
+            logger.error(
+                "live route wired but NO live config found (set "
+                "PRO_LIVE_CONFIG or place live.yaml in the data dir) — "
+                "live-armed pairs will be REFUSED until gates are wired")
     except Exception as exc:
         # no credentials (the common paper case) or venue unreachable:
         # stay paper-only; armed pairs will be refused, honestly
@@ -436,6 +486,17 @@ def _start_live_safety_daemons(service, state) -> None:
     live_armed = any(v["tier"] in ("canary", "live")
                      for v in arming.status().values())
     if not live_armed:
+        return
+
+    # CI-1 boot guard: a live-armed process without the gate chain wired is a
+    # naked-capital hazard. Refuse to start the live daemons and shout — the
+    # router will also refuse every live route (fail closed) at submit time.
+    if getattr(service.router, "live_gates", None) is None:
+        msg = ("LIVE-ARMED but the live-risk gate chain is NOT wired — every "
+               "live order will be refused. Provide a valid live config "
+               "(PRO_LIVE_CONFIG / live.yaml) or disarm.")
+        logger.error(msg)
+        service.alerts.emit("critical", "live_gates_unwired", msg)
         return
 
     on_docker_desktop = os.path.exists("/.dockerenv") and (
@@ -459,6 +520,32 @@ def _start_live_safety_daemons(service, state) -> None:
     deadman.start()
     state.deadman = deadman
     logger.info("dead-man switch armed (timeout %.0fs)", timeout)
+
+    # CI-1: the daily/weekly-loss + drawdown-from-HWM monitor. On breach it
+    # cancels resting orders, flattens every position, engages the kill
+    # switch, and latches. Previously declared and tested but never started.
+    live_cfg = getattr(state, "live_config", None)
+    router = service.router
+    if live_cfg is not None and router.live_oms is not None:
+        from tradingagents.pro.execution.live_gates import (
+            LossLimitMonitor,
+            breach_response,
+        )
+
+        monitor = LossLimitMonitor(
+            live_cfg.risk,
+            state_path=state.router.audit.path.parent / "loss_limits.json"
+            if getattr(state.router.audit, "path", None) else "loss_limits.json",
+            on_breach=breach_response(
+                router.live_oms, router.kill_switch,
+                positions_fn=lambda: router.live_oms.adapter.positions(),
+                reference_prices={},
+            ),
+            alerts=service.alerts,
+        )
+        monitor.start(equity_fn=lambda: router.live_oms.adapter.account().equity)
+        state.loss_monitor = monitor
+        logger.info("loss-limit monitor armed (daily/weekly/drawdown)")
 
 
 def main() -> None:

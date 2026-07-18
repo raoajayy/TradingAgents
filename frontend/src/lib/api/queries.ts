@@ -7,6 +7,7 @@ import type { z } from "zod";
 import { apiFetch } from "./client";
 import {
   AgentPerfSchema,
+  CalibrationSchema,
   CorrelationsSchema,
   AlertFeedSchema,
   BacktestSchema,
@@ -54,6 +55,7 @@ export const qk = {
   backtest: ["backtest"] as const,
   memory: ["memory"] as const,
   agents: ["agents"] as const,
+  calibration: ["calibration"] as const,
   symbols: ["symbols"] as const,
   bars: (symbol: string, tf: string, limit: number) =>
     ["bars", symbol, tf, limit] as const,
@@ -232,6 +234,13 @@ export const useMemoryInsights = () =>
 
 export const useAgents = () =>
   useQuery({ queryKey: qk.agents, queryFn: fetchParsed("/api/agents", AgentPerfSchema), ...live() });
+
+export const useCalibration = () =>
+  useQuery({
+    queryKey: qk.calibration,
+    queryFn: fetchParsed("/api/calibration", CalibrationSchema),
+    ...live(),
+  });
 
 export const useSymbols = () =>
   useQuery({
