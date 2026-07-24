@@ -20,6 +20,11 @@ from tradingagents.pro.backtest.costs import (
 from tradingagents.pro.backtest.data import BarReplay, HistoricalCorpus
 from tradingagents.pro.backtest.engine import BacktestEngine, BacktestResult
 from tradingagents.pro.backtest.llm_cache import CacheMiss, CachingLLM
+from tradingagents.pro.backtest.metalabel import (
+    Event,
+    MetaLabeler,
+    triple_barrier_labels,
+)
 from tradingagents.pro.backtest.metrics import (
     PerformanceReport,
     annualized_return,
@@ -100,6 +105,9 @@ __all__ = [
     "CommissionModel",
     "FundingModel",
     "MarginModel",
+    "Event",
+    "MetaLabeler",
+    "triple_barrier_labels",
     "LiquidityModel",
     "SlippageModel",
     "cost_profile_for",
