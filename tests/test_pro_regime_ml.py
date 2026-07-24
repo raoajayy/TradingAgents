@@ -76,3 +76,23 @@ def test_signature_matches_rule_based_classifier():
 def test_fit_needs_at_least_two_windows():
     with pytest.raises(ValueError, match="need >= 2 windows"):
         MLRegimeModel().fit([_window("trend")])
+
+
+# --- optional [ml] accelerators (scikit-learn / hmmlearn) --------------------
+
+
+def test_gmm_engine_returns_market_regimes():
+    pytest.importorskip("sklearn")
+    model = MLRegimeModel(n_clusters=3, seed=0, engine="gmm").fit(_training_windows())
+    assert isinstance(model.classify_regime(_window("trend")), MarketRegime)
+
+
+def test_hmm_engine_returns_market_regimes():
+    pytest.importorskip("hmmlearn")
+    model = MLRegimeModel(n_clusters=3, seed=0, engine="hmm").fit(_training_windows())
+    assert isinstance(model.classify_regime(_window("vol")), MarketRegime)
+
+
+def test_unknown_engine_rejected():
+    with pytest.raises(ValueError, match="unknown engine"):
+        MLRegimeModel(engine="wat")

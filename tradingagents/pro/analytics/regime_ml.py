@@ -93,9 +93,15 @@ class MLRegimeModel:
     """Fit on a set of historical bar-windows, then classify a new window to
     the nearest cluster's regime label. Drop-in for ``classify_regime``."""
 
-    def __init__(self, n_clusters: int = 5, seed: int = 0):
+    def __init__(self, n_clusters: int = 5, seed: int = 0,
+                 engine: str = "kmeans"):
+        if engine not in ("kmeans", "gmm", "hmm"):
+            raise ValueError(f"unknown engine {engine!r} (kmeans | gmm | hmm)")
         self.n_clusters = max(1, n_clusters)
         self.seed = seed
+        # "kmeans" is the pure-Python default; "gmm"/"hmm" are opt-in
+        # accelerators behind the [ml] extra (scikit-learn / hmmlearn)
+        self.engine = engine
         self._mean: list[float] | None = None
         self._std: list[float] | None = None
         self._centroids: list[list[float]] = []
@@ -112,7 +118,10 @@ class MLRegimeModel:
             var = math.fsum((r[j] - self._mean[j]) ** 2 for r in raw) / len(raw)
             self._std.append(math.sqrt(var) or 1.0)
         standardized = [self._standardize(r) for r in raw]
-        self._centroids = _kmeans(standardized, self.n_clusters, self.seed)
+        if self.engine == "kmeans":
+            self._centroids = _kmeans(standardized, self.n_clusters, self.seed)
+        else:
+            self._centroids = self._fit_external(standardized)
         # label each centroid by destandardizing back to feature space and
         # applying the rule thresholds (vol, slope, r² are dims 0,1,2)
         self._labels = []
@@ -133,6 +142,31 @@ class MLRegimeModel:
             if d < bd:
                 best, bd = i, d
         return self._labels[best]
+
+    def _fit_external(self, points: list[list[float]]) -> list[list[float]]:
+        """GMM/HMM cluster means (opt-in [ml] extra). Returns component means in
+        standardized space, so classification stays nearest-mean (as KMeans)."""
+        k = max(1, min(self.n_clusters, len(points)))
+        if self.engine == "gmm":
+            try:
+                from sklearn.mixture import GaussianMixture
+            except ImportError as exc:  # pragma: no cover - env-dependent
+                raise ImportError(
+                    "engine='gmm' needs scikit-learn — install tradingagents[ml]"
+                ) from exc
+            model = GaussianMixture(n_components=k, random_state=self.seed)
+            model.fit(points)
+            return [list(m) for m in model.means_]
+        try:
+            from hmmlearn.hmm import GaussianHMM
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise ImportError(
+                "engine='hmm' needs hmmlearn — install tradingagents[ml]"
+            ) from exc
+        model = GaussianHMM(n_components=k, covariance_type="diag",
+                            random_state=self.seed, n_iter=50)
+        model.fit(points)
+        return [list(m) for m in model.means_]
 
     def _standardize(self, v: list[float]) -> list[float]:
         return [(v[j] - self._mean[j]) / self._std[j] for j in range(len(v))]

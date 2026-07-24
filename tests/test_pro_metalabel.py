@@ -100,3 +100,17 @@ def test_metalabeler_is_deterministic():
 def test_metalabeler_needs_fit_first():
     with pytest.raises(RuntimeError, match="not fitted"):
         MetaLabeler().predict_size([1.0, 2.0])
+
+
+def test_boosting_model_sizes_in_unit_interval():
+    pytest.importorskip("sklearn")
+    X, y = _separable()
+    ml = MetaLabeler(model="boosting").fit(X, y)
+    hi = ml.predict_size([2.0, 0.0])
+    lo = ml.predict_size([-2.0, 0.0])
+    assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0 and hi > lo
+
+
+def test_unknown_model_rejected():
+    with pytest.raises(ValueError, match="unknown model"):
+        MetaLabeler(model="wat")

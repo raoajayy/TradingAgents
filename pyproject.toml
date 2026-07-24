@@ -62,6 +62,14 @@ dashboard = [
 backtest-report = [
     "matplotlib>=3.8",
 ]
+# Optional ML accelerators (track T3): scikit-learn (GMM regime + gradient-
+# boosting meta-label) and hmmlearn (HMM regime). The pure-Python defaults
+# (in-repo KMeans regime + logistic meta-label) need none of these — install
+# only to enable the heavier engines: pip install "tradingagents[ml]".
+ml = [
+    "scikit-learn>=1.4",
+    "hmmlearn>=0.3",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

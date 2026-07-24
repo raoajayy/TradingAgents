@@ -90,15 +90,21 @@ class MetaLabeler:
     accepted for API symmetry)."""
 
     def __init__(self, epochs: int = 300, lr: float = 0.1, l2: float = 1e-4,
-                 seed: int = 0):
+                 seed: int = 0, model: str = "logistic"):
+        if model not in ("logistic", "boosting"):
+            raise ValueError(f"unknown model {model!r} (logistic | boosting)")
         self.epochs = epochs
         self.lr = lr
         self.l2 = l2
         self.seed = seed
+        # "logistic" is the pure-Python default; "boosting" is an opt-in
+        # gradient-boosting head behind the [ml] extra (scikit-learn)
+        self.model = model
         self._mean: list[float] = []
         self._std: list[float] = []
         self._w: list[float] = []
         self._b: float = 0.0
+        self._sk = None  # fitted scikit-learn estimator (boosting)
 
     def fit(self, features: Sequence[Sequence[float]],
             labels: Sequence[int]) -> MetaLabeler:
@@ -106,6 +112,16 @@ class MetaLabeler:
         y = [1.0 if v else 0.0 for v in labels]
         if len(rows) < 2 or len(rows) != len(y):
             raise ValueError("need >= 2 aligned (features, label) rows")
+        if self.model == "boosting":
+            try:
+                from sklearn.ensemble import GradientBoostingClassifier
+            except ImportError as exc:  # pragma: no cover - env-dependent
+                raise ImportError(
+                    "model='boosting' needs scikit-learn — install "
+                    "tradingagents[ml]") from exc
+            self._sk = GradientBoostingClassifier(random_state=self.seed)
+            self._sk.fit(rows, [int(v) for v in y])
+            return self
         dim = len(rows[0])
         self._mean = [math.fsum(r[j] for r in rows) / len(rows) for j in range(dim)]
         self._std = []
@@ -133,6 +149,8 @@ class MetaLabeler:
     def predict_size(self, features: Sequence[float]) -> float:
         """Win probability in [0, 1] for one feature vector (0 → skip / smallest
         size, 1 → full conviction)."""
+        if self._sk is not None:
+            return float(self._sk.predict_proba([list(map(float, features))])[0][1])
         if not self._w:
             raise RuntimeError("model is not fitted")
         x = self._standardize(list(map(float, features)))
