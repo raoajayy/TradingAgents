@@ -70,6 +70,12 @@ ml = [
     "scikit-learn>=1.4",
     "hmmlearn>=0.3",
 ]
+# Optional deep-RL policy (track T3, ADR-0025): a torch MLP Q-network behind
+# the PolicyProtocol seam. The tabular QTablePolicy needs none of this:
+# pip install "tradingagents[rl-deep]".
+rl-deep = [
+    "torch>=2.2",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
