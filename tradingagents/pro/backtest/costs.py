@@ -57,13 +57,18 @@ class CommissionModel:
 
 @dataclass(frozen=True)
 class LiquidityModel:
-    max_participation: float = 0.1  # fraction of the fill bar's volume
+    # fraction of the fill bar's volume; None = volume-agnostic (FX/indices
+    # have no consolidated volume, so a volume cap would reject every fill —
+    # the broker's gross/notional caps still bound size there)
+    max_participation: float | None = 0.1
 
     def cap_quantity(self, desired: float, bar_volume: float) -> float:
-        if not 0 < self.max_participation <= 1:
-            raise ValueError("max_participation must be in (0, 1]")
         if desired < 0:
             raise ValueError("desired quantity must be >= 0")
+        if self.max_participation is None:
+            return desired
+        if not 0 < self.max_participation <= 1:
+            raise ValueError("max_participation must be in (0, 1]")
         return min(desired, self.max_participation * bar_volume)
 
 
@@ -81,8 +86,15 @@ _COST_PROFILES: dict[str, tuple[float, float, float, float]] = {
     "BITCOIN":        (1.0,  1.0,    8.0,    7.0),
     "ETHEREUM":       (1.5,  1.5,   10.0,    7.0),
     "SOLANA":         (3.0,  3.0,   15.0,    7.0),
+    # equities (liquid large-cap) + FX majors — tight spreads; near-zero
+    # commission. Still conservative assumptions, not measured venue data.
+    "EQUITY":         (1.0,  1.0,    5.0,    0.5),
+    "FX":             (0.5,  0.2,    2.0,    0.2),
 }
 _DEFAULT_PROFILE = (2.0, 1.0, 10.0, 7.0)  # unknown asset → a cautious crypto-ish default
+# assets with no consolidated bar volume → the liquidity cap is notional-based
+# (volume-agnostic), so a zero-volume FX/index bar doesn't reject every fill
+_NO_VOLUME_ASSETS = frozenset({"FX"})
 
 
 @dataclass(frozen=True)
@@ -140,8 +152,10 @@ def cost_profile_for(asset) -> tuple[SlippageModel, CommissionModel, LiquidityMo
     the (assumed, conservative) parameters."""
     name = getattr(asset, "name", str(asset)).upper()
     slip, spread, impact, commission = _COST_PROFILES.get(name, _DEFAULT_PROFILE)
+    liquidity = (LiquidityModel(max_participation=None) if name in _NO_VOLUME_ASSETS
+                 else LiquidityModel())
     return (
         SlippageModel(bps=slip, spread_bps=spread, impact_bps=impact),
         CommissionModel(rate_bps=commission),
-        LiquidityModel(),
+        liquidity,
     )

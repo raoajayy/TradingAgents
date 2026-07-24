@@ -20,6 +20,11 @@ class AssetClass(str, Enum):
     BITCOIN = "BTC"
     ETHEREUM = "ETH"
     SOLANA = "SOL"
+    # daily equities + FX (track T4). Unlike the 1:1 crypto/gold mapping, one
+    # class spans many tickers, so these have no DEFAULT_SYMBOLS entry — the
+    # per-run symbol is the instrument.
+    EQUITY = "EQ"
+    FX = "FX"
 
 
 # Default broker-style symbol per asset. The existing dataflows layer
