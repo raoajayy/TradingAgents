@@ -8,7 +8,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /build
 COPY . .
-RUN pip install --no-cache-dir .
+# include the backtest-report extra (matplotlib) so the institutional
+# HTML/PDF report + charts generate in prod (track T1); pandas is already a
+# core dep for the extended metrics.
+RUN pip install --no-cache-dir ".[backtest-report]"
 
 FROM python:3.12-slim
 
