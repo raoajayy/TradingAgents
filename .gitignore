@@ -238,3 +238,6 @@ frontend/*.tsbuildinfo
 live.yaml
 *.enc.env
 .firebase/
+
+# Strategy Lab cached OHLCV bars (large/volatile — fetched via scripts/pro_fetch_bars.py)
+data/bars_cache/
