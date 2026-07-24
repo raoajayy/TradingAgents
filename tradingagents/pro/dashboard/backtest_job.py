@@ -879,8 +879,9 @@ def run_job(state: Any, job: BacktestJob, params: dict) -> None:
                     initial_equity=resolved["initial_equity"],
                     trades=result.trades,
                     states_by_rec_id=engine.states_by_rec_id)
-            except Exception:  # noqa: BLE001 — report is best-effort
+            except Exception as exc:  # noqa: BLE001 — report is best-effort
                 logger.warning("report generation failed", exc_info=True)
+                view["report_error"] = f"{type(exc).__name__}: {exc}"
         finalize(view, "done")
     except BacktestCancelled:
         # cancelled during the fetch phase: nothing ran yet
