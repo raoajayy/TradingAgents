@@ -273,45 +273,22 @@ class BacktestEngine:
         )
 
     def _submit_intent(self, intent, i: int, ref_bar, equity: float) -> None:
-        """Translate one OrderIntent into a pending order and submit it. Sizes
-        risk_pct intents off the entry reference (limit/stop price, else the
-        decision bar's close) and the bracket stop, capped by the config's
-        max position — the same equity-aware sizing the pipeline uses."""
-        import uuid
+        """Translate one OrderIntent into a pending order and submit it, via the
+        shared order-construction helpers (order_build) so the single-symbol and
+        portfolio engines stay in lockstep. Sizes risk_pct intents off the entry
+        reference + bracket stop, capped by the config's max position."""
+        from tradingagents.pro.backtest.order_build import (
+            build_pending_order,
+            new_order_id,
+            size_intent,
+        )
 
-        from tradingagents.pro.analytics.risk import fixed_risk_position_size
-        from tradingagents.pro.backtest.broker import PendingOrder
-
-        bracket = intent.bracket
-        stop_loss = bracket.stop_loss if bracket else None
-        if intent.quantity is not None:
-            quantity = intent.quantity
-        elif intent.risk_pct is not None and stop_loss is not None:
-            entry_ref = intent.limit_price or intent.stop_price or ref_bar.close
-            quantity = fixed_risk_position_size(
-                equity, intent.risk_pct, entry=entry_ref, stop=stop_loss,
-                max_position_pct=self.config.risk.max_position_pct_equity,
-            ).quantity
-        else:
+        quantity = size_intent(intent, equity, ref_bar.close,
+                               self.config.risk.max_position_pct_equity)
+        if quantity is None:
             return  # risk_pct sizing needs a bracket stop; nothing to submit
-        from tradingagents.pro.backtest.execution import schedule_for
-        schedule = schedule_for(intent.algo, intent.algo_bars,
-                                intent.volume_profile, quantity)
-        self.broker.submit(PendingOrder(
-            id=f"{i}-{intent.tag or uuid.uuid4().hex[:8]}",
-            kind=intent.kind, side=intent.side, quantity=quantity,
-            limit_price=intent.limit_price, stop_price=intent.stop_price,
-            stop_loss=stop_loss,
-            take_profits=list(bracket.take_profits) if bracket else [],
-            trailing_mode=bracket.trailing if bracket else None,
-            trailing_mult=bracket.trailing_mult if bracket else None,
-            trailing_period=bracket.trailing_period if bracket else None,
-            reduce_only=intent.reduce_only,
-            oco_group=intent.oco_group,
-            display_qty=intent.display_qty,
-            schedule=schedule,
-            symbol=self.replay.symbol, submitted_index=i, tag=intent.tag,
-        ))
+        self.broker.submit(build_pending_order(
+            intent, new_order_id(intent, i), quantity, self.replay.symbol, i))
 
     def _fire_fill(self, strategy, order_id: str, bar) -> None:
         """Notify a native strategy that one of its orders filled (opened)."""

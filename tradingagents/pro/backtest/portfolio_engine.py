@@ -24,12 +24,11 @@ single-symbol. One stateless strategy instance may serve every symbol
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from tradingagents.contracts import ProConfig
-from tradingagents.pro.backtest.broker import ClosedTrade, PendingOrder, SimBroker
+from tradingagents.pro.backtest.broker import ClosedTrade, SimBroker
 from tradingagents.pro.backtest.metrics import PerformanceReport, performance_report
 from tradingagents.pro.backtest.portfolio import PortfolioReplay
 
@@ -241,25 +240,24 @@ class PortfolioEngine:
 
     def _submit_intent(self, symbol: str, intent, i: int, ref_bar,
                        equity: float) -> str | None:
-        """Size + submit one OrderIntent as a pending order for ``symbol``.
-        Returns a rejection reason string, or None on submit."""
-        from tradingagents.pro.analytics.risk import fixed_risk_position_size
+        """Size + submit one OrderIntent as a pending order for ``symbol``, via
+        the shared order-construction helpers (order_build). Layers a per-symbol
+        allocator budget cap on top; returns a rejection reason, or None on
+        submit."""
+        from tradingagents.pro.backtest.order_build import (
+            build_pending_order,
+            new_order_id,
+            size_intent,
+        )
 
-        bracket = intent.bracket
-        stop_loss = bracket.stop_loss if bracket else None
-        entry_ref = intent.limit_price or intent.stop_price or ref_bar.close
-        if intent.quantity is not None:
-            quantity = intent.quantity
-        elif intent.risk_pct is not None and stop_loss is not None:
-            quantity = fixed_risk_position_size(
-                equity, intent.risk_pct, entry=entry_ref, stop=stop_loss,
-                max_position_pct=self.config.risk.max_position_pct_equity,
-            ).quantity
-        else:
+        quantity = size_intent(intent, equity, ref_bar.close,
+                               self.config.risk.max_position_pct_equity)
+        if quantity is None:
             return "no_sizing"  # risk_pct sizing needs a bracket stop
         # per-symbol capital budget (portfolio heat): trim the order so this
         # symbol's gross notional stays within its allocation; 0 budget vetoes.
         # reduce_only orders only shrink exposure, so the budget never applies.
+        entry_ref = intent.limit_price or intent.stop_price or ref_bar.close
         if self._allocator is not None and entry_ref > 0 and not intent.reduce_only:
             mark = ref_bar.close
             existing = sum(p.quantity * mark for p in self.broker.positions.values()
@@ -268,24 +266,8 @@ class PortfolioEngine:
             quantity = min(quantity, budget / entry_ref)
             if quantity <= 1e-9:
                 return "allocation_cap"
-        from tradingagents.pro.backtest.execution import schedule_for
-        schedule = schedule_for(intent.algo, intent.algo_bars,
-                                intent.volume_profile, quantity)
-        self.broker.submit(PendingOrder(
-            id=f"{symbol}-{i}-{intent.tag or uuid.uuid4().hex[:8]}",
-            kind=intent.kind, side=intent.side, quantity=quantity,
-            limit_price=intent.limit_price, stop_price=intent.stop_price,
-            stop_loss=stop_loss,
-            take_profits=list(bracket.take_profits) if bracket else [],
-            trailing_mode=bracket.trailing if bracket else None,
-            trailing_mult=bracket.trailing_mult if bracket else None,
-            trailing_period=bracket.trailing_period if bracket else None,
-            reduce_only=intent.reduce_only,
-            oco_group=intent.oco_group,
-            display_qty=intent.display_qty,
-            schedule=schedule,
-            symbol=symbol, submitted_index=i, tag=intent.tag,
-        ))
+        self.broker.submit(build_pending_order(
+            intent, new_order_id(intent, i, symbol), quantity, symbol, i))
         return None
 
     def _fire_fill(self, strategy, order_id: str, bar) -> None:
