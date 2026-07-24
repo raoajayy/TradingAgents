@@ -827,6 +827,29 @@ def test_portfolio_endpoint_validation(tmp_path):
                              "strategy_id": "rules_v1"}).status_code == 422
 
 
+def test_portfolio_correlation_cap_wires_and_runs(tmp_path):
+    # opt-in max_correlation constructs the CorrelationGuard and the run
+    # completes end-to-end (F4 — previously the guard was unreachable)
+    state = _state(_trend_bars(200), tmp_path, timeframes=(Timeframe.D1,))
+    client = TestClient(create_app(state))
+    resp = client.post("/api/backtest/portfolio",
+                       json={"symbols": ["XAUUSD", "BTC-USD"], "timeframe": "1d",
+                             "duration": "30D", "strategy_id": "trend_following_v1",
+                             "max_correlation": 0.9})
+    assert resp.status_code == 202, resp.text
+    for _ in range(400):
+        status = client.get("/api/backtest/job").json()
+        if status.get("status") in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status["status"] == "done", status.get("error")
+    # out-of-range correlation is rejected by the request model
+    assert client.post("/api/backtest/portfolio",
+                       json={"symbols": ["BTC-USD", "XAUUSD"], "timeframe": "1d",
+                             "duration": "30D", "max_correlation": 1.5}
+                       ).status_code == 422
+
+
 # --- strategy bake-off endpoint ---------------------------------------------
 
 

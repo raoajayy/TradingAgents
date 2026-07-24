@@ -1215,6 +1215,10 @@ class PortfolioRunRequest(BaseModel):
     initial_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=1.0, gt=0, le=5)
     max_position_pct: float = Field(default=33.0, gt=0, le=100)
+    # opt-in correlation-exposure cap (best-practice #4): veto a new symbol's
+    # entries when it is too correlated with one already open. None = off
+    # (unchanged behavior — auto-on would veto a crypto basket).
+    max_correlation: float | None = Field(default=None, gt=0, le=1)
     confirm_cost: bool = False
 
 
@@ -1265,6 +1269,7 @@ def resolve_portfolio_request(marketdata: MarketDataService, params: dict) -> di
         "initial_equity": float(params.get("initial_equity", 100_000.0)),
         "risk_per_trade_pct": float(params.get("risk_per_trade_pct", 1.0)),
         "max_position_pct": float(params.get("max_position_pct", 33.0)),
+        "max_correlation": params.get("max_correlation"),
     }
 
 
@@ -1341,12 +1346,20 @@ def run_portfolio_job(state: Any, job: BacktestJob, params: dict) -> None:
                             "pct": round(100.0 * done / max(1, total), 1)}
             publish("backtest_progress", job.progress)
 
+        # opt-in correlation-exposure cap (best-practice #4); off unless the
+        # request set max_correlation
+        corr_guard = None
+        if resolved.get("max_correlation") is not None:
+            from tradingagents.pro.backtest import CorrelationGuard
+            corr_guard = CorrelationGuard(
+                max_correlation=float(resolved["max_correlation"]))
         engine = PortfolioEngine(
             pr, strategy, config, broker=broker, min_history=MIN_HISTORY,
             periods_per_year=periods_per_year(tf, primary_asset),
             on_progress=on_progress,
             # equal-weight budget so no single symbol consumes the book
-            allocator=EqualWeightAllocator(n_symbols=len(symbols)))
+            allocator=EqualWeightAllocator(n_symbols=len(symbols)),
+            corr_guard=corr_guard)
         result = engine.run()
 
         mc = (monte_carlo_summary([t.pnl for t in result.trades],
