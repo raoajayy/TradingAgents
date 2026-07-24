@@ -129,6 +129,10 @@ class BacktestRunRequest(BaseModel):
     # report.pdf). Off by default — it's heavy, so the hot path never pays for
     # it and the equivalence suite is untouched.
     emit_report: bool = False
+    # opt-in running risk circuit breaker on the native path (best-practice #7):
+    # halt new entries after a daily-loss or consecutive-loss breach. Off by
+    # default; inert for pipeline strategies (they use the pipeline risk_gate).
+    risk_breaker: bool = False
 
 
 def bars_for_duration(duration: str, timeframe: Timeframe,
@@ -549,6 +553,7 @@ def resolve_request(marketdata: MarketDataService, params: dict) -> dict:
         "risk_per_trade_pct": float(params.get("risk_per_trade_pct", 1.0)),
         "max_position_pct": float(params.get("max_position_pct", 33.0)),
         "emit_report": bool(params.get("emit_report", False)),
+        "risk_breaker": bool(params.get("risk_breaker", False)),
     }
 
 
@@ -735,6 +740,7 @@ def run_job(state: Any, job: BacktestJob, params: dict) -> None:
             decide_every=1,
             periods_per_year=periods_per_year(tf, resolved["asset"]),
             htf_timeframes=htf_timeframes,
+            risk_breaker=resolved["risk_breaker"],
             on_progress=on_progress,
             on_trade=on_trade,
             on_checkpoint=on_checkpoint,

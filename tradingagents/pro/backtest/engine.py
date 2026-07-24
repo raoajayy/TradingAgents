@@ -57,6 +57,7 @@ class BacktestEngine:
         strategy=None,
         htf_timeframes=None,
         funding=None,
+        risk_breaker=False,
         **pipeline_kwargs,
     ):
         if min_history < 3:
@@ -67,6 +68,15 @@ class BacktestEngine:
         # optional perp funding (track T5): accrued on open positions each bar.
         # None → no funding (spot; existing behavior).
         self._funding = funding
+        # opt-in running risk circuit breaker on the NATIVE path (research
+        # best-practice #7: hard risk gates). When on, new entries are halted
+        # for the rest of a day once the day's realized+unrealized loss breaches
+        # RiskLimits.max_daily_loss_pct, or after
+        # circuit_breaker_consecutive_losses losing trades in a row. Off by
+        # default → existing native runs + the equivalence suite are unchanged.
+        self._risk_breaker = risk_breaker
+        self._day = None
+        self._day_start_equity = 0.0
         # optional higher-timeframe context (track T4): completed HTF snapshots
         # aggregated from this replay's bars, exposed look-ahead-safe via
         # StrategyContext.htf. None → no HTF (existing single-TF behavior).
@@ -136,8 +146,14 @@ class BacktestEngine:
                 equity = self.broker.equity(mark_price=bar.close)
                 decisions += 1
                 if native:
-                    for intent in strategy.on_bar(self._strategy_context(i)):
-                        self._submit_intent(intent, i, bar, equity)
+                    intents = strategy.on_bar(self._strategy_context(i))
+                    breaker = (self._risk_breaker_reason(bar, equity)
+                               if self._risk_breaker else None)
+                    if breaker is not None and intents:
+                        rejections[breaker] = rejections.get(breaker, 0) + len(intents)
+                    else:
+                        for intent in intents:
+                            self._submit_intent(intent, i, bar, equity)
                 else:
                     if strategy is not None:
                         state = strategy.decide(snapshot, equity)
@@ -181,6 +197,26 @@ class BacktestEngine:
         )
 
     # --- internals -----------------------------------------------------------
+
+    def _risk_breaker_reason(self, bar, equity: float) -> str | None:
+        """Running circuit breaker for the native path (opt-in). Returns a
+        rejection reason when new entries should be halted this bar, else None.
+        Day-start equity is captured on the first bar of each calendar day, so
+        the daily-loss check is against the day's opening equity — look-ahead-
+        safe (uses only realized/marked state up to this bar)."""
+        day = bar.start.date()
+        if day != self._day:
+            self._day, self._day_start_equity = day, equity
+        risk = self.config.risk
+        if self._day_start_equity > 0:
+            drawdown = 1.0 - equity / self._day_start_equity
+            if drawdown >= risk.max_daily_loss_pct / 100.0:
+                return "daily_loss"
+        n = risk.circuit_breaker_consecutive_losses
+        recent = self.broker.closed[-n:]
+        if len(recent) >= n and all(t.pnl < 0 for t in recent):
+            return "circuit_breaker"
+        return None
 
     def _apply_decision(self, state: dict, i: int) -> str | None:
         """Open a position from an accepted directional recommendation.
