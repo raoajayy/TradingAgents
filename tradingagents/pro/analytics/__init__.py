@@ -16,6 +16,7 @@ from tradingagents.pro.analytics.importance import (
     negative_mse_scorer,
     permutation_importance,
 )
+from tradingagents.pro.analytics.regime_ml import MLRegimeModel
 from tradingagents.pro.analytics.risk import (
     atr_stop_loss,
     atr_take_profits,
@@ -36,6 +37,7 @@ __all__ = [
     "feature_importance_report",
     "negative_mse_scorer",
     "permutation_importance",
+    "MLRegimeModel",
     "atr_stop_loss",
     "atr_take_profits",
     "take_profits_from_risk",
