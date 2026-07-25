@@ -140,14 +140,15 @@ Combining the diversified daily-crypto preset winners (trend / breakout /
 mean-reversion across ETH & SOL) into an equal-weight portfolio at their
 walk-forward params (`02_portfolio.md`, `scripts/pro_portfolio_lab.py`):
 
-- **Blended annualized Sharpe 2.60**, Sortino 6.0, max drawdown 0.66%, avg
-  pairwise correlation **0.19** — genuine diversification (SOL mean-reversion is
-  *negatively* correlated with the ETH trend strategies).
-- After the Phase-6 finer-search upgrades, two `volatility_breakout_v1`
-  components rose to Sharpe ~2.8, so the equal-weight blend (2.60) now sits just
-  *below* the best single (2.82) — equal-weighting dilutes the two strong ones.
-  A risk-/Sharpe-weighted allocation would beat equal-weight, but the weights
-  must themselves be validated OOS to avoid allocation-overfitting (next lever).
+- **Allocation is OOS-validated** (weights fit on the first 60%, measured on the
+  held-out last 40%): **inverse-vol / risk-parity wins both in-sample (Sharpe
+  3.16) and out-of-sample (2.41)**, beating equal-weight (2.60 / 1.93). Crucially
+  **sharpe-tilt is *worse* out-of-sample than equal (1.79 < 1.93)** despite fitting
+  to returns — a live demonstration that return-tilting overfits, which is why
+  only the return-agnostic inverse-vol scheme is trusted.
+- The chosen **inverse-vol blend: Sharpe 3.16**, Sortino 7.9, max drawdown 0.30%,
+  avg pairwise correlation 0.19 — and it now beats the best single component
+  (2.82) by +12%, so diversification is a genuine free lunch again.
 - **Vol-target deployment:** base sizing realizes only ~1.7% annual vol (risk
   budget barely used). Sharpe is scale-invariant, so sizing to a vol target
   scales return AND drawdown by the leverage factor — e.g. **~+24%/yr at ~4.6%

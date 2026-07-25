@@ -104,10 +104,50 @@ def main() -> int:
         print(f"ran {key}: {len(streams[key])} return-bars", flush=True)
 
     # union of all timestamps; a component contributes 0 on bars it has no
-    # position/return for (flat), so the equal-weight blend is well-defined
+    # position/return for (flat), so a weighted blend is well-defined
     all_ts = sorted({t for s in streams.values() for t in s})
-    weight = 1.0 / len(streams)
-    blended = [sum(streams[k].get(t, 0.0) for k in streams) * weight for t in all_ts]
+    aligned = {k: [s.get(t, 0.0) for t in all_ts] for k, s in streams.items()}
+    keys = list(aligned)
+
+    def _weights(scheme: str, series_by_key: dict[str, list[float]]) -> dict[str, float]:
+        """equal (1/N), inverse-vol (risk parity — return-agnostic, robust), or
+        sharpe-tilt (weight ∝ max(Sharpe,0) — peeks at returns, overfitting-prone
+        so it must earn its keep out-of-sample)."""
+        if scheme == "equal":
+            return {k: 1.0 / len(series_by_key) for k in series_by_key}
+        if scheme == "inverse-vol":
+            inv = {k: 1.0 / (statistics.pstdev(v) or 1e-9)
+                   for k, v in series_by_key.items()}
+            tot = sum(inv.values())
+            return {k: inv[k] / tot for k in inv}
+        if scheme == "sharpe-tilt":
+            sh = {k: (statistics.mean(v) / statistics.pstdev(v)
+                      if len(v) > 1 and statistics.pstdev(v) > 0 else 0.0)
+                  for k, v in series_by_key.items()}
+            pos = {k: max(sh[k], 0.0) for k in sh}
+            tot = sum(pos.values())
+            return ({k: pos[k] / tot for k in pos} if tot > 0
+                    else {k: 1.0 / len(pos) for k in pos})
+        raise ValueError(scheme)
+
+    def _blend(weights: dict[str, float], ts_list: list) -> list[float]:
+        return [sum(weights[k] * streams[k].get(t, 0.0) for k in weights)
+                for t in ts_list]
+
+    # OOS-validate the allocation: weights fit on the first 60% of history,
+    # measured on the held-out last 40% — a tilt is only trusted if it holds up.
+    cut = int(len(all_ts) * 0.6)
+    train_ts, test_ts = all_ts[:cut], all_ts[cut:]
+    train_series = {k: [streams[k].get(t, 0.0) for t in train_ts] for k in keys}
+    alloc_rows = []  # (scheme, full_sample_sharpe, oos_test_sharpe, full_weights)
+    for scheme in ("equal", "inverse-vol", "sharpe-tilt"):
+        w_full = _weights(scheme, aligned)
+        w_train = _weights(scheme, train_series)
+        alloc_rows.append((
+            scheme, sharpe_ratio(_blend(w_full, all_ts), ppy),
+            sharpe_ratio(_blend(w_train, test_ts), ppy), w_full))
+    chosen_scheme, _, _, chosen_w = max(alloc_rows, key=lambda x: x[2])  # best OOS
+    blended = _blend(chosen_w, all_ts)
 
     # per-component annualized Sharpe on its own active bars
     comp_rows = []
@@ -122,10 +162,6 @@ def main() -> int:
     blend_dd = max_drawdown(blend_curve)
     blend_total = blend_curve[-1] / blend_curve[0] - 1.0
 
-    # pairwise correlation of the aligned (0-filled) component series
-    aligned = {k: [s.get(t, 0.0) for t in all_ts] for k, s in streams.items()}
-    keys = list(aligned)
-
     def corr(a, b):
         if len(a) < 2 or statistics.pstdev(a) == 0 or statistics.pstdev(b) == 0:
             return 0.0
@@ -136,14 +172,28 @@ def main() -> int:
     lines: list[str] = []
     A = lines.append
     A("# Strategy Lab — Portfolio Combination (Phase 5)\n")
-    A(f"_Generated {datetime.now(timezone.utc).isoformat()} · equal-weight blend "
-      f"of {len(streams)} diversified daily-crypto preset strategies · params "
-      f"fixed from the walk-forward presets (no new fitting) · annualization "
-      f"{ppy}/yr._\n")
+    A(f"_Generated {datetime.now(timezone.utc).isoformat()} · blend of "
+      f"{len(streams)} diversified daily-crypto preset strategies · params fixed "
+      f"from the walk-forward presets (no new fitting) · annualization {ppy}/yr._\n")
+
+    A("## Allocation schemes (OOS-validated)\n")
+    A("Weights fit on the first 60% of history, measured on the held-out last "
+      "40%. The **best out-of-sample** scheme is chosen for the headline — a "
+      "return-tilt only wins if it generalizes, else risk-parity/equal wins.\n")
+    A("| Scheme | Full-sample Sharpe | OOS (held-out) Sharpe |")
+    A("| --- | --- | --- |")
+    for scheme, full_sh, oos_sh, _w in alloc_rows:
+        mark = " ✅ chosen" if scheme == chosen_scheme else ""
+        A(f"| {scheme}{mark} | {full_sh:.3f} | {oos_sh:.3f} |")
+    A("")
+    A(f"Chosen allocation (**{chosen_scheme}**) weights: "
+      + ", ".join(f"{k.split('@')[0]}@{k.split('@')[1]} {chosen_w[k]:.0%}"
+                  for k in keys) + "\n")
+
     A("## Blended portfolio vs best single component\n")
     A("| | Ann. Sharpe | Sortino | Max DD | Total return |")
     A("| --- | --- | --- | --- | --- |")
-    A(f"| **Equal-weight portfolio** | **{blend_sharpe:.3f}** | {blend_sortino:.3f} "
+    A(f"| **Portfolio ({chosen_scheme})** | **{blend_sharpe:.3f}** | {blend_sortino:.3f} "
       f"| {blend_dd:.2%} | {blend_total:+.2%} |")
     A(f"| Best single ({best_single[0]}) | {best_single[1]:.3f} | — "
       f"| {best_single[2]:.2%} | — |")
