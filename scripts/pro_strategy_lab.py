@@ -67,37 +67,35 @@ def _cat(name: str, *values):
 
 
 LAB_GRIDS: dict[str, ParamSpace] = {
-    "trend_following_v1": ParamSpace(
-        _cat("donchian_period", 20, 40, 60),
+    "trend_following_v1": ParamSpace(          # 8
+        _cat("donchian_period", 20, 50),
         _cat("stop_atr_mult", 2.0, 3.0),
-        _cat("trail_pct", 0.03, 0.05, 0.08)),
-    "trend_following_v2": ParamSpace(
+        _cat("trail_pct", 0.05, 0.08)),
+    "trend_following_v2": ParamSpace(          # 8
         _cat("donchian_period", 20, 40),
-        _cat("stop_atr_mult", 2.0, 3.0),
         _cat("max_adds", 0, 2),
         _cat("add_atr_mult", 1.0, 2.0)),
-    "mean_reversion_v1": ParamSpace(
+    "mean_reversion_v1": ParamSpace(           # 8
         _cat("lookback", 20, 30),
         _cat("entry_std", 2.0, 2.5),
         _cat("stop_atr_mult", 2.0, 3.0)),
-    "momentum_v1": ParamSpace(
+    "momentum_v1": ParamSpace(                 # 9
         _cat("roc_period", 10, 14, 20),
-        _cat("roc_threshold", 3.0, 5.0, 8.0),
-        _cat("target_atr_mult", 3.0, 4.0)),
-    "htf_momentum_v1": ParamSpace(
+        _cat("roc_threshold", 3.0, 5.0, 8.0)),
+    "htf_momentum_v1": ParamSpace(             # 9
         _cat("roc_period", 10, 14, 20),
         _cat("roc_threshold", 3.0, 4.0, 6.0)),
-    "regime_momentum_v1": ParamSpace(
-        _cat("roc_period", 10, 14, 20),
+    "regime_momentum_v1": ParamSpace(          # 8
+        _cat("roc_period", 10, 20),
         _cat("roc_threshold", 3.0, 5.0),
         _cat("regime_gate", "on", "off")),
-    "ma_crossover_v1": ParamSpace(
-        _cat("fast_period", 8, 10, 20),
+    "ma_crossover_v1": ParamSpace(             # 6
+        _cat("fast_period", 8, 20),
         _cat("slow_period", 30, 50, 100)),
-    "volatility_breakout_v1": ParamSpace(
+    "volatility_breakout_v1": ParamSpace(      # 6
         _cat("lookback", 20, 30),
         _cat("squeeze_pct", 0.03, 0.05, 0.08)),
-    "rules_v1": ParamSpace(
+    "rules_v1": ParamSpace(                    # 9
         _cat("tp_ladder", "0.5/3.5", "1.0/3.0", "1.5/3.0"),
         _cat("min_risk_reward", 1.5, 1.8, 2.2)),
 }
@@ -352,7 +350,7 @@ def self_test() -> int:
           f"oos_sharpe={_fmt(r.oos_sharpe, '.3f')} dsr={_fmt(r.deflated_sharpe, '.3f')} "
           f"pbo={_fmt(r.pbo, '.2f')} verdict={r.verdict!r}")
     assert r.status == "ok", r.status
-    assert r.windows >= 2 and r.n_trials == 18  # 3×2×3 grid
+    assert r.windows >= 2 and r.n_trials == 8  # 2×2×2 grid
     assert r.most_common_params, "walk-forward should choose params"
     print("self-test OK")
     return 0
@@ -367,11 +365,41 @@ def main() -> int:
     ap.add_argument("--timeframes", nargs="*",
                     default=["5m", "15m", "30m", "1h", "4h", "1d", "1w"])
     ap.add_argument("--objective", default="sharpe")
-    ap.add_argument("--max-workers", type=int, default=4)
+    ap.add_argument("--max-workers", type=int, default=1,
+                    help="guarded-run parallelism; 1 (default) avoids the "
+                         "ProcessPool worker-deadlock seen on long sweeps and "
+                         "is barely slower (walk-forward dominates, is serial)")
+    ap.add_argument("--max-bars-per-cell", type=int, default=6000,
+                    help="use only the most-recent N bars per cell (bounds "
+                         "walk-forward compute while keeping ~8 OOS folds)")
+    ap.add_argument("--out-dir", default=None,
+                    help="write reports to this dir (used for per-symbol shards "
+                         "run in parallel, then merged)")
+    ap.add_argument("--merge", action="store_true",
+                    help="merge docs/backtests/strategy_lab/shard_*/results.json "
+                         "into one combined report set")
     args = ap.parse_args()
+
+    global OUT_DIR
+    if args.out_dir:
+        OUT_DIR = Path(args.out_dir)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.self_test:
         return self_test()
+
+    if args.merge:
+        import glob
+        cells: list[dict] = []
+        for f in sorted(glob.glob(str(OUT_DIR / "shard_*" / "results.json"))):
+            cells += json.loads(Path(f).read_text(encoding="utf-8"))["cells"]
+        results = [CellResult(**c) for c in cells]
+        results.sort(key=lambda r: (r.strategy_id, r.symbol, r.timeframe))
+        write_reports(results, args.objective)
+        n_pass = sum(1 for r in results if r.passes_guard)
+        print(f"merged {len(results)} cells from shards · {n_pass} pass · "
+              f"report → {OUT_DIR / 'REPORT.md'}")
+        return 0
 
     tfs = [Timeframe(t) for t in args.timeframes]
     results: list[CellResult] = []
@@ -380,6 +408,8 @@ def main() -> int:
             bars = load_cached_bars(symbol, tf)
             if not bars:
                 continue  # no cache for this cell (probe didn't reach it)
+            if len(bars) > args.max_bars_per_cell:
+                bars = bars[-args.max_bars_per_cell:]  # most-recent window
             for sid in args.strategies:
                 try:
                     r = evaluate_cell(sid, symbol, tf, bars, args.objective,
@@ -393,12 +423,15 @@ def main() -> int:
                       f"dsr={_fmt(r.deflated_sharpe, '.3f')} pbo={_fmt(r.pbo, '.2f')} "
                       f"[{r.status}]", flush=True)
                 results.append(r)
+            # checkpoint after every cell so a stall never loses progress and
+            # partial results/reports are always inspectable
+            if results:
+                write_reports(results, args.objective)
 
     if results:
         write_reports(results, args.objective)
         n_pass = sum(1 for r in results if r.passes_guard)
-        print(f"\n{n_pass}/{len(results)} cells pass · report → "
-              f"{(OUT_DIR / 'REPORT.md').relative_to(REPO_ROOT)}")
+        print(f"\n{n_pass}/{len(results)} cells pass · report → {OUT_DIR / 'REPORT.md'}")
     else:
         print("no cached bars found — run scripts/pro_fetch_bars.py first")
     return 0

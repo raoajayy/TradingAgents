@@ -66,6 +66,12 @@ from tradingagents.pro.backtest.portfolio_engine import (
     PortfolioBacktestResult,
     PortfolioEngine,
 )
+from tradingagents.pro.backtest.presets import (
+    Preset,
+    build_preset_strategy,
+    list_presets,
+    preset_params,
+)
 from tradingagents.pro.backtest.registry import (
     StrategyInfo,
     build_strategy,
@@ -139,6 +145,10 @@ __all__ = [
     "PortfolioBacktestResult",
     "PortfolioEngine",
     "PortfolioReplay",
+    "Preset",
+    "build_preset_strategy",
+    "list_presets",
+    "preset_params",
     "annualized_return",
     "equity_returns",
     "mar_ratio",

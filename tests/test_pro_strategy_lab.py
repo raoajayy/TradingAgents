@@ -104,7 +104,7 @@ class TestEvaluateCell:
                               _synthetic_bars(700), objective="sharpe", max_workers=1)
         assert r.status == "ok"
         assert r.windows >= 2
-        assert r.n_trials == 18                     # 3×2×3 grid
+        assert r.n_trials == 8                      # 2×2×2 grid
         assert r.oos_sharpe is not None
         assert r.deflated_sharpe is not None and r.pbo is not None
         assert r.most_common_params                 # walk-forward chose params
