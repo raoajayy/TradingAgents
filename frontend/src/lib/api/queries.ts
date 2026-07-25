@@ -16,6 +16,7 @@ import {
   BacktestJobSchema,
   BacktestRunSchema,
   BacktestRunsSchema,
+  BacktestPresetsSchema,
   BacktestStrategiesSchema,
   BacktestTradesArtifactSchema,
   OptimizationSchema,
@@ -70,6 +71,7 @@ export const qk = {
   backtestArtifact: (id: string, name: string) =>
     ["backtest", "runs", id, "artifacts", name] as const,
   backtestStrategies: ["backtest", "strategies"] as const,
+  backtestPresets: ["backtest", "presets"] as const,
   backtestOptimizeJob: ["backtest", "optimize", "job"] as const,
   backtestOptimizations: ["backtest", "optimizations"] as const,
   backtestOptimization: (id: string) =>
@@ -296,6 +298,15 @@ export const useBacktestStrategies = () =>
     staleTime: Infinity,
   });
 
+/** Strategy-Lab tuned presets (guard-validated params per strategy/symbol/
+ * timeframe). Effectively static (changes only on deploy). */
+export const useBacktestPresets = () =>
+  useQuery({
+    queryKey: qk.backtestPresets,
+    queryFn: fetchParsed("/api/backtest/presets", BacktestPresetsSchema),
+    staleTime: Infinity,
+  });
+
 export const useBacktestRun = (id: string | null) =>
   useQuery({
     queryKey: qk.backtestRun(id ?? "none"),
@@ -421,6 +432,7 @@ export async function runBacktest(
     max_position_pct?: number;
     strategy_id?: string;
     strategy_params?: Record<string, string | number>;
+    use_preset?: boolean;
   },
 ): Promise<{ job_id: string }> {
   try {

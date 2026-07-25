@@ -472,6 +472,24 @@ export type BacktestStrategy = z.infer<typeof BacktestStrategySchema>;
 export const BacktestStrategiesSchema = z.object({
   strategies: z.array(BacktestStrategySchema),
 });
+
+/** Strategy-Lab tuned presets (GET /api/backtest/presets) — guard-validated
+ * params per (strategy, symbol, timeframe). Drives the "tuned preset available"
+ * indicator + opt-in toggle in the run controls. */
+export const BacktestPresetSchema = z.object({
+  strategy_id: z.string(),
+  symbol: z.string(),
+  timeframe: z.string(),
+  params: z.record(z.union([z.string(), z.number()])).default({}),
+  oos_sharpe: z.number().nullable().optional(),
+  deflated_sharpe: z.number().nullable().optional(),
+  pbo: z.number().nullable().optional(),
+  n_trials: z.number().nullable().optional(),
+});
+export type BacktestPreset = z.infer<typeof BacktestPresetSchema>;
+export const BacktestPresetsSchema = z.object({
+  presets: z.array(BacktestPresetSchema).default([]),
+});
 export type BacktestRunView = z.infer<typeof BacktestRunViewSchema>;
 
 /** equity artifact rows: [iso_time, equity] — every decision, nothing dropped */

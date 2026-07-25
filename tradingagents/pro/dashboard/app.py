@@ -1320,6 +1320,15 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         })
         return {"strategies": out}
 
+    @app.get("/api/backtest/presets")
+    def backtest_presets() -> dict:
+        """Strategy-Lab tuned presets (guard-validated params per
+        strategy/symbol/timeframe), so the UI can flag when a tuned preset is
+        available for the current selection and offer to apply it."""
+        from tradingagents.pro.backtest import list_presets
+
+        return {"presets": list_presets()}
+
     @app.get("/api/backtest/runs")
     def backtest_runs() -> dict:
         return {"runs": state.backtest_runs.list()}

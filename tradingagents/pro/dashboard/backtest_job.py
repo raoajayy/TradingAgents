@@ -125,6 +125,10 @@ class BacktestRunRequest(BaseModel):
     # name/value) and recorded for reproducibility.
     strategy_id: str | None = Field(default=None, max_length=32)
     strategy_params: dict = Field(default_factory=dict)
+    # opt-in Strategy-Lab tuned preset for this (strategy, symbol, timeframe):
+    # applies the walk-forward/guard-validated params (presets.py) UNDER any
+    # explicit strategy_params. Off by default; a no-op when no preset exists.
+    use_preset: bool = False
     # opt-in institutional report (PNG charts + self-contained report.html +
     # report.pdf). Off by default — it's heavy, so the hot path never pays for
     # it and the equivalence suite is untouched.
@@ -525,7 +529,15 @@ def resolve_request(marketdata: MarketDataService, params: dict) -> dict:
     # (pipeline_llm shares the rules_v1 knobs); a bad name/value → 422
     space = (RULES_V1_PARAMS if strategy_id == "pipeline_llm"
              else strategy_param_space(strategy_id))
-    strategy_params = space.resolve(params.get("strategy_params") or {})
+    # opt-in tuned preset (Strategy Lab): layer the guard-validated params for
+    # this (strategy, symbol, timeframe) UNDER any explicit strategy_params, so
+    # a caller override always wins. No-op when the cell has no preset.
+    preset = None
+    if params.get("use_preset"):
+        from tradingagents.pro.backtest.presets import preset_params
+        preset = preset_params(strategy_id, symbol, tf.value)
+    merged = {**(preset or {}), **(params.get("strategy_params") or {})}
+    strategy_params = space.resolve(merged)
     use_llm = strategy_id == "pipeline_llm"
 
     bars = bars_for_duration(duration, tf, asset)
@@ -549,6 +561,7 @@ def resolve_request(marketdata: MarketDataService, params: dict) -> dict:
         "use_llm": use_llm,
         "strategy_id": strategy_id,
         "strategy_params": strategy_params,
+        "preset_applied": preset is not None,
         "initial_equity": float(params.get("initial_equity", 100_000.0)),
         "risk_per_trade_pct": float(params.get("risk_per_trade_pct", 1.0)),
         "max_position_pct": float(params.get("max_position_pct", 33.0)),

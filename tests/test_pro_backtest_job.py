@@ -242,6 +242,29 @@ def test_resolve_rejects_unknown_strategy_and_bad_params():
             market, {**base, "strategy_params": {"typo": 1}})
 
 
+def test_resolve_applies_tuned_preset():
+    market = _StubMarket(make_bars(n=80), timeframes=tuple(Timeframe))
+    base = {"symbol": "ETH-USD", "timeframe": "1d", "duration": "7D",
+            "strategy_id": "volatility_breakout_v1"}
+    # off by default → a-priori defaults (lookback 20), no preset applied
+    r = btjob.resolve_request(market, base)
+    assert r["preset_applied"] is False
+    assert r["strategy_params"]["lookback"] == 20
+    # use_preset=True → the tuned preset params are applied (lookback 34)
+    r = btjob.resolve_request(market, {**base, "use_preset": True})
+    assert r["preset_applied"] is True
+    assert r["strategy_params"]["lookback"] == 34
+    # an explicit strategy_param overrides the preset (caller wins)
+    r = btjob.resolve_request(market, {**base, "use_preset": True,
+                                       "strategy_params": {"lookback": 25}})
+    assert r["preset_applied"] is True and r["strategy_params"]["lookback"] == 25
+    # a (strategy, symbol, timeframe) with no preset → no-op
+    r = btjob.resolve_request(market, {"symbol": "BTC-USD", "timeframe": "5m",
+                                       "duration": "7D", "use_preset": True,
+                                       "strategy_id": "momentum_v1"})
+    assert r["preset_applied"] is False
+
+
 # --- streaming worker (deterministic, offline) ------------------------------
 
 

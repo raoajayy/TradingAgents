@@ -26,6 +26,7 @@ import {
   runBacktest,
   useBacktestEquityArtifact,
   useBacktestJob,
+  useBacktestPresets,
   useBacktestRun,
   useBacktestRuns,
   useBacktestStrategies,
@@ -33,6 +34,7 @@ import {
   useSymbols,
 } from "@/lib/api/queries";
 import type {
+  BacktestPreset,
   BacktestRunView,
   BacktestStrategy,
   BacktestStrategyParam,
@@ -119,6 +121,20 @@ export default function BacktestPage() {
   // no leverage) — the caps mirror the backend request-model bounds
   const [riskPct, setRiskPct] = useState(1.0);
   const [maxPositionPct, setMaxPositionPct] = useState(33);
+  // Strategy-Lab tuned preset for the current (strategy, symbol, timeframe),
+  // if one exists; opt-in, off by default.
+  const presetsQuery = useBacktestPresets();
+  const [usePreset, setUsePreset] = useState(false);
+  const presetForSelection = useMemo(
+    () =>
+      (presetsQuery.data?.presets ?? []).find(
+        (p) =>
+          p.strategy_id === strategyId &&
+          p.symbol === symbol &&
+          p.timeframe === timeframe,
+      ) ?? null,
+    [presetsQuery.data, strategyId, symbol, timeframe],
+  );
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cost, setCost] = useState<BacktestCostConfirmation["estimate"] | null>(null);
@@ -202,6 +218,7 @@ export default function BacktestPage() {
         duration,
         strategy_id: strategyId,
         strategy_params: strategyParams,
+        use_preset: usePreset && presetForSelection != null,
         confirm_cost: confirmCost,
         initial_equity: initialEquity,
         risk_per_trade_pct: riskPct,
@@ -291,6 +308,9 @@ export default function BacktestPage() {
         strategyParams={strategyParams}
         setStrategyParams={setStrategyParams}
         useLlm={useLlm}
+        preset={presetForSelection}
+        usePreset={usePreset}
+        setUsePreset={setUsePreset}
         initialEquity={initialEquity}
         setInitialEquity={setInitialEquity}
         riskPct={riskPct}
@@ -358,6 +378,9 @@ function RunControls(props: {
   strategyParams: Record<string, string | number>;
   setStrategyParams: (p: Record<string, string | number>) => void;
   useLlm: boolean;
+  preset: BacktestPreset | null;
+  usePreset: boolean;
+  setUsePreset: (b: boolean) => void;
   initialEquity: number;
   setInitialEquity: (n: number) => void;
   riskPct: number;
@@ -456,6 +479,28 @@ function RunControls(props: {
               onChange={(v) => setParam(param.name, v)}
             />
           ))}
+          {props.preset && (
+            <Field label="Tuned preset">
+              <label
+                className="flex h-[30px] items-center gap-2 rounded-[10px] border border-bull/40 bg-bull-muted px-2.5 text-xs text-bull"
+                data-testid="backtest-use-preset"
+                title={
+                  `Strategy-Lab tuned params (walk-forward + DSR/PBO validated) — ` +
+                  `OOS Sharpe ${props.preset.oos_sharpe?.toFixed(3) ?? "—"}, ` +
+                  `DSR ${props.preset.deflated_sharpe?.toFixed(2) ?? "—"}, ` +
+                  `PBO ${props.preset.pbo?.toFixed(2) ?? "—"}. Overrides the ` +
+                  `a-priori defaults; your explicit param edits still win.`
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={props.usePreset}
+                  onChange={(e) => props.setUsePreset(e.target.checked)}
+                />
+                Use tuned preset
+              </label>
+            </Field>
+          )}
           <Field label="Starting equity">
             <input
               type="number"
