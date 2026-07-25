@@ -134,6 +134,29 @@ so the equivalence golden and every default-assertion test stay green.
 Provisional passers (`most_common_share < 0.75`, e.g. `mean_reversion_v1` BTC 4h,
 `volatility_breakout_v1` ETH 1h) are included but flagged in `evidence`.
 
+## Portfolio combination (Phase 5)
+
+Combining the six diversified daily-crypto preset winners (trend / breakout /
+mean-reversion across ETH & SOL) into an equal-weight portfolio — at their
+walk-forward-selected params, no new fitting — is the strongest result of the
+program (`02_portfolio.md`, `scripts/pro_portfolio_lab.py`):
+
+- **Blended annualized Sharpe 2.22** vs 1.75 for the best single component
+  (**+27%**), Sortino 4.9, max drawdown **0.78%**.
+- **Average pairwise correlation 0.24** — genuine diversification (SOL
+  mean-reversion is *negatively* correlated with the ETH trend strategies), so
+  the Sharpe lift is a real free lunch, not curve-fitting.
+- **Honest caveats:** the high Sharpe comes with a *low absolute* return
+  (+8.9% over ~2.3y of daily bars) because these low-frequency strategies size
+  conservatively (tiny drawdown = tiny exposure); scaling position size/leverage
+  raises return and drawdown together. Params are fixed from the walk-forward
+  presets but the equity is measured over overlapping history, and it is a
+  single crypto regime — indicative, not a guaranteed forward result.
+
+This is the highest-leverage path to top-class *risk-adjusted* performance; the
+next lever (not yet done) is a finer parameter search + a vol-target position
+sizer to lift absolute return at a controlled drawdown.
+
 ## Reproduce
 
 ```bash
