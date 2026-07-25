@@ -34,6 +34,7 @@ from tradingagents.pro.backtest import (  # noqa: E402
 )
 from tradingagents.pro.backtest.engine import BacktestEngine  # noqa: E402
 from tradingagents.pro.backtest.metrics import (  # noqa: E402
+    annualized_return,
     max_drawdown,
     sharpe_ratio,
     sortino_ratio,
@@ -171,6 +172,32 @@ def main() -> int:
         for i in range(len(keys)) for j in range(i + 1, len(keys)))
     A(f"Average pairwise correlation: **{avg_corr:.2f}** (lower = more "
       "diversification benefit).\n")
+
+    # --- vol-target deployment: Sharpe is scale-invariant, so scaling the blend
+    # to a target annualized volatility converts the risk-adjusted quality into
+    # absolute return at a chosen drawdown (leverage = scale factor).
+    base_vol = statistics.pstdev(blended) * (ppy ** 0.5) if len(blended) > 1 else 0.0
+    A("## Vol-targeted deployment\n")
+    A(f"The blend's realized annualized volatility at base (1×) sizing is only "
+      f"**{base_vol:.2%}** — the strategies barely use their risk budget, which "
+      f"is why the absolute return is small despite the high Sharpe. Sharpe is "
+      f"scale-invariant, so sizing the portfolio to a target vol scales return "
+      f"AND drawdown by the same leverage factor:\n")
+    A("| Target ann. vol | Leverage× | Ann. return | Max DD | Total return |")
+    A("| --- | --- | --- | --- | --- |")
+    for target in (0.05, 0.10, 0.15, 0.20, 0.25):
+        k = target / base_vol if base_vol > 0 else 0.0
+        scaled = [r * k for r in blended]
+        sc = _curve(scaled)
+        A(f"| {target:.0%} | {k:.1f}× | {annualized_return(sc, ppy):+.1%} "
+          f"| {max_drawdown(sc):.1%} | {sc[-1] / sc[0] - 1:+.1%} |")
+    A("")
+    A("_Leverage is the linear scale factor over base (fixed-risk) sizing; on "
+      "crypto perps this is reachable within exchange limits. **Caveat:** linear "
+      "scaling does NOT capture the extra funding cost, slippage, and "
+      "liquidation risk that real leverage adds — treat higher-vol rows as an "
+      "upper bound, and validate at the intended size before trusting them._\n")
+
     A("_Params fixed from the walk-forward-selected presets; this is a portfolio "
       "backtest at those params over the cached daily history, not a new "
       "optimization. Edges are modest and the sample is one crypto regime — treat "
