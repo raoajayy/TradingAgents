@@ -283,11 +283,109 @@ def _build_regime_momentum_v1(params: dict[str, Any]) -> RegimeMomentumV1:
     return RegimeMomentumV1(params)
 
 
+# --- momentum_v2: volatility-relative momentum (Strategy Lab gap fix) ---------
+
+MOMENTUM_V2_PARAMS = ParamSpace(
+    Param("roc_period", "int", 5, 40, default=14),
+    # entry threshold in SIGMA units (vol-relative), not absolute percent — so
+    # the trigger self-scales across timeframes instead of going inert on fast
+    # bars the way momentum_v1's absolute roc_threshold does.
+    Param("entry_sigma", "float", 1.0, 4.0, step=0.5, default=2.0),
+    Param("stop_atr_mult", "float", 1.0, 4.0, step=0.5, default=2.0),
+    Param("target_atr_mult", "float", 1.0, 6.0, step=0.5, default=3.0),
+    Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
+    Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
+)
+
+
+class MomentumV2:
+    """Volatility-relative momentum — the Strategy Lab found momentum_v1's
+    absolute ``roc_threshold`` (a fixed percent move) makes it place NO trades on
+    fast timeframes, where moves that large are vanishingly rare
+    (docs/backtests/strategy_lab/01_gap_analysis.md). momentum_v2 instead
+    measures the cumulative move over ``roc_period`` in units of that window's
+    own return volatility (a z-score, random-walk-scaled by √period) and enters
+    when |z| exceeds ``entry_sigma``. Same fixed-R ATR stop/target as v1. Because
+    the trigger is relative to each timeframe's realized vol, it self-scales and
+    stays active intraday. Long & short, look-ahead-safe."""
+
+    def __init__(self, params: dict[str, Any]):
+        self.id = "momentum_v2"
+        self.params = params
+
+    def on_start(self, ctx: StrategyContext) -> None: ...
+
+    def on_bar(self, ctx: StrategyContext) -> list[OrderIntent]:
+        bars = ctx.snapshot.bars
+        p = int(self.params["roc_period"])
+        if len(bars) < p + 2:
+            return []
+        atr = MomentumV1._atr(bars, p)
+        ref = bars[-(p + 1)]
+        sigma = self._ret_sigma(bars, p)
+        if atr <= 0 or ref.close <= 0 or sigma <= 0:
+            return []
+        last = bars[-1]
+        # cumulative move over the window, normalized by expected vol (per-bar
+        # sigma scaled by √period under a random-walk assumption) → a z-score
+        z = (last.close / ref.close - 1.0) / (sigma * (p ** 0.5))
+        thr = float(self.params["entry_sigma"])
+        stop_m = float(self.params["stop_atr_mult"])
+        tgt_m = float(self.params["target_atr_mult"])
+        risk = float(self.params["risk_pct"])
+        open_sides = {pos.side for pos in ctx.positions}
+
+        if z > thr and "BUY" not in open_sides:
+            return [self._entry("BUY", last.close - stop_m * atr,
+                                last.close + tgt_m * atr, risk)]
+        if (self.params["allow_short"] == "yes"
+                and z < -thr and "SELL" not in open_sides):
+            return [self._entry("SELL", last.close + stop_m * atr,
+                                last.close - tgt_m * atr, risk)]
+        return []
+
+    def on_fill(self, fill) -> None: ...
+
+    def on_stop(self, ctx: StrategyContext) -> None: ...
+
+    @staticmethod
+    def _ret_sigma(bars, period: int) -> float:
+        """Std-dev of per-bar simple returns over the last ``period`` bars."""
+        recent = bars[-(period + 1):]
+        rets = [(c.close / p.close - 1.0)
+                for p, c in zip(recent, recent[1:], strict=False)
+                if p.close > 0]
+        if len(rets) < 2:
+            return 0.0
+        mean = sum(rets) / len(rets)
+        return (sum((r - mean) ** 2 for r in rets) / len(rets)) ** 0.5
+
+    @staticmethod
+    def _entry(side, stop, target, risk) -> OrderIntent:
+        return OrderIntent(
+            kind="market", side=side, risk_pct=risk,
+            bracket=BracketIntent(stop_loss=stop, take_profits=((target, 1.0),)),
+            tag=f"mom2_{side.lower()}")
+
+
+@register("momentum_v2", MOMENTUM_V2_PARAMS,
+          description="Volatility-relative momentum — enters when the move over "
+                      "roc_period exceeds entry_sigma standard deviations of the "
+                      "window's own returns (a z-score), so the trigger "
+                      "self-scales across timeframes (unlike momentum_v1's "
+                      "absolute threshold). Fixed-R ATR stop/target, long & "
+                      "short. No model calls.")
+def _build_momentum_v2(params: dict[str, Any]) -> MomentumV2:
+    return MomentumV2(params)
+
+
 __all__ = [
     "HTF_MOMENTUM_V1_PARAMS",
     "MOMENTUM_V1_PARAMS",
+    "MOMENTUM_V2_PARAMS",
     "REGIME_MOMENTUM_V1_PARAMS",
     "HtfMomentumV1",
     "MomentumV1",
+    "MomentumV2",
     "RegimeMomentumV1",
 ]

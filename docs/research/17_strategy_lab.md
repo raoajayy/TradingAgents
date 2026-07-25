@@ -96,6 +96,16 @@ Full run 2026-07-25 (`REPORT.md`, `results.json`, gap analysis in
 - `rules_v1` was not swept (pipeline path too slow at 4000-bar cells); left at
   its locked a-priori defaults.
 
+**Gap-fix follow-up — `momentum_v2` (vol-relative).** The #1 improvement proposal
+was built: a new strategy replacing momentum's absolute `roc_threshold` with a
+vol-relative **z-score** trigger. It **closes the mechanical gap** (now trades on
+every timeframe, no more no-trade cells) but is **not a strong edge** — 1 of 28
+cells clears the guard (BTC 4h, OOS Sharpe 0.004, provisional). Honest takeaway:
+self-scaling makes momentum tradeable intraday but adds no robust crypto alpha;
+shipped as a provisional preset. Bigger levers for stronger results (not yet
+done): a finer parameter search than these coarse grids, and a **portfolio**
+combination of the uncorrelated 4h/1d winners.
+
 The gap analysis (`01_gap_analysis.md`) types every failure — no-edge,
 data-limited, degenerate/no-trades, strategy-level zero-edge, unstable-params —
 and pairs each with a concrete improvement proposal (the backlog for making these
@@ -115,6 +125,7 @@ The 16 guard-passing tuned sets ship in `tradingagents/pro/backtest/presets.py`
 | mean_reversion_v1 | BTC 4h, SOL 1d |
 | regime_momentum_v1 | ETH 1d/4h |
 | momentum_v1 | ETH 4h |
+| momentum_v2 | BTC 4h (provisional) |
 
 Consume opt-in via `preset_params(strategy_id, symbol, timeframe)` or
 `build_preset_strategy(...)`; a cell with no preset returns `None` → the caller

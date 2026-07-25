@@ -81,6 +81,28 @@ Pyramiding (`trend_following_v2`) and the volatility-squeeze breakout are the
 standout archetypes on daily crypto — consistent with the trader research
 (`02_pattern_report.md`).
 
+## Follow-up: gap (c) fix validated — `momentum_v2` (vol-relative)
+
+The proposed fix for the ROC-momentum no-trades gap was built and re-evaluated:
+`momentum_v2` replaces the absolute `roc_threshold` with a **z-score** trigger
+(cumulative move ÷ the window's own return σ, √period-scaled), so entries scale
+to each timeframe's realized volatility.
+
+- **Mechanical gap closed:** `momentum_v2` now places trades on **every**
+  timeframe including 5m/15m — the degenerate `oos=0.000 / pbo=1.00` no-trade
+  cells are gone.
+- **But it is not a strong edge on crypto:** of 28 cells only **1** clears the
+  guard bar (BTC 4h: DSR 0.81, PBO 0.31, OOS Sharpe **0.004** — near-flat,
+  `share` 0.5, provisional). Most cells are net-negative; the few positive-raw
+  ones (ETH 1d 0.076, XAU 4h 0.039) **fail** the guard (overfit) and are
+  correctly rejected.
+- **Takeaway:** self-scaling makes momentum *tradeable* across timeframes, but
+  fast-timeframe momentum has no robust edge on this crypto history. The fix is
+  worth keeping (removes a dead capability) and is shipped as a provisional
+  preset; it is not a source of top-class returns on its own. The larger levers
+  for stronger results are a **finer parameter search** than these coarse grids
+  and a **portfolio combination** of the uncorrelated 4h/1d winners.
+
 ## Note on `rules_v1`
 
 `rules_v1` runs the full deterministic rules pipeline per bar; at 4000-bar cells

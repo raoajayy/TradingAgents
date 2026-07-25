@@ -82,6 +82,9 @@ LAB_GRIDS: dict[str, ParamSpace] = {
     "momentum_v1": ParamSpace(                 # 9
         _cat("roc_period", 10, 14, 20),
         _cat("roc_threshold", 3.0, 5.0, 8.0)),
+    "momentum_v2": ParamSpace(                 # 9 — vol-relative (self-scaling)
+        _cat("roc_period", 10, 14, 20),
+        _cat("entry_sigma", 1.5, 2.0, 3.0)),
     "htf_momentum_v1": ParamSpace(             # 9
         _cat("roc_period", 10, 14, 20),
         _cat("roc_threshold", 3.0, 4.0, 6.0)),

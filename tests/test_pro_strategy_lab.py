@@ -57,9 +57,9 @@ class TestGridsRespectDeclaredDomains:
                     assert real.contains(choice), (
                         f"{sid}.{param.name}={choice!r} outside declared domain")
 
-    def test_all_nine_strategies_have_a_grid(self):
-        assert set(lab.LAB_GRIDS) == set(lab.LAB_GRIDS)  # sanity
-        assert len(lab.LAB_GRIDS) == 9
+    def test_all_strategies_have_a_grid(self):
+        assert len(lab.LAB_GRIDS) == 10  # 9 originals + momentum_v2
+        assert "momentum_v2" in lab.LAB_GRIDS
 
 
 class TestWindowPlan:

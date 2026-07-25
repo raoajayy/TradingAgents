@@ -52,6 +52,12 @@ CATALOG: dict[str, dict[tuple[str, str], Preset]] = {
     "momentum_v1": {
         ("ETH-USD", "4h"): Preset(params={"roc_period": 14, "roc_threshold": 3.0}, oos_sharpe=0.0250, deflated_sharpe=0.8543, pbo=0.1190, n_trials=9, evidence={"most_common_share": 0.50, "windows": 4}),
     },
+    "momentum_v2": {
+        # vol-relative momentum fixed the "no trades on fast bars" gap (now
+        # active on every timeframe) but shows only a marginal, provisional edge
+        # — one guard-passing cell, near-flat OOS Sharpe, share 0.5.
+        ("BTC-USD", "4h"): Preset(params={"entry_sigma": 2.0, "roc_period": 14}, oos_sharpe=0.0044, deflated_sharpe=0.8114, pbo=0.3135, n_trials=9, evidence={"most_common_share": 0.50, "windows": 4, "note": "provisional: near-flat OOS edge"}),
+    },
     "regime_momentum_v1": {
         ("ETH-USD", "1d"): Preset(params={"regime_gate": "off", "roc_period": 20, "roc_threshold": 5.0}, oos_sharpe=0.0669, deflated_sharpe=0.6678, pbo=0.3095, n_trials=8, evidence={"most_common_share": 1.00, "windows": 2}),
         ("ETH-USD", "4h"): Preset(params={"regime_gate": "on", "roc_period": 10, "roc_threshold": 3.0}, oos_sharpe=0.0403, deflated_sharpe=0.9175, pbo=0.0397, n_trials=8, evidence={"most_common_share": 0.75, "windows": 4}),

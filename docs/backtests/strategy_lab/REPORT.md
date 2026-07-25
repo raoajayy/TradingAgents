@@ -1,8 +1,8 @@
 # Strategy Lab — Findings (Phases 1-2)
 
-_Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forward OOS headline + DSR/PBO guard bar (pass = DSR≥0.6 & PBO≤0.5 & OOS-Sharpe>0)._
+_Generated 2026-07-25T07:17:56.987521+00:00 · objective `sharpe` · walk-forward OOS headline + DSR/PBO guard bar (pass = DSR≥0.6 & PBO≤0.5 & OOS-Sharpe>0)._
 
-**16 / 181 scored cells pass the guard bar** (43 cells were data-limited and not scored).
+**17 / 204 scored cells pass the guard bar** (48 cells were data-limited and not scored).
 
 ## Leaderboard — guard-passing cells (by OOS Sharpe)
 
@@ -23,6 +23,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | trend_following_v2 | SOL-USD | 4h | 0.018 | 0.668 | 0.13 | 8 | `{"add_atr_mult": 1.0, "donchian_period": 40, "max_adds": 0}` |
 | volatility_breakout_v1 | SOL-USD | 4h | 0.016 | 0.901 | 0.38 | 6 | `{"lookback": 30, "squeeze_pct": 0.05}` |
 | volatility_breakout_v1 | ETH-USD | 1h | 0.007 | 0.658 | 0.42 | 6 | `{"lookback": 20, "squeeze_pct": 0.03}` |
+| momentum_v2 | BTC-USD | 4h | 0.004 | 0.811 | 0.31 | 9 | `{"entry_sigma": 2.0, "roc_period": 14}` |
 | mean_reversion_v1 | BTC-USD | 4h | 0.002 | 0.731 | 0.38 | 8 | `{"entry_std": 2.5, "lookback": 30, "stop_atr_mult": 2.0}` |
 
 ## All scored cells
@@ -118,6 +119,29 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | momentum_v1 | XAUUSD | 30m | 4000 | 4 | -0.011 | 0.570 | 0.22 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.22, |
 | momentum_v1 | XAUUSD | 4h | 590 | 2 | 0.026 | 0.238 | 1.00 | — | no evidence of out-of-sample edge — do not deploy (PBO 1.00, |
 | momentum_v1 | XAUUSD | 5m | 4000 | 4 | 0.000 | 0.500 | 1.00 | — | no evidence of out-of-sample edge — do not deploy (PBO 1.00, |
+| momentum_v2 | BTC-USD | 15m | 4000 | 4 | -0.025 | 0.283 | 0.33 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.33, |
+| momentum_v2 | BTC-USD | 1d | 939 | 2 | -0.143 | 0.354 | 0.76 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.76, |
+| momentum_v2 | BTC-USD | 1h | 4000 | 4 | 0.034 | 0.277 | 0.52 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.52, |
+| momentum_v2 | BTC-USD | 30m | 4000 | 4 | -0.037 | 0.388 | 0.70 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.70, |
+| momentum_v2 | BTC-USD | 4h | 4000 | 4 | 0.004 | 0.811 | 0.31 | ✅ | survives the overfitting gauntlet (PBO 0.31, deflated Sharpe |
+| momentum_v2 | BTC-USD | 5m | 4000 | 4 | -0.022 | 0.462 | 0.20 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.20, |
+| momentum_v2 | ETH-USD | 15m | 4000 | 4 | -0.027 | 0.604 | 0.83 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.83, |
+| momentum_v2 | ETH-USD | 1d | 900 | 2 | 0.076 | 0.634 | 0.74 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.74, |
+| momentum_v2 | ETH-USD | 1h | 4000 | 4 | -0.020 | 0.110 | 0.55 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.55, |
+| momentum_v2 | ETH-USD | 30m | 4000 | 4 | -0.004 | 0.333 | 0.46 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.46, |
+| momentum_v2 | ETH-USD | 4h | 4000 | 4 | -0.003 | 0.830 | 0.47 | — | survives the overfitting gauntlet (PBO 0.47, deflated Sharpe |
+| momentum_v2 | ETH-USD | 5m | 4000 | 4 | -0.082 | 0.126 | 0.46 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.46, |
+| momentum_v2 | SOL-USD | 15m | 4000 | 4 | -0.012 | 0.323 | 0.79 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.79, |
+| momentum_v2 | SOL-USD | 1d | 838 | 2 | -0.051 | 0.203 | 0.50 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.50, |
+| momentum_v2 | SOL-USD | 1h | 4000 | 4 | -0.002 | 0.506 | 0.59 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.59, |
+| momentum_v2 | SOL-USD | 30m | 4000 | 4 | -0.019 | 0.050 | 0.45 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.45, |
+| momentum_v2 | SOL-USD | 4h | 4000 | 4 | 0.009 | 0.202 | 0.37 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.37, |
+| momentum_v2 | SOL-USD | 5m | 4000 | 4 | -0.061 | 0.021 | 0.04 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.04, |
+| momentum_v2 | XAUUSD | 15m | 4000 | 4 | -0.019 | 0.084 | 0.37 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.37, |
+| momentum_v2 | XAUUSD | 1h | 2360 | 2 | -0.030 | 0.671 | 0.58 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.58, |
+| momentum_v2 | XAUUSD | 30m | 4000 | 4 | -0.038 | 0.505 | 0.59 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.59, |
+| momentum_v2 | XAUUSD | 4h | 590 | 2 | 0.039 | 0.170 | 0.67 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.67, |
+| momentum_v2 | XAUUSD | 5m | 4000 | 4 | -0.041 | 0.035 | 0.00 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.00, |
 | regime_momentum_v1 | BTC-USD | 15m | 4000 | 4 | 0.000 | 0.217 | 0.62 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.62, |
 | regime_momentum_v1 | BTC-USD | 1d | 939 | 2 | -0.042 | 0.536 | 0.38 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.38, |
 | regime_momentum_v1 | BTC-USD | 1h | 4000 | 4 | -0.020 | 0.166 | 0.46 | — | no evidence of out-of-sample edge — do not deploy (PBO 0.46, |
@@ -220,6 +244,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | ma_crossover_v1 | BTC-USD | 1w | 135 | insufficient-data |
 | mean_reversion_v1 | BTC-USD | 1w | 135 | insufficient-data |
 | momentum_v1 | BTC-USD | 1w | 135 | insufficient-data |
+| momentum_v2 | BTC-USD | 1w | 135 | insufficient-data |
 | regime_momentum_v1 | BTC-USD | 1w | 135 | insufficient-data |
 | trend_following_v1 | BTC-USD | 1w | 135 | insufficient-data |
 | trend_following_v2 | BTC-USD | 1w | 135 | insufficient-data |
@@ -229,6 +254,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | ma_crossover_v1 | ETH-USD | 1w | 129 | insufficient-data |
 | mean_reversion_v1 | ETH-USD | 1w | 129 | insufficient-data |
 | momentum_v1 | ETH-USD | 1w | 129 | insufficient-data |
+| momentum_v2 | ETH-USD | 1w | 129 | insufficient-data |
 | regime_momentum_v1 | ETH-USD | 1w | 129 | insufficient-data |
 | trend_following_v1 | ETH-USD | 1w | 129 | insufficient-data |
 | trend_following_v2 | ETH-USD | 1w | 129 | insufficient-data |
@@ -238,6 +264,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | ma_crossover_v1 | SOL-USD | 1w | 120 | insufficient-data |
 | mean_reversion_v1 | SOL-USD | 1w | 120 | insufficient-data |
 | momentum_v1 | SOL-USD | 1w | 120 | insufficient-data |
+| momentum_v2 | SOL-USD | 1w | 120 | insufficient-data |
 | regime_momentum_v1 | SOL-USD | 1w | 120 | insufficient-data |
 | trend_following_v1 | SOL-USD | 1w | 120 | insufficient-data |
 | trend_following_v2 | SOL-USD | 1w | 120 | insufficient-data |
@@ -246,6 +273,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | ma_crossover_v1 | XAUUSD | 1d | 99 | insufficient-data |
 | mean_reversion_v1 | XAUUSD | 1d | 99 | insufficient-data |
 | momentum_v1 | XAUUSD | 1d | 99 | insufficient-data |
+| momentum_v2 | XAUUSD | 1d | 99 | insufficient-data |
 | regime_momentum_v1 | XAUUSD | 1d | 99 | insufficient-data |
 | trend_following_v1 | XAUUSD | 1d | 99 | insufficient-data |
 | trend_following_v2 | XAUUSD | 1d | 99 | insufficient-data |
@@ -254,6 +282,7 @@ _Generated 2026-07-25T06:56:52.771808+00:00 · objective `sharpe` · walk-forwar
 | ma_crossover_v1 | XAUUSD | 1w | 15 | insufficient-data |
 | mean_reversion_v1 | XAUUSD | 1w | 15 | insufficient-data |
 | momentum_v1 | XAUUSD | 1w | 15 | insufficient-data |
+| momentum_v2 | XAUUSD | 1w | 15 | insufficient-data |
 | regime_momentum_v1 | XAUUSD | 1w | 15 | insufficient-data |
 | trend_following_v1 | XAUUSD | 1w | 15 | insufficient-data |
 | trend_following_v2 | XAUUSD | 1w | 15 | insufficient-data |
