@@ -134,28 +134,41 @@ so the equivalence golden and every default-assertion test stay green.
 Provisional passers (`most_common_share < 0.75`, e.g. `mean_reversion_v1` BTC 4h,
 `volatility_breakout_v1` ETH 1h) are included but flagged in `evidence`.
 
-## Portfolio combination (Phase 5)
+## Portfolio combination (Phase 5) + vol-target (Phase 5b)
 
-Combining the six diversified daily-crypto preset winners (trend / breakout /
-mean-reversion across ETH & SOL) into an equal-weight portfolio — at their
-walk-forward-selected params, no new fitting — is the strongest result of the
-program (`02_portfolio.md`, `scripts/pro_portfolio_lab.py`):
+Combining the diversified daily-crypto preset winners (trend / breakout /
+mean-reversion across ETH & SOL) into an equal-weight portfolio at their
+walk-forward params (`02_portfolio.md`, `scripts/pro_portfolio_lab.py`):
 
-- **Blended annualized Sharpe 2.22** vs 1.75 for the best single component
-  (**+27%**), Sortino 4.9, max drawdown **0.78%**.
-- **Average pairwise correlation 0.24** — genuine diversification (SOL
-  mean-reversion is *negatively* correlated with the ETH trend strategies), so
-  the Sharpe lift is a real free lunch, not curve-fitting.
-- **Honest caveats:** the high Sharpe comes with a *low absolute* return
-  (+8.9% over ~2.3y of daily bars) because these low-frequency strategies size
-  conservatively (tiny drawdown = tiny exposure); scaling position size/leverage
-  raises return and drawdown together. Params are fixed from the walk-forward
-  presets but the equity is measured over overlapping history, and it is a
-  single crypto regime — indicative, not a guaranteed forward result.
+- **Blended annualized Sharpe 2.60**, Sortino 6.0, max drawdown 0.66%, avg
+  pairwise correlation **0.19** — genuine diversification (SOL mean-reversion is
+  *negatively* correlated with the ETH trend strategies).
+- After the Phase-6 finer-search upgrades, two `volatility_breakout_v1`
+  components rose to Sharpe ~2.8, so the equal-weight blend (2.60) now sits just
+  *below* the best single (2.82) — equal-weighting dilutes the two strong ones.
+  A risk-/Sharpe-weighted allocation would beat equal-weight, but the weights
+  must themselves be validated OOS to avoid allocation-overfitting (next lever).
+- **Vol-target deployment:** base sizing realizes only ~1.7% annual vol (risk
+  budget barely used). Sharpe is scale-invariant, so sizing to a vol target
+  scales return AND drawdown by the leverage factor — e.g. **~+24%/yr at ~4.6%
+  max DD (10% vol)**, **~+38%/yr at ~6.8% DD (15% vol)**. Linear-leverage upper
+  bound (ignores added funding/slippage/liquidation) — validate at size.
+- **Honest caveats:** one crypto regime, params fixed from walk-forward but
+  equity measured over overlapping history — indicative, not guaranteed forward.
 
-This is the highest-leverage path to top-class *risk-adjusted* performance; the
-next lever (not yet done) is a finer parameter search + a vol-target position
-sizer to lift absolute return at a controlled drawdown.
+## Finer walk-forward search (Phase 6)
+
+Genetic search over the FULL declared ranges on the top cells (`03_finer_search.md`,
+`scripts/pro_finer_search.py`) vs the coarse-grid presets. Key result: the DSR
+guard did its job — the two highest raw-OOS finds (`trend_following_v2` ETH 1d
+0.152, SOL 1d 0.145) were **rejected** (DSR 0.47 / 0.32 — overfit). Only where a
+finer config was better OOS, guard-passing, AND still walk-forward-stable
+(share 1.0) did we promote it: **`volatility_breakout_v1` ETH 1d (0.083→0.121)
+and SOL 1d (0.030→0.123)** — the two upgrades now in `presets.py`. Higher-OOS but
+lower-stability finds (share ≤ 0.5) are documented but NOT shipped, since a
+single genetic param set with low walk-forward share is a weaker basis than a
+stable grid preset. Takeaway: finer search buys mostly overfitting (correctly
+deflated), with a genuine, guarded upgrade on the two breakout cells.
 
 ## Reproduce
 

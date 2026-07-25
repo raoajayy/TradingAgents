@@ -73,10 +73,14 @@ CATALOG: dict[str, dict[tuple[str, str], Preset]] = {
         ("SOL-USD", "4h"): Preset(params={"add_atr_mult": 1.0, "donchian_period": 40, "max_adds": 0}, oos_sharpe=0.0176, deflated_sharpe=0.6682, pbo=0.1349, n_trials=8, evidence={"most_common_share": 1.00, "windows": 4}),
     },
     "volatility_breakout_v1": {
-        ("ETH-USD", "1d"): Preset(params={"lookback": 20, "squeeze_pct": 0.08}, oos_sharpe=0.0828, deflated_sharpe=0.9373, pbo=0.0119, n_trials=6, evidence={"most_common_share": 1.00, "windows": 2}),
+        # ETH/SOL 1d upgraded by the finer genetic walk-forward (03_finer_search.md):
+        # ~1.5-4x higher OOS Sharpe, still share 1.0 (stable across windows) and
+        # guard-passing — the only finer results that met the grid presets' own
+        # stability bar. Genetic-found continuous params (kept exact; verified).
+        ("ETH-USD", "1d"): Preset(params={"allow_short": "yes", "lookback": 34, "risk_pct": 1.3546502028310872, "squeeze_pct": 0.14233789737754912, "stop_atr_mult": 3.548535276531993, "trail_pct": 0.012753098473019819}, oos_sharpe=0.1213, deflated_sharpe=0.8494, pbo=0.0, n_trials=60, evidence={"most_common_share": 1.00, "windows": 2, "search": "genetic-finer", "prior_grid_oos": 0.0828}),
         ("ETH-USD", "1h"): Preset(params={"lookback": 20, "squeeze_pct": 0.03}, oos_sharpe=0.0073, deflated_sharpe=0.6576, pbo=0.4167, n_trials=6, evidence={"most_common_share": 0.50, "windows": 4}),
         ("ETH-USD", "4h"): Preset(params={"lookback": 30, "squeeze_pct": 0.08}, oos_sharpe=0.0338, deflated_sharpe=0.9191, pbo=0.1786, n_trials=6, evidence={"most_common_share": 0.75, "windows": 4}),
-        ("SOL-USD", "1d"): Preset(params={"lookback": 20, "squeeze_pct": 0.08}, oos_sharpe=0.0302, deflated_sharpe=0.8104, pbo=0.2540, n_trials=6, evidence={"most_common_share": 1.00, "windows": 2}),
+        ("SOL-USD", "1d"): Preset(params={"allow_short": "yes", "lookback": 10, "risk_pct": 0.4419642406460771, "squeeze_pct": 0.10788730469565734, "stop_atr_mult": 3.548535276531993, "trail_pct": 0.01567961396989384}, oos_sharpe=0.1232, deflated_sharpe=0.9195, pbo=0.0, n_trials=60, evidence={"most_common_share": 1.00, "windows": 2, "search": "genetic-finer", "prior_grid_oos": 0.0302}),
         ("SOL-USD", "4h"): Preset(params={"lookback": 30, "squeeze_pct": 0.05}, oos_sharpe=0.0157, deflated_sharpe=0.9008, pbo=0.3810, n_trials=6, evidence={"most_common_share": 0.50, "windows": 4}),
     },
 }
