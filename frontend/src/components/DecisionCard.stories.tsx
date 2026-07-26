@@ -62,6 +62,36 @@ export const Buy: Story = {
   },
 };
 
+/** Hero variant with the trust surfaces: empirical calibration proof under
+ * the confidence, and the strongest objection surfaced (fixes #1 + #3). */
+export const Hero: Story = {
+  args: {
+    hero: true,
+    kicker: "AI DECISION — XAUUSD · 1D",
+    runId: "abc",
+    rec: {
+      ...(Buy.args!.rec as object),
+      p_win: { p_win: 0.68, n: 12, basis: "confidence 70–80 bucket" },
+    },
+  },
+};
+
+/** Unanimous call: no agent argued the other side — the honest, informative
+ * empty-dissent state (fix #1), not a hidden one. */
+export const HeroUnanimous: Story = {
+  args: {
+    hero: true,
+    kicker: "AI DECISION — XAUUSD · 1D",
+    runId: "abc",
+    rec: {
+      ...(Buy.args!.rec as object),
+      counterarguments: [],
+      n_counterarguments: 0,
+      p_win: null,
+    },
+  },
+};
+
 export const Rejected: Story = {
   args: {
     rec: {

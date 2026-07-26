@@ -43,6 +43,9 @@ test.describe("terminal", () => {
     await expect(page.getByTestId("decision-card")).toContainText("BUY");
     await expect(page.getByTestId("decision-card")).toContainText("confidence");
     await expect(page.getByTestId("invalidation")).toBeVisible();
+    // trust-first hero: the strongest objection (or an honest no-dissent
+    // note) is surfaced at the moment of decision, not hidden (fix #1)
+    await expect(page.getByTestId("dissent")).toBeVisible();
     await expect(page.getByText("P&L", { exact: false }).first()).toBeVisible();
   });
 

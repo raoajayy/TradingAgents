@@ -20,13 +20,26 @@ const baseRec = {
 };
 
 describe("betMath", () => {
-  it("computes breakeven and dollar risk/reward from the ladder", () => {
+  it("computes breakeven and BLENDED dollar risk/reward from the ladder", () => {
     const rec = RecommendationSchema.parse(baseRec);
     const math = betMath(rec)!;
+    const qty = 2.4999;
     expect(math.breakevenPct).toBeCloseTo(40, 0); // 1/(1+1.5)
-    expect(math.riskUsd).toBeCloseTo(Math.abs(4000.2 - 4175.63) * 2.4999, 2);
-    // first target = take_profits[0] (closest), not the furthest
-    expect(math.rewardUsd).toBeCloseTo(Math.abs(3824.77 - 4000.2) * 2.4999, 2);
+    expect(math.riskUsd).toBeCloseTo(Math.abs(4000.2 - 4175.63) * qty, 2);
+    // reward is size-weighted across the WHOLE ladder (not whole-size TP1),
+    // so it ties out to the headline R:R — the coherence fix
+    const blended =
+      Math.abs(3824.77 - 4000.2) * qty * 0.5 +
+      Math.abs(3649.34 - 4000.2) * qty * 0.5;
+    expect(math.rewardUsd).toBeCloseTo(blended, 2);
+    expect(math.tp1Fraction).toBe(0.5);
+  });
+
+  it("blended reward / risk reconciles with the headline R:R", () => {
+    // the trust fix: the dollars a trader sees must describe the same bet as
+    // the R:R stat — no more '381→190 (0.5×)' next to 'R:R 2.00'
+    const math = betMath(RecommendationSchema.parse(baseRec))!;
+    expect(math.rewardUsd! / math.riskUsd!).toBeCloseTo(1.5, 2);
   });
 
   it("returns null without an R:R and nulls without levels", () => {
@@ -37,6 +50,7 @@ describe("betMath", () => {
     expect(math.breakevenPct).toBeCloseTo(40, 0);
     expect(math.riskUsd).toBeNull();
     expect(math.rewardUsd).toBeNull();
+    expect(math.tp1Fraction).toBeNull();
   });
 });
 

@@ -122,24 +122,138 @@ function LevelLadder({ rec }: { rec: Recommendation }) {
 export function betMath(rec: Recommendation): {
   breakevenPct: number;
   riskUsd: number | null;
-  rewardUsd: number | null;
+  rewardUsd: number | null; // size-weighted across the WHOLE ladder
+  tp1Fraction: number | null; // portion the first target closes (0..1)
 } | null {
   const rr = rec.risk_reward;
   if (rr == null || rr <= 0) return null;
   const entry = rec.entry_price;
   const stop = rec.stop_loss;
   const qty = rec.position_size?.quantity;
-  // take_profits is ordered closest-first (the ladder reverses for display)
-  const tp1 = rec.take_profits?.[0]?.price;
+  const tps = rec.take_profits ?? [];
+  const tp1Fraction = tps[0]?.size_fraction ?? null;
   const riskUsd =
     entry != null && stop != null && qty != null
       ? Math.abs(entry - stop) * qty
       : null;
+  // BLENDED reward: each rung banks its own fraction of the size. The old
+  // line paired full risk against whole-size TP1 reward, which read as
+  // R:R 0.5 while the headline said 2.0 — the size-weighted sum is what the
+  // headline R:R actually measures, so the dollars now tie out to it.
   const rewardUsd =
-    entry != null && tp1 != null && qty != null
-      ? Math.abs(tp1 - entry) * qty
+    entry != null && qty != null && tps.length > 0
+      ? tps.reduce(
+          (sum, tp) => sum + Math.abs(tp.price - entry) * qty * tp.size_fraction,
+          0,
+        )
       : null;
-  return { breakevenPct: 100 / (1 + rr), riskUsd, rewardUsd };
+  return { breakevenPct: 100 / (1 + rr), riskUsd, rewardUsd, tp1Fraction };
+}
+
+/** Fix #3: wire the stated confidence to its empirical proof. The rec
+ * already carries p_win (win rate for this kind of setup); surfacing it
+ * next to the big number — with a link to the full calibration chart on
+ * Decisions — is the deepest trust lever, and it was previously buried. */
+function ConfidenceProof({ rec }: { rec: Recommendation }) {
+  if (rec.p_win == null) {
+    return (
+      <p className="text-xs text-fg-subtle" data-testid="confidence-proof">
+        confidence {rec.confidence ?? "—"}/100 —{" "}
+        <Link
+          to="/decisions"
+          className="underline-offset-2 hover:text-fg hover:underline"
+        >
+          calibration
+        </Link>{" "}
+        builds as trades close
+      </p>
+    );
+  }
+  const empirical = Math.round(rec.p_win.p_win * 100);
+  const stated = rec.confidence;
+  const gap = stated != null ? stated - empirical : null;
+  return (
+    <p className="text-xs text-fg-subtle" data-testid="confidence-proof">
+      <Link
+        to="/decisions"
+        title={`empirical win rate for ${rec.p_win.basis} — open the calibration chart`}
+        className="underline-offset-2 hover:text-fg hover:underline"
+      >
+        calls like this have actually won{" "}
+        <span className="font-semibold text-fg">{empirical}%</span> (n=
+        {rec.p_win.n}) →
+      </Link>
+      {gap != null && Math.abs(gap) >= 8 && (
+        <span className={gap > 0 ? "text-bear" : "text-bull"}>
+          {" "}· stated {stated} runs {gap > 0 ? "rich" : "conservative"}
+        </span>
+      )}
+    </p>
+  );
+}
+
+/** Fix #1: the strongest opposing case, at the moment of decision. The pitch
+ * is adversarial debate — a one-sided hero reads as an echo chamber. An
+ * empty set is itself a signal (unanimity is rare and worth flagging). */
+function Dissent({
+  counters,
+  variant,
+}: {
+  counters: NonNullable<Recommendation["counterarguments"]>;
+  variant: "hero" | "compact" | "full";
+}) {
+  if (counters.length === 0) {
+    return (
+      <p className="text-[13px]" data-testid="dissent">
+        <span className="font-semibold text-fg-muted">
+          No agent argued the other side
+        </span>
+        <span className="text-fg-subtle">
+          {" "}
+          — unusual; weigh a unanimous call with care.
+        </span>
+      </p>
+    );
+  }
+  if (variant === "full") {
+    return (
+      <div data-testid="dissent">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
+          Strongest counterarguments
+        </div>
+        <ul className="space-y-1 text-sm">
+          {counters.map((c, i) => (
+            <li key={i} className="flex gap-2">
+              <DirectionBadge value={c.direction} showWord={false} />
+              <span>
+                <span className="font-semibold">{c.agent_id}</span>{" "}
+                <span className="text-fg-subtle">conf {c.confidence}</span> —{" "}
+                {c.claim}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  const c = counters[0]!;
+  return (
+    <div
+      className="rounded-xl border border-border bg-surface-2/50 px-3 py-2 text-[13px]"
+      data-testid="dissent"
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+        Strongest objection
+      </span>
+      <div className="mt-0.5 flex gap-2">
+        <DirectionBadge value={c.direction} showWord={false} />
+        <span className={variant === "hero" ? "line-clamp-2" : "line-clamp-1"}>
+          <span className="font-semibold">{c.agent_id}</span>{" "}
+          <span className="text-fg-subtle">conf {c.confidence}</span> — {c.claim}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function DecisionCard({
@@ -400,6 +514,11 @@ export function DecisionCard({
         )}
       </div>
 
+      {/* the trust story, in order: does the number hold up (#3), what argued
+          against it (#1) — surfaced at the moment of decision, hero only */}
+      {hero && <ConfidenceProof rec={rec} />}
+      {hero && <Dissent counters={counters} variant="hero" />}
+
       {hero ? (
         <LevelLadder rec={rec} />
       ) : rec.entry_price != null ? (
@@ -500,8 +619,20 @@ export function DecisionCard({
           breakeven win rate {math.breakevenPct.toFixed(0)}% (from R:R)
           {math.riskUsd != null && math.rewardUsd != null && (
             <>
-              {" "}· risking {fmtPrice(math.riskUsd, 0)} to make{" "}
-              {fmtPrice(math.rewardUsd, 0)} at first target
+              {" "}· risk {fmtPrice(math.riskUsd, 0)} → reward{" "}
+              {fmtPrice(math.rewardUsd, 0)}
+              {/* dollars are size-weighted across the whole ladder, so they
+                  tie out to the headline R:R (no more "risk 381 make 190"
+                  reading as 0.5× while the headline said 2.0) */}
+              {rec.risk_reward != null && (
+                <span className="text-fg-subtle">
+                  {" "}
+                  (R:R {rec.risk_reward.toFixed(2)}, full ladder
+                  {math.tp1Fraction != null &&
+                    `; TP1 banks ${Math.round(math.tp1Fraction * 100)}%`}
+                  )
+                </span>
+              )}
             </>
           )}
           {rec.p_win != null ? (
@@ -531,8 +662,7 @@ export function DecisionCard({
                       rec.p_win.p_win * math.rewardUsd -
                         (1 - rec.p_win.p_win) * math.riskUsd,
                     )}
-                  </span>{" "}
-                  at first target
+                  </span>
                 </>
               )}
               {rec.p_win.median_hold_s != null && (
@@ -548,25 +678,12 @@ export function DecisionCard({
         </div>
       )}
 
-      {!compact && !hero && counters.length > 0 && (
-        <div>
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
-            Strongest counterarguments
-          </div>
-          <ul className="space-y-1 text-sm">
-            {counters.map((c, i) => (
-              <li key={i} className={cn("flex gap-2")}>
-                <DirectionBadge value={c.direction} showWord={false} />
-                <span>
-                  <span className="font-semibold">{c.agent_id}</span>{" "}
-                  <span className="text-fg-subtle">conf {c.confidence}</span> —{" "}
-                  {c.claim}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* compact 2nd-symbol card: one dissent line too (fix #1) */}
+      {compact && <Dissent counters={counters} variant="compact" />}
+
+      {/* Decisions full card: the counterargument list, now with an honest
+          no-dissent state when the vote was unanimous (fix #1) */}
+      {!compact && !hero && <Dissent counters={counters} variant="full" />}
 
       {!compact && !hero && analogs.length > 0 && (
         <div>
