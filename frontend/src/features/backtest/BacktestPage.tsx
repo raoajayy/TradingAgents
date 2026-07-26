@@ -217,7 +217,12 @@ export default function BacktestPage() {
         timeframe,
         duration,
         strategy_id: strategyId,
-        strategy_params: strategyParams,
+        // When a tuned preset is in use it must OVERRIDE the form params (the
+        // tooltip promises this). The backend layers the preset UNDER
+        // strategy_params (caller-wins), so sending the form defaults here would
+        // silently mask the preset — omit them so the preset applies cleanly.
+        strategy_params:
+          usePreset && presetForSelection != null ? {} : strategyParams,
         use_preset: usePreset && presetForSelection != null,
         confirm_cost: confirmCost,
         initial_equity: initialEquity,
