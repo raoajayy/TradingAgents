@@ -79,9 +79,24 @@ CATALOG: dict[str, dict[tuple[str, str], Preset]] = {
         # stability bar. Genetic-found continuous params (kept exact; verified).
         ("ETH-USD", "1d"): Preset(params={"allow_short": "yes", "lookback": 34, "risk_pct": 1.3546502028310872, "squeeze_pct": 0.14233789737754912, "stop_atr_mult": 3.548535276531993, "trail_pct": 0.012753098473019819}, oos_sharpe=0.1213, deflated_sharpe=0.8494, pbo=0.0, n_trials=60, evidence={"most_common_share": 1.00, "windows": 2, "search": "genetic-finer", "prior_grid_oos": 0.0828}),
         ("ETH-USD", "1h"): Preset(params={"lookback": 20, "squeeze_pct": 0.03}, oos_sharpe=0.0073, deflated_sharpe=0.6576, pbo=0.4167, n_trials=6, evidence={"most_common_share": 0.50, "windows": 4}),
-        ("ETH-USD", "4h"): Preset(params={"lookback": 30, "squeeze_pct": 0.08}, oos_sharpe=0.0338, deflated_sharpe=0.9191, pbo=0.1786, n_trials=6, evidence={"most_common_share": 0.75, "windows": 4}),
+        # C1 upgrade: a Chandelier trailing exit (Le Beau) beat the % trail here
+        # (OOS 0.0535 vs 0.0338, DSR 0.993) on the enhancement re-run.
+        ("ETH-USD", "4h"): Preset(params={"lookback": 20, "squeeze_pct": 0.03, "trail_mode": "chandelier"}, oos_sharpe=0.0535, deflated_sharpe=0.9934, pbo=0.0079, n_trials=12, source="docs/backtests/strategy_lab/enh/results.json", evidence={"most_common_share": 0.75, "windows": 4, "enhancement": "C1-chandelier", "prior_pct_oos": 0.0338}),
         ("SOL-USD", "1d"): Preset(params={"allow_short": "yes", "lookback": 10, "risk_pct": 0.4419642406460771, "squeeze_pct": 0.10788730469565734, "stop_atr_mult": 3.548535276531993, "trail_pct": 0.01567961396989384}, oos_sharpe=0.1232, deflated_sharpe=0.9195, pbo=0.0, n_trials=60, evidence={"most_common_share": 1.00, "windows": 2, "search": "genetic-finer", "prior_grid_oos": 0.0302}),
-        ("SOL-USD", "4h"): Preset(params={"lookback": 30, "squeeze_pct": 0.05}, oos_sharpe=0.0157, deflated_sharpe=0.9008, pbo=0.3810, n_trials=6, evidence={"most_common_share": 0.50, "windows": 4}),
+        # C1 upgrade: Chandelier trailing exit lifted OOS 0.0157 → 0.0705 (DSR
+        # 0.990) and stability 0.50 → 0.75 versus the % trail on this cell.
+        ("SOL-USD", "4h"): Preset(params={"lookback": 30, "squeeze_pct": 0.05, "trail_mode": "chandelier"}, oos_sharpe=0.0705, deflated_sharpe=0.9904, pbo=0.1865, n_trials=12, source="docs/backtests/strategy_lab/enh/results.json", evidence={"most_common_share": 0.75, "windows": 4, "enhancement": "C1-chandelier", "prior_pct_oos": 0.0157}),
+    },
+    "ma_crossover_v1": {
+        # First guard-passing cell this strategy has earned (whipsaw kept it out
+        # of the original run). NOTE: the ADX chop filter (C2) did NOT help —
+        # the winner runs with adx_filter="off"; C2 is a documented negative.
+        ("ETH-USD", "1d"): Preset(params={"adx_filter": "off", "fast_period": 8, "slow_period": 30}, oos_sharpe=0.0642, deflated_sharpe=0.7368, pbo=0.4127, n_trials=12, source="docs/backtests/strategy_lab/enh/results.json", evidence={"most_common_share": 0.50, "windows": 2, "note": "provisional; ADX filter off"}),
+    },
+    "htf_momentum_v2": {
+        # C3 win: the HTF size-scaler variant earned a preset where the binary-
+        # veto htf_momentum_v1 earned none. Provisional (share 0.50).
+        ("ETH-USD", "4h"): Preset(params={"roc_period": 14, "roc_threshold": 3.0}, oos_sharpe=0.0276, deflated_sharpe=0.8343, pbo=0.2817, n_trials=9, source="docs/backtests/strategy_lab/enh/results.json", evidence={"most_common_share": 0.50, "windows": 4, "enhancement": "C3-htf-scaler"}),
     },
 }
 

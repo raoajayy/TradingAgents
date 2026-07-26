@@ -67,14 +67,14 @@ def _cat(name: str, *values):
 
 
 LAB_GRIDS: dict[str, ParamSpace] = {
-    "trend_following_v1": ParamSpace(          # 8
+    "trend_following_v1": ParamSpace(          # 12 — +trail_mode (SO-C1)
         _cat("donchian_period", 20, 50),
         _cat("stop_atr_mult", 2.0, 3.0),
-        _cat("trail_pct", 0.05, 0.08)),
-    "trend_following_v2": ParamSpace(          # 8
+        _cat("trail_mode", "pct", "atr", "chandelier")),
+    "trend_following_v2": ParamSpace(          # 12 — +trail_mode (SO-C1)
         _cat("donchian_period", 20, 40),
         _cat("max_adds", 0, 2),
-        _cat("add_atr_mult", 1.0, 2.0)),
+        _cat("trail_mode", "pct", "atr", "chandelier")),
     "mean_reversion_v1": ParamSpace(           # 8
         _cat("lookback", 20, 30),
         _cat("entry_std", 2.0, 2.5),
@@ -88,16 +88,21 @@ LAB_GRIDS: dict[str, ParamSpace] = {
     "htf_momentum_v1": ParamSpace(             # 9
         _cat("roc_period", 10, 14, 20),
         _cat("roc_threshold", 3.0, 4.0, 6.0)),
+    "htf_momentum_v2": ParamSpace(             # 9 — HTF alignment as size scaler (SO-C3)
+        _cat("roc_period", 10, 14, 20),
+        _cat("roc_threshold", 3.0, 4.0, 6.0)),
     "regime_momentum_v1": ParamSpace(          # 8
         _cat("roc_period", 10, 20),
         _cat("roc_threshold", 3.0, 5.0),
         _cat("regime_gate", "on", "off")),
-    "ma_crossover_v1": ParamSpace(             # 6
+    "ma_crossover_v1": ParamSpace(             # 12 — +adx_filter (SO-C2)
         _cat("fast_period", 8, 20),
-        _cat("slow_period", 30, 50, 100)),
-    "volatility_breakout_v1": ParamSpace(      # 6
+        _cat("slow_period", 30, 50, 100),
+        _cat("adx_filter", "off", "on")),
+    "volatility_breakout_v1": ParamSpace(      # 12 — +trail_mode (SO-C1)
         _cat("lookback", 20, 30),
-        _cat("squeeze_pct", 0.03, 0.05, 0.08)),
+        _cat("squeeze_pct", 0.03, 0.05, 0.08),
+        _cat("trail_mode", "pct", "chandelier")),
     "rules_v1": ParamSpace(                    # 9
         _cat("tp_ladder", "0.5/3.5", "1.0/3.0", "1.5/3.0"),
         _cat("min_risk_reward", 1.5, 1.8, 2.2)),
@@ -353,7 +358,7 @@ def self_test() -> int:
           f"oos_sharpe={_fmt(r.oos_sharpe, '.3f')} dsr={_fmt(r.deflated_sharpe, '.3f')} "
           f"pbo={_fmt(r.pbo, '.2f')} verdict={r.verdict!r}")
     assert r.status == "ok", r.status
-    assert r.windows >= 2 and r.n_trials == 8  # 2×2×2 grid
+    assert r.windows >= 2 and r.n_trials == 12  # 2×2×3 grid
     assert r.most_common_params, "walk-forward should choose params"
     print("self-test OK")
     return 0

@@ -112,3 +112,51 @@ and left at its a-priori defaults (locked by the equivalence golden). Its three
 tunables (`tp_ladder`, `min_risk_reward`, `stop_cooldown_bars`) flow through
 `config.risk` and were already validated in the R-ladder work (SQ/LG). A dedicated
 smaller-window `rules_v1` sweep can be run later if a preset is wanted.
+
+## SO-C — evidence-based enhancement re-run (2026-07-26)
+
+Four additive, off-by-default enhancements (Track C) were swept over the
+productive 4h/1d crypto cells (BTC/ETH/SOL) via the same walk-forward + DSR/PBO
+guard. Results in `docs/backtests/strategy_lab/enh/results.json`. Only configs
+clearing the bar (OOS Sharpe > 0, DSR ≥ 0.6, PBO ≤ 0.5, `share` ≥ 0.5) shipped.
+
+### Shipped (guard-passing wins)
+
+| Enhancement | Cell | Config | OOS | DSR | PBO | share | vs prior |
+|---|---|---|---|---|---|---|---|
+| **C1 Chandelier exit** | volatility_breakout_v1 SOL 4h | `trail_mode=chandelier` | 0.0705 | 0.990 | 0.19 | 0.75 | pct 0.0157 → **+349%**, share 0.50→0.75 |
+| **C1 Chandelier exit** | volatility_breakout_v1 ETH 4h | `trail_mode=chandelier` | 0.0535 | 0.993 | 0.01 | 0.75 | pct 0.0338 → **+58%** |
+| **C3 HTF size-scaler** | htf_momentum_v2 ETH 4h | `roc_period=14, thr=3.0` | 0.0276 | 0.834 | 0.28 | 0.50 | v1 earned **0** presets → v2 earns one |
+| (base) ma_crossover_v1 | ETH 1d | `fast=8, slow=30` | 0.0642 | 0.737 | 0.41 | 0.50 | first-ever preset for this strategy |
+
+### Tried and rejected (honest negatives)
+
+- **C2 — ADX chop filter (rejected).** On every ma_crossover_v1 cell the
+  guard-passing winner has `adx_filter="off"`; ADX-on never beat ADX-off out of
+  sample. The filter removes whipsaw trades but also removes enough valid
+  crosses that OOS Sharpe does not improve. Kept in the codebase (off by
+  default, available) but **not** shipped as any preset. ma_crossover_v1's first
+  preset (ETH 1d) is a base-parameter win, *not* an ADX-filter win.
+- **C1 — ATR trailing mode (rejected in favour of Chandelier).** No `atr`-mode
+  config cleared the bar; where a trailing enhancement won it was always
+  `chandelier` (or the existing `pct`). ATR-trail stays available but earns no
+  preset.
+- **C4 — Kelly-capped sizing + equity-curve filter (EXPERIMENTAL, not shipped).**
+  Excluded from the combinatorial grid (they are risk overlays, not signal
+  params). Measured full-window before/after on trend_following_v1 ETH 1d (900
+  bars, sharpe): baseline **+1.558** → equity_filter=on **+1.329** (−15%) →
+  kelly_sizing=on **+1.309** (−16%) → both on **+0.947** (−39%). Every overlay
+  *reduces* risk-adjusted return here — the equity-curve filter sits out valid
+  re-entries and Kelly only ever scales *down* (it is capped from scaling up).
+  Left off-by-default and **flagged EXPERIMENTAL**; no preset. (Cited rationale —
+  over-betting on estimation error, Kelly 1956 / Thorp — is exactly why full
+  Kelly is avoided; on these small samples even fractional Kelly hurts.)
+
+### Net effect
+
+Catalog grew 17 → **19** presets. The genuine, cited robustness win is the
+**Chandelier exit on 4h breakouts** (Le Beau): it materially lifted OOS Sharpe
+*and* cross-window stability on two independent cells (ETH, SOL) — not a
+curve-fit, since the same mechanism won on two markets with the same direction
+of effect. The HTF size-scaler (C3) rescued a strategy family that previously
+earned nothing. C2 and C4 are documented negatives — reported, not buried.

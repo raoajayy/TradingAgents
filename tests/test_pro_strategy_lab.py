@@ -58,8 +58,8 @@ class TestGridsRespectDeclaredDomains:
                         f"{sid}.{param.name}={choice!r} outside declared domain")
 
     def test_all_strategies_have_a_grid(self):
-        assert len(lab.LAB_GRIDS) == 10  # 9 originals + momentum_v2
-        assert "momentum_v2" in lab.LAB_GRIDS
+        assert len(lab.LAB_GRIDS) == 11  # + momentum_v2 + htf_momentum_v2
+        assert "momentum_v2" in lab.LAB_GRIDS and "htf_momentum_v2" in lab.LAB_GRIDS
 
 
 class TestWindowPlan:
@@ -104,7 +104,7 @@ class TestEvaluateCell:
                               _synthetic_bars(700), objective="sharpe", max_workers=1)
         assert r.status == "ok"
         assert r.windows >= 2
-        assert r.n_trials == 8                      # 2×2×2 grid
+        assert r.n_trials == 12                     # 2×2×3 grid (donchian×stop×trail_mode)
         assert r.oos_sharpe is not None
         assert r.deflated_sharpe is not None and r.pbo is not None
         assert r.most_common_params                 # walk-forward chose params
