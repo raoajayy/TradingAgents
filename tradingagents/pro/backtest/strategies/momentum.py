@@ -289,8 +289,13 @@ MOMENTUM_V2_PARAMS = ParamSpace(
     Param("roc_period", "int", 5, 40, default=14),
     # entry threshold in SIGMA units (vol-relative), not absolute percent — so
     # the trigger self-scales across timeframes instead of going inert on fast
-    # bars the way momentum_v1's absolute roc_threshold does.
-    Param("entry_sigma", "float", 1.0, 4.0, step=0.5, default=2.0),
+    # bars the way momentum_v1's absolute roc_threshold does. Domain deliberately
+    # reaches down to 0.5σ: the momentum edge is a MODERATE move (≈0.5–1σ), the
+    # continuation of an established push; 2σ+ cumulative moves are climaxes that
+    # tend to mean-revert, so a high floor made this a fade-the-top signal with
+    # no edge (Strategy Lab: entry_sigma≥1.5 never cleared the guard, while
+    # 0.5–1σ recovers momentum_v1's moderate-trend edge). Default 1.0.
+    Param("entry_sigma", "float", 0.5, 4.0, step=0.5, default=1.0),
     Param("stop_atr_mult", "float", 1.0, 4.0, step=0.5, default=2.0),
     Param("target_atr_mult", "float", 1.0, 6.0, step=0.5, default=3.0),
     Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),

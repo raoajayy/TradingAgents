@@ -53,8 +53,18 @@ class TestRegistration:
         assert "entry_sigma" in names and "roc_period" in names
 
     def test_defaults_resolve(self):
+        # default entry_sigma is 1.0 (moderate move) — 2σ+ is a climax that
+        # reverts, so the momentum default targets the continuation region.
         r = strategy_param_space("momentum_v2").resolve({})
-        assert r["entry_sigma"] == 2.0 and r["roc_period"] == 14
+        assert r["entry_sigma"] == 1.0 and r["roc_period"] == 14
+
+    def test_entry_sigma_domain_reaches_moderate_region(self):
+        """Regression (MF fix): the momentum edge lives at a MODERATE move
+        (≈0.5σ); the domain must reach it. A floor of 1.0 (the old value) left
+        the strategy only able to fire on 2σ+ climaxes that mean-revert."""
+        sigma = strategy_param_space("momentum_v2")._by_name["entry_sigma"]
+        assert sigma.low == 0.5
+        assert sigma.contains(0.5)
 
 
 class TestEngineRun:

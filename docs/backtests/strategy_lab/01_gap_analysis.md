@@ -172,3 +172,18 @@ Goal: give `htf_momentum_v1` and `rules_v1` (the only strategies with **no** pre
 - `htf_momentum_v1` (4h + 1d, HTF active after the fix): best is ETH 1d OOS +0.049 but **DSR 0.43 < 0.6**; all others fail DSR or PBO. **No robust preset.**
 
 **Decision:** ship nothing for these two — a guard-failing fit is exactly what the robustness bar exists to reject. Both stay at a-priori defaults and are labelled honestly in the UI ("no robust preset found for this strategy yet"). Coverage: **9/11** strategies have a guard-validated best cell; 2 legitimately do not on the available data.
+
+## MF — momentum_v2 entry_sigma recalibration (2026-07-26)
+
+**Defect:** `momentum_v2`'s a-priori `entry_sigma` domain was 1.0–4.0 (default 2.0) and the Lab grid searched {1.5, 2.0, 3.0}. A z-score entry at ≥1.5σ fires only on **climax** moves (a ~2σ cumulative move over 14 bars ≈ an 11% push on ETH 4h) — which mean-revert, not continue. So the strategy was effectively *fading tops/bottoms in the momentum direction* and had no robust edge (its only prior preset, BTC 4h σ=2.0, was near-flat: OOS 0.004). Crucially the region where the momentum edge actually lives — a **moderate** vol-relative move (~0.5σ), the same moderate-trend edge `momentum_v1`'s absolute ROC captures (ETH 4h +19.7% live) — was **outside the searched grid and below the a-priori floor**, so it could never be found.
+
+**Fix:** widened the `entry_sigma` domain to 0.5–4.0 (default 1.0) and retargeted the Lab grid to {0.5, 1.0, 1.5}. Re-ran walk-forward + DSR/PBO over BTC/ETH/SOL × 4h/1d.
+
+**Result — two real guard-passers, both at σ=0.5:**
+
+| cell | entry_sigma / roc | OOS | DSR | PBO | vs old |
+|---|---|---|---|---|---|
+| ETH 1d (new best) | 0.5 / 10 | 0.0528 | 0.610 | 0.30 | **12×** the retired BTC-4h 0.004 |
+| ETH 4h | 0.5 / 10 | 0.0304 | 0.787 | 0.45 | new |
+
+The σ=1.5 climax cells (SOL, BTC) still fail (DSR<0.6 or PBO>0.5) — confirming the edge is specifically the moderate move, not the extreme. The weak BTC-4h σ=2.0 preset is retired; momentum_v2's recommended best is now **ETH 1d**. Default `entry_sigma` lowered 2.0 → 1.0 so un-preset runs also target continuation, not climaxes.

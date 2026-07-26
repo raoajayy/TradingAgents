@@ -44,7 +44,7 @@ result card — none fabricated. `n` = closed trades.
 | 6 | trend_following_v1 | ETH 1d | 0.075 / 0.98 | **+0.4%** · 13 · 27.3% · 1.12 | β −0.01 vs BuyHold −36.7% |
 | 7 | volatility_breakout_v1 | SOL 1d | 0.123 / 0.92 | **+0.3%** · 16 · 100% · 3.72 | **Calmar 3.80**, MaxDD 0.1%, BuyHold −44.8% |
 | 8 | ma_crossover_v1 | ETH 1d | 0.064 / 0.74 | −1.4% · 9 · 25% · 0.53 | weakest; provisional preset |
-| 9 | momentum_v2 | BTC 4h | 0.004 / 0.81 | −3.3% · 38 · 36.8% · 0.83 | near-flat provisional preset |
+| 9 | momentum_v2 | ~~BTC 4h~~ → **ETH 1d** | 0.004→**0.053** / 0.61 | recalibrated (MF fix) | entry_sigma domain was mis-set to the climax region; fixed to moderate-move (σ=0.5), new best ETH 1d OOS 0.053 (12× prior). Old BTC-4h live −3.3% |
 
 **Uncovered (no guard-passing preset → defaults-only, honest note shown in UI):**
 
