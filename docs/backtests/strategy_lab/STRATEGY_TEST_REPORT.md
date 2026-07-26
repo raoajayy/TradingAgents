@@ -122,8 +122,13 @@ already promises the preset "overrides the form params"):
 strategy_params: usePreset && presetForSelection != null ? {} : strategyParams,
 ```
 
-Frontend gates pass (typecheck ✔, eslint ✔, `vitest` backtest 14/14 ✔). This
-fix is **committed locally but awaiting an explicit go-ahead to redeploy.**
+Frontend gates pass (typecheck ✔, eslint ✔, `vitest` backtest 14/14 ✔).
+
+**Deployed + verified live** (revision `pro-dashboard-00097-ks8`, image
+`8af3941`): re-running the exact failing case — `regime_momentum_v1` ETH-1d-1Y
+with "Use tuned preset" on — now returns **+1.8%, 17 trades, WR 47.1%, AVG R
++0.11R, PF 1.20** (was 0 trades / 0.0%). The preset (`regime_gate=off, roc 20,
+thr 5`) reaches the engine as intended.
 
 **Minor (cosmetic).** The helper line under "Run backtest" always reads
 "…est ~1 min. **Rules strategy:** …" regardless of the selected strategy — a
@@ -169,5 +174,6 @@ Artifacts: `test_matrix.json` (this run), and the guard-validated evidence in
   data-available cells run offline with **0 errors**.
 - **Progress UI:** ✅ streams decision-by-decision, cancellable, no hang.
 - **One real bug** ("Use tuned preset" masked by form params) — root-caused,
-  fixed locally, gated; **redeploy pending operator OK**.
+  fixed, gated, **redeployed (`00097-ks8`) and verified live** (preset now
+  applies: regime_momentum_v1 0 trades → +1.8%/17 trades).
 - **One cosmetic bug** (stale strategy description line) — noted, low priority.
