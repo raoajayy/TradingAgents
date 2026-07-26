@@ -10,6 +10,10 @@ from __future__ import annotations
 from typing import Any
 
 from tradingagents.pro.backtest.registry import register
+from tradingagents.pro.backtest.strategies._exits import (
+    exit_param_specs,
+    trailing_fields,
+)
 from tradingagents.pro.backtest.strategy import (
     BracketIntent,
     OrderIntent,
@@ -24,6 +28,7 @@ TREND_V1_PARAMS = ParamSpace(
     Param("trail_pct", "float", 0.01, 0.10, step=0.01, default=0.05),
     Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
     Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
+    *exit_param_specs(),
 )
 
 
@@ -58,16 +63,16 @@ class TrendFollowingV1:
         prior_low = min(b.low for b in prior)
         open_sides = {p.side for p in ctx.positions}  # one position per side
         mult = float(self.params["stop_atr_mult"])
-        trail = float(self.params["trail_pct"])
+        trailing = trailing_fields(self.params)
         risk = float(self.params["risk_pct"])
 
         if last.close > prior_high and "BUY" not in open_sides:
             return [self._entry("BUY", last.close, last.close - mult * atr,
-                                last.close + 20 * atr, trail, risk)]
+                                last.close + 20 * atr, trailing, risk)]
         if (self.params["allow_short"] == "yes"
                 and last.close < prior_low and "SELL" not in open_sides):
             return [self._entry("SELL", last.close, last.close + mult * atr,
-                                last.close - 20 * atr, trail, risk)]
+                                last.close - 20 * atr, trailing, risk)]
         return []
 
     def on_fill(self, fill) -> None: ...
@@ -82,13 +87,13 @@ class TrendFollowingV1:
         return sum(trs) / len(trs) if trs else 0.0
 
     @staticmethod
-    def _entry(side, ref, stop, target, trail, risk) -> OrderIntent:
+    def _entry(side, ref, stop, target, trailing, risk) -> OrderIntent:
         # confirm the breakout on this bar's close, enter market at the next
         # bar's open; ride the trailing stop (far TP so trailing is the exit)
         return OrderIntent(
             kind="market", side=side, risk_pct=risk,
             bracket=BracketIntent(stop_loss=stop, take_profits=((target, 1.0),),
-                                  trailing="pct", trailing_mult=trail),
+                                  **trailing),
             tag=f"tf_{side.lower()}")
 
 
@@ -111,6 +116,7 @@ TREND_V2_PARAMS = ParamSpace(
     Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
     Param("max_adds", "int", 0, 4, default=2),
     Param("add_atr_mult", "float", 0.5, 3.0, step=0.5, default=1.0),
+    *exit_param_specs(),
 )
 
 
@@ -143,7 +149,7 @@ class TrendFollowingV2:
         prior_high = max(b.high for b in prior)
         prior_low = min(b.low for b in prior)
         mult = float(self.params["stop_atr_mult"])
-        trail = float(self.params["trail_pct"])
+        trailing = trailing_fields(self.params)
         risk = float(self.params["risk_pct"])
         max_adds = int(self.params["max_adds"])
         add_m = float(self.params["add_atr_mult"])
@@ -152,18 +158,18 @@ class TrendFollowingV2:
 
         # initial breakout entry (identical geometry to trend_following_v1)
         if last.close > prior_high and not longs:
-            return [self._unit("BUY", last.close, mult, atr, trail, risk, add=False)]
+            return [self._unit("BUY", last.close, mult, atr, trailing, risk, add=False)]
         if (self.params["allow_short"] == "yes"
                 and last.close < prior_low and not shorts):
-            return [self._unit("SELL", last.close, mult, atr, trail, risk, add=False)]
+            return [self._unit("SELL", last.close, mult, atr, trailing, risk, add=False)]
         # pyramid: add to a WINNING position as price advances past the last add
         if (longs and len(longs) < max_adds + 1
                 and last.close >= max(p.entry_price for p in longs) + add_m * atr):
-            return [self._unit("BUY", last.close, mult, atr, trail, risk, add=True)]
+            return [self._unit("BUY", last.close, mult, atr, trailing, risk, add=True)]
         if (shorts and self.params["allow_short"] == "yes"
                 and len(shorts) < max_adds + 1
                 and last.close <= min(p.entry_price for p in shorts) - add_m * atr):
-            return [self._unit("SELL", last.close, mult, atr, trail, risk, add=True)]
+            return [self._unit("SELL", last.close, mult, atr, trailing, risk, add=True)]
         return []
 
     def on_fill(self, fill) -> None: ...
@@ -171,13 +177,13 @@ class TrendFollowingV2:
     def on_stop(self, ctx: StrategyContext) -> None: ...
 
     @staticmethod
-    def _unit(side, ref, mult, atr, trail, risk, *, add) -> OrderIntent:
+    def _unit(side, ref, mult, atr, trailing, risk, *, add) -> OrderIntent:
         stop = ref - mult * atr if side == "BUY" else ref + mult * atr
         target = ref + 20 * atr if side == "BUY" else ref - 20 * atr
         return OrderIntent(
             kind="market", side=side, risk_pct=risk,
             bracket=BracketIntent(stop_loss=stop, take_profits=((target, 1.0),),
-                                  trailing="pct", trailing_mult=trail),
+                                  **trailing),
             tag=f"tf2_{'add' if add else 'entry'}_{side.lower()}")
 
 

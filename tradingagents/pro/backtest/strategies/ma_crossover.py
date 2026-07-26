@@ -7,6 +7,10 @@ from __future__ import annotations
 from typing import Any
 
 from tradingagents.pro.backtest.registry import register
+from tradingagents.pro.backtest.strategies._exits import (
+    exit_param_specs,
+    trailing_fields,
+)
 from tradingagents.pro.backtest.strategy import (
     BracketIntent,
     OrderIntent,
@@ -22,6 +26,7 @@ MA_CROSSOVER_V1_PARAMS = ParamSpace(
     Param("trail_pct", "float", 0.01, 0.10, step=0.01, default=0.05),
     Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
     Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
+    *exit_param_specs(),
 )
 
 
@@ -54,7 +59,7 @@ class MaCrossoverV1:
             return []
         last = bars[-1]
         mult = float(self.params["stop_atr_mult"])
-        trail = float(self.params["trail_pct"])
+        trailing = trailing_fields(self.params)
         risk = float(self.params["risk_pct"])
         open_sides = {p.side for p in ctx.positions}
 
@@ -62,11 +67,11 @@ class MaCrossoverV1:
         cross_down = fast_prev >= slow_prev and fast_now < slow_now
         if cross_up and "BUY" not in open_sides:
             return [self._entry("BUY", last.close - mult * atr,
-                                last.close + 20 * atr, trail, risk)]
+                                last.close + 20 * atr, trailing, risk)]
         if (self.params["allow_short"] == "yes"
                 and cross_down and "SELL" not in open_sides):
             return [self._entry("SELL", last.close + mult * atr,
-                                last.close - 20 * atr, trail, risk)]
+                                last.close - 20 * atr, trailing, risk)]
         return []
 
     def on_fill(self, fill) -> None: ...
@@ -81,11 +86,11 @@ class MaCrossoverV1:
         return sum(trs) / len(trs) if trs else 0.0
 
     @staticmethod
-    def _entry(side, stop, target, trail, risk) -> OrderIntent:
+    def _entry(side, stop, target, trailing, risk) -> OrderIntent:
         return OrderIntent(
             kind="market", side=side, risk_pct=risk,
             bracket=BracketIntent(stop_loss=stop, take_profits=((target, 1.0),),
-                                  trailing="pct", trailing_mult=trail),
+                                  **trailing),
             tag=f"xover_{side.lower()}")
 
 
