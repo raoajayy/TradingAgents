@@ -107,15 +107,6 @@ export default function BacktestPage() {
     Record<string, string | number>
   >({});
   const useLlm = strategyId === "pipeline_llm";
-  // reset params to the selected strategy's declared defaults when the
-  // strategy changes (or the schema first loads)
-  useEffect(() => {
-    const s = strategies.find((x) => x.id === strategyId);
-    if (!s) return;
-    const defaults: Record<string, string | number> = {};
-    for (const p of s.params) if (p.default != null) defaults[p.name] = p.default;
-    setStrategyParams(defaults);
-  }, [strategyId, strategies]);
   const [initialEquity, setInitialEquity] = useState(100_000);
   // sizing: 1% risk target; spot-max 33%/position (3 positions ≈ 99% gross,
   // no leverage) — the caps mirror the backend request-model bounds
@@ -151,6 +142,24 @@ export default function BacktestPage() {
     setTimeframe(recommendedForStrategy.timeframe);
     setUsePreset(true);
   };
+  // populate the visible param fields: a-priori defaults for the selected
+  // strategy, with the tuned preset's values layered on top when "Use tuned
+  // preset" is on (and a preset exists for this cell). So enabling the preset —
+  // or Load best preset — makes the form SHOW the exact tuned values that will
+  // run, for every strategy. Off (or no preset) → plain defaults. Runs on
+  // strategy/cell/toggle change; a manual field edit is preserved until one of
+  // those changes (setStrategyParams isn't a dependency).
+  useEffect(() => {
+    const s = strategies.find((x) => x.id === strategyId);
+    if (!s) return;
+    const defaults: Record<string, string | number> = {};
+    for (const p of s.params) if (p.default != null) defaults[p.name] = p.default;
+    setStrategyParams(
+      usePreset && presetForSelection
+        ? { ...defaults, ...presetForSelection.params }
+        : defaults,
+    );
+  }, [strategyId, strategies, usePreset, presetForSelection]);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cost, setCost] = useState<BacktestCostConfirmation["estimate"] | null>(null);
@@ -233,12 +242,11 @@ export default function BacktestPage() {
         timeframe,
         duration,
         strategy_id: strategyId,
-        // When a tuned preset is in use it must OVERRIDE the form params (the
-        // tooltip promises this). The backend layers the preset UNDER
-        // strategy_params (caller-wins), so sending the form defaults here would
-        // silently mask the preset — omit them so the preset applies cleanly.
-        strategy_params:
-          usePreset && presetForSelection != null ? {} : strategyParams,
+        // The form fields already reflect the tuned preset when it's in use (see
+        // the populate effect above), so what you SEE is what runs — send the
+        // displayed params directly. A manual tweak on top of a preset therefore
+        // applies as expected (backend is caller-wins over the preset).
+        strategy_params: strategyParams,
         use_preset: usePreset && presetForSelection != null,
         confirm_cost: confirmCost,
         initial_equity: initialEquity,

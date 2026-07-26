@@ -37,6 +37,42 @@ describe("BacktestPreset schema", () => {
   });
 });
 
+/** When "Use tuned preset" is on, the visible param form = a-priori defaults
+ * with the preset's tuned values layered on top (mirror of BacktestPage's
+ * populate effect). This is what makes the checkbox SHOW the preset values. */
+function formParams(
+  defaults: Record<string, string | number>,
+  preset: Record<string, string | number> | null,
+  usePreset: boolean,
+): Record<string, string | number> {
+  return usePreset && preset ? { ...defaults, ...preset } : { ...defaults };
+}
+
+describe("formParams (preset populates the form)", () => {
+  const defaults = { lookback: 20, squeeze_pct: 0.05, trail_mode: "pct" };
+  const preset = { lookback: 30, squeeze_pct: 0.05, trail_mode: "chandelier" };
+
+  it("shows a-priori defaults when the preset is off", () => {
+    expect(formParams(defaults, preset, false)).toEqual(defaults);
+  });
+
+  it("overlays the preset values (incl. categoricals) when on", () => {
+    const shown = formParams(defaults, preset, true);
+    expect(shown.lookback).toBe(30);
+    expect(shown.trail_mode).toBe("chandelier");
+  });
+
+  it("keeps defaults for params the preset does not specify", () => {
+    const shown = formParams({ ...defaults, risk_pct: 1.0 }, { lookback: 30 }, true);
+    expect(shown.lookback).toBe(30);
+    expect(shown.risk_pct).toBe(1.0); // untouched by the partial preset
+  });
+
+  it("falls back to defaults when no preset exists even if toggled on", () => {
+    expect(formParams(defaults, null, true)).toEqual(defaults);
+  });
+});
+
 describe("pickRecommended", () => {
   const rows: BacktestPreset[] = [
     BacktestPresetSchema.parse({
