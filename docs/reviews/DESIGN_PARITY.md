@@ -231,6 +231,15 @@ this round).
   badge, timezone labels on timestamps, `30m` timeframe. Additive; removed nothing.
 - **Calibration/leaderboard empty states** — mockup shows populated fixtures; ours
   refuse to fabricate numbers until samples exist.
+- **Trust-first decision hero (2026-07-27)** — the Home hero intentionally
+  diverges from the mockup's ordering to wire trust-earning data to the moment of
+  doubt (first-session audit): the strongest counterargument (or an honest "no
+  agent argued the other side" when unanimous) is surfaced in the hero, the
+  confidence number links to its empirical win-rate + calibration chart, and the
+  bet-math dollars are size-weighted across the full ladder so they reconcile with
+  the headline R:R. Mockup showed a one-sided hero, a bare confidence number, and a
+  single-target bet line that read as R:R 0.5 next to a 2.0 headline. See
+  `DecisionCard.tsx` (`Dissent`, `ConfidenceProof`, `betMath`).
 
 ## Evidence index
 
