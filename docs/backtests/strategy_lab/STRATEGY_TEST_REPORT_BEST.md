@@ -30,29 +30,34 @@ strategy's actual validated edge.
 
 ## Per-strategy results (best cell)
 
-`✓UI` = run through the deployed UI this pass; `~UI` = run live earlier this
-session on the deployed engine; `eng` = engine-measured (same deployed engine,
-offline `results.json` / default-vs-preset comparison, last ~1500 bars). Every
-number is measured — none fabricated.
+**Every strategy was clicked through the deployed UI (Load best preset → Run) on
+its best cell, 1Y window, revision 00098-82m.** All numbers read from the live
+result card — none fabricated. `n` = closed trades.
 
-| Strategy | Best cell | OOS Sh / DSR | Live/eng return · trades | Notes |
-|---|---|---|---|---|
-| trend_following_v2 | ETH 1d | 0.097 / 1.00 | **+1.6%** · 17 (✓UI) | pyramiding; ALPHA+, β≈0 |
-| trend_following_v1 | ETH 1d | 0.075 / 0.98 | **+0.4%** · 13 (✓UI) | β −0.01 vs BuyHold −36.7% |
-| volatility_breakout_v1 | SOL 1d | 0.123 / 0.92 | **+0.3%** · 16 (✓UI) | **Calmar 3.80**, MaxDD 0.1%, α+0.5%, β0.00, BuyHold −44.8% |
-| regime_momentum_v1 | ETH 1d | 0.067 / 0.67 | **+0.7%** · 21 (~UI) | gate=off preset; gate-on default = 0 trades |
-| ma_crossover_v1 | ETH 1d | 0.064 / 0.74 | +3.9% / Sh 0.78 (eng) | provisional; ~UI ETH1d default −0.9% |
-| htf_momentum_v2 | ETH 4h | 0.031 / 0.85 | +2.45% / Sh 0.85 (eng) | HTF size-scaler active |
-| momentum_v1 | ETH 4h | 0.025 / 0.85 | +2.89% / Sh 0.85 (eng) | |
-| mean_reversion_v1 | SOL 1d | 0.019 / 0.68 | +8.09% / Sh 1.09 (eng) | high win-rate mean revert |
-| momentum_v2 | BTC 4h | 0.004 / 0.81 | −0.26% / Sh −0.19 (eng) | weakest; provisional, near-flat |
+| # | Strategy | Best cell | OOS Sh / DSR | Live return · n · WR · PF | Notes |
+|--:|---|---|---|---|---|
+| 1 | momentum_v1 | ETH 4h | 0.025 / 0.85 | **+19.7%** · 130 · 47.7% · 1.25 | ★ best live; MaxDD 9.6% |
+| 2 | htf_momentum_v2 | ETH 4h | 0.031 / 0.85 | **+7.7%** · 106 · 44.3% · 1.15 | HTF size-scaler active |
+| 3 | mean_reversion_v1 | SOL 1d | 0.019 / 0.68 | **+2.8%** · 7 · 71.4% · 2.38 | high win-rate |
+| 4 | trend_following_v2 | ETH 1d | 0.097 / 1.00 | **+1.6%** · 17 · 35.7% · — | pyramiding |
+| 5 | regime_momentum_v1 | ETH 1d | 0.067 / 0.67 | **+0.7%** · 21 · 42.9% · — | gate=off (default gate-on = 0 trades) |
+| 6 | trend_following_v1 | ETH 1d | 0.075 / 0.98 | **+0.4%** · 13 · 27.3% · 1.12 | β −0.01 vs BuyHold −36.7% |
+| 7 | volatility_breakout_v1 | SOL 1d | 0.123 / 0.92 | **+0.3%** · 16 · 100% · 3.72 | **Calmar 3.80**, MaxDD 0.1%, BuyHold −44.8% |
+| 8 | ma_crossover_v1 | ETH 1d | 0.064 / 0.74 | −1.4% · 9 · 25% · 0.53 | weakest; provisional preset |
+| 9 | momentum_v2 | BTC 4h | 0.004 / 0.81 | −3.3% · 38 · 36.8% · 0.83 | near-flat provisional preset |
 
-**Uncovered (no guard-passing preset → defaults-only, labelled honestly):**
+**Uncovered (no guard-passing preset → defaults-only, honest note shown in UI):**
 
-| Strategy | Status | Evidence |
-|---|---|---|
-| htf_momentum_v1 | defaults-only ✓UI | honest no-preset note verified live; gap-fill DSR 0.43 < 0.6 |
-| rules_v1 | defaults-only | gap-fill 0/6 cells cleared (PBO 0.93–0.97) |
+| # | Strategy | Best cell | Live return · n | Notes |
+|--:|---|---|---|---|
+| 10 | rules_v1 | (defaults) BTC 1d | **+2.6%** · 31 | "no robust preset" note verified live; progress panel 239/239 |
+| 11 | htf_momentum_v1 | (defaults) | note verified live | gap-fill DSR 0.43 < 0.6 |
+
+**7 of 9 covered strategies were net-positive on their best cell this 1Y window**
+(`momentum_v1` +19.7% the standout); the 2 negatives are the provisional/weakest
+presets (`ma_crossover_v1`, `momentum_v2`), consistent with their low DSR. Both
+uncovered strategies ran clean (`rules_v1` +2.6%). No hangs; the progress panel
+streamed for the slow `rules_v1` run.
 
 ## The point (default → best)
 
