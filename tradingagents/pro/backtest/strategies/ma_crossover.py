@@ -26,6 +26,12 @@ MA_CROSSOVER_V1_PARAMS = ParamSpace(
     Param("trail_pct", "float", 0.01, 0.10, step=0.01, default=0.05),
     Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
     Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
+    # opt-in ADX chop filter: suppress crosses when trend strength (ADX) is
+    # below adx_min — the diagnosed cause of ma_crossover's whipsaw losses in
+    # ranging markets (docs/backtests/strategy_lab/01_gap_analysis.md). Off by
+    # default → geometry/defaults unchanged. Evidence: Wilder's ADX.
+    Param("adx_filter", "categorical", choices=("off", "on"), default="off"),
+    Param("adx_min", "float", 10.0, 35.0, step=2.5, default=20.0),
     *exit_param_specs(),
 )
 
@@ -58,6 +64,13 @@ class MaCrossoverV1:
         if atr <= 0:
             return []
         last = bars[-1]
+        # opt-in ADX chop filter — stand aside when trend strength is weak
+        # (fail-closed: a missing/warm-up ADX reading counts as chop)
+        if self.params.get("adx_filter") == "on":
+            reading = ctx.snapshot.get_indicator("ADX", last.timeframe)
+            adx = reading.value.get("value") if reading is not None else None
+            if adx is None or adx < float(self.params["adx_min"]):
+                return []
         mult = float(self.params["stop_atr_mult"])
         trailing = trailing_fields(self.params)
         risk = float(self.params["risk_pct"])
