@@ -8,9 +8,11 @@ from tradingagents.pro.backtest import presets
 from tradingagents.pro.backtest.presets import (
     CATALOG,
     Preset,
+    best_preset_for,
     build_preset_strategy,
     list_presets,
     preset_params,
+    recommended_presets,
 )
 from tradingagents.pro.backtest.registry import strategy_param_space
 
@@ -56,6 +58,33 @@ class TestCatalogIntegrity:
                 strat = build_preset_strategy(sid, symbol, tf)
                 for name, value in preset.params.items():
                     assert strat.params[name] == value
+
+class TestRecommendedBest:
+    def test_best_is_a_guard_passer_and_highest_oos(self):
+        for sid, cells in CATALOG.items():
+            best = best_preset_for(sid)
+            assert best is not None
+            symbol, tf, preset = best
+            # it must be an actual cell of this strategy, guard-passing, and the
+            # max OOS Sharpe among the strategy's cells
+            assert cells[(symbol, tf)] is preset
+            assert preset.deflated_sharpe >= 0.6 and preset.pbo <= 0.5
+            assert preset.oos_sharpe == max(p.oos_sharpe for p in cells.values())
+
+    def test_uncovered_strategy_has_no_best(self):
+        assert best_preset_for("htf_momentum_v1") is None  # 0 presets
+        assert best_preset_for("does_not_exist") is None
+
+    def test_recommended_one_row_per_covered_strategy(self):
+        rec = recommended_presets()
+        assert {r["strategy_id"] for r in rec} == set(CATALOG)
+        assert len(rec) == len(CATALOG)
+
+    def test_list_presets_flags_exactly_one_recommended_per_strategy(self):
+        rows = list_presets()
+        for sid in CATALOG:
+            flagged = [r for r in rows if r["strategy_id"] == sid and r["recommended"]]
+            assert len(flagged) == 1, f"{sid}: expected exactly one recommended cell"
 
     def test_validate_rejects_out_of_domain_preset(self, monkeypatch):
         """The import-time guard must reject a value outside the declared domain."""

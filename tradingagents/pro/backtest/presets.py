@@ -115,9 +115,49 @@ def get_preset(strategy_id: str, symbol: str, timeframe: str) -> Preset | None:
     return CATALOG.get(strategy_id, {}).get((symbol, timeframe))
 
 
-def list_presets() -> list[dict[str, Any]]:
-    """Flat, serializable view of the catalog (for an API/UI or a report)."""
+def best_preset_for(strategy_id: str) -> tuple[str, str, Preset] | None:
+    """The strategy's single strongest guard-passing cell — its "recommended
+    best refined preset". Ranked by out-of-sample Sharpe, tie-broken by the
+    deflated Sharpe (the overfitting-adjusted metric). ``None`` when the
+    strategy has no preset (caller falls back to a-priori defaults). Every cell
+    in CATALOG already cleared the guard bar, so the max is always shippable."""
+    cells = CATALOG.get(strategy_id)
+    if not cells:
+        return None
+    (symbol, tf), preset = max(
+        cells.items(),
+        key=lambda kv: (kv[1].oos_sharpe or 0.0, kv[1].deflated_sharpe or 0.0))
+    return symbol, tf, preset
+
+
+def recommended_presets() -> list[dict[str, Any]]:
+    """One row per strategy that has a preset — its recommended best cell, for
+    the UI's one-click "load best" affordance. Strategies with no preset are
+    intentionally absent (the UI shows them as defaults-only)."""
     out: list[dict[str, Any]] = []
+    for sid in sorted(CATALOG):
+        best = best_preset_for(sid)
+        if best is None:
+            continue
+        symbol, tf, p = best
+        out.append({
+            "strategy_id": sid, "symbol": symbol, "timeframe": tf,
+            "params": p.params, "oos_sharpe": p.oos_sharpe,
+            "deflated_sharpe": p.deflated_sharpe, "pbo": p.pbo,
+        })
+    return out
+
+
+def list_presets() -> list[dict[str, Any]]:
+    """Flat, serializable view of the catalog (for an API/UI or a report). Each
+    row carries ``recommended``: true on the strategy's single best cell (see
+    ``best_preset_for``), so the UI can flag/steer to the strongest option."""
+    out: list[dict[str, Any]] = []
+    best_cell = {
+        sid: (b[0], b[1])
+        for sid in CATALOG
+        if (b := best_preset_for(sid)) is not None
+    }
     for sid, cells in sorted(CATALOG.items()):
         for (symbol, tf), p in sorted(cells.items()):
             out.append({
@@ -125,6 +165,7 @@ def list_presets() -> list[dict[str, Any]]:
                 "params": p.params, "oos_sharpe": p.oos_sharpe,
                 "deflated_sharpe": p.deflated_sharpe, "pbo": p.pbo,
                 "n_trials": p.n_trials, "source": p.source,
+                "recommended": best_cell.get(sid) == (symbol, tf),
             })
     return out
 
@@ -161,8 +202,10 @@ def _validate_catalog() -> None:
 __all__ = [
     "CATALOG",
     "Preset",
+    "best_preset_for",
     "build_preset_strategy",
     "get_preset",
     "list_presets",
     "preset_params",
+    "recommended_presets",
 ]

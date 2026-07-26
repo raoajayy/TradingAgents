@@ -485,6 +485,8 @@ export const BacktestPresetSchema = z.object({
   deflated_sharpe: z.number().nullable().optional(),
   pbo: z.number().nullable().optional(),
   n_trials: z.number().nullable().optional(),
+  // true on the strategy's single strongest cell (its "best refined preset")
+  recommended: z.boolean().default(false),
 });
 export type BacktestPreset = z.infer<typeof BacktestPresetSchema>;
 export const BacktestPresetsSchema = z.object({

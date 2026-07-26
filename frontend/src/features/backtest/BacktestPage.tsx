@@ -135,6 +135,22 @@ export default function BacktestPage() {
       ) ?? null,
     [presetsQuery.data, strategyId, symbol, timeframe],
   );
+  // the strategy's single strongest validated cell (its "best refined preset"),
+  // regardless of the currently-selected symbol/timeframe — powers the
+  // one-click "Load best preset".
+  const recommendedForStrategy = useMemo(
+    () =>
+      (presetsQuery.data?.presets ?? []).find(
+        (p) => p.recommended && p.strategy_id === strategyId,
+      ) ?? null,
+    [presetsQuery.data, strategyId],
+  );
+  const loadBestPreset = () => {
+    if (!recommendedForStrategy) return;
+    setSymbol(recommendedForStrategy.symbol);
+    setTimeframe(recommendedForStrategy.timeframe);
+    setUsePreset(true);
+  };
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cost, setCost] = useState<BacktestCostConfirmation["estimate"] | null>(null);
@@ -314,6 +330,8 @@ export default function BacktestPage() {
         setStrategyParams={setStrategyParams}
         useLlm={useLlm}
         preset={presetForSelection}
+        recommended={recommendedForStrategy}
+        onLoadBest={loadBestPreset}
         usePreset={usePreset}
         setUsePreset={setUsePreset}
         initialEquity={initialEquity}
@@ -384,6 +402,8 @@ function RunControls(props: {
   setStrategyParams: (p: Record<string, string | number>) => void;
   useLlm: boolean;
   preset: BacktestPreset | null;
+  recommended: BacktestPreset | null;
+  onLoadBest: () => void;
   usePreset: boolean;
   setUsePreset: (b: boolean) => void;
   initialEquity: number;
@@ -417,6 +437,29 @@ function RunControls(props: {
         <CardTitle>Configure run</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3.5">
+        {props.recommended && (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-accent/40 bg-accent-muted px-3 py-2 text-xs"
+            data-testid="backtest-best-preset"
+          >
+            <span>
+              <span className="font-semibold text-fg-muted">
+                Best validated cell:
+              </span>{" "}
+              {props.recommended.symbol} · {props.recommended.timeframe} · OOS
+              Sharpe {props.recommended.oos_sharpe?.toFixed(3) ?? "—"} · DSR{" "}
+              {props.recommended.deflated_sharpe?.toFixed(2) ?? "—"}
+            </span>
+            <button
+              type="button"
+              onClick={props.onLoadBest}
+              className="rounded-md border border-accent/50 px-2 py-1 font-medium text-accent hover:bg-accent/10"
+              data-testid="backtest-load-best"
+            >
+              Load best preset
+            </button>
+          </div>
+        )}
         <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
           <Field label="Asset">
             <select
@@ -579,13 +622,27 @@ function RunControls(props: {
             </>
           ) : (
             <>
-              <span className="font-semibold text-fg-muted">Rules strategy:</span>{" "}
-              deterministic indicator rules (trend/momentum votes, ADX chop
-              filter, long &amp; short), one decision EVERY bar, 1:2 profit
-              ladder with breakeven lock-in — no model calls.
+              <span className="font-semibold text-fg-muted">
+                {props.strategyId}:
+              </span>{" "}
+              {selectedStrategy?.description ??
+                "deterministic strategy — no model calls."}
             </>
           )}
         </p>
+
+        {!props.useLlm && !props.preset && (
+          <p
+            className="text-xs text-fg-subtle"
+            data-testid="backtest-no-preset"
+          >
+            No validated preset for {props.symbol} · {props.timeframe} — running
+            a-priori defaults
+            {props.recommended
+              ? ". Use “Load best preset” above for this strategy’s tuned edge."
+              : " (no robust preset found for this strategy yet)."}
+          </p>
+        )}
 
         {props.cost && (
           <div
