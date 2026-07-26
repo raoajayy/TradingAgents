@@ -14,6 +14,10 @@ from tradingagents.pro.backtest.strategies._exits import (
     exit_param_specs,
     trailing_fields,
 )
+from tradingagents.pro.backtest.strategies._sizing import (
+    equity_below_ma,
+    kelly_risk,
+)
 from tradingagents.pro.backtest.strategy import (
     BracketIntent,
     OrderIntent,
@@ -29,6 +33,11 @@ TREND_V1_PARAMS = ParamSpace(
     Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
     Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
     *exit_param_specs(),
+    # EXPERIMENTAL, off by default (SO-C4): equity-curve trend filter + Kelly-
+    # capped adaptive sizing off the strategy's own realized outcomes.
+    Param("equity_filter", "categorical", choices=("off", "on"), default="off"),
+    Param("equity_ma", "int", 10, 60, default=20),
+    Param("kelly_sizing", "categorical", choices=("off", "on"), default="off"),
 )
 
 
@@ -46,8 +55,19 @@ class TrendFollowingV1:
     def __init__(self, params: dict[str, Any]):
         self.id = "trend_following_v1"
         self.params = params
+        # EXPERIMENTAL adaptive-sizing / equity-filter state (SO-C4). Only
+        # touched when equity_filter/kelly_sizing are enabled → default path
+        # (both off) is byte-identical to before.
+        self._adaptive = (params.get("equity_filter") == "on"
+                          or params.get("kelly_sizing") == "on")
+        self._equity_hist: list[float] = []
+        self._realized: list[float] = []
+        self._prev_cash = 0.0
 
-    def on_start(self, ctx: StrategyContext) -> None: ...
+    def on_start(self, ctx: StrategyContext) -> None:
+        self._equity_hist = []
+        self._realized = []
+        self._prev_cash = 0.0
 
     def on_bar(self, ctx: StrategyContext) -> list[OrderIntent]:
         bars = ctx.snapshot.bars
@@ -65,6 +85,23 @@ class TrendFollowingV1:
         mult = float(self.params["stop_atr_mult"])
         trailing = trailing_fields(self.params)
         risk = float(self.params["risk_pct"])
+
+        # EXPERIMENTAL (SO-C4): track own equity/realized P&L, apply the
+        # equity-curve filter + Kelly-capped sizing. Skipped entirely when both
+        # are off, so default behaviour is unchanged.
+        if self._adaptive:
+            acct = ctx.account
+            self._equity_hist.append(ctx.equity)
+            delta = acct.cash_pnl - self._prev_cash
+            if abs(delta) > 1e-9:  # a round-trip realized P&L increment
+                self._realized.append(delta)
+                self._prev_cash = acct.cash_pnl
+            if (self.params.get("equity_filter") == "on"
+                    and equity_below_ma(self._equity_hist,
+                                        int(self.params["equity_ma"]))):
+                return []
+            if self.params.get("kelly_sizing") == "on":
+                risk = kelly_risk(self._realized, risk)
 
         if last.close > prior_high and "BUY" not in open_sides:
             return [self._entry("BUY", last.close, last.close - mult * atr,
