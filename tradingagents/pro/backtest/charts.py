@@ -222,3 +222,54 @@ def strategy_comparison(path: Path, regimes: Sequence[RegimeStats]) -> None:
     ax.set_ylim(0, 100)
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
     _save(fig, path)
+
+
+def param_sensitivity_heatmap(
+    path: Path,
+    x_name: str,
+    x_vals: Sequence[float],
+    y_name: str,
+    y_vals: Sequence[float],
+    grid: Sequence[Sequence[float | None]],
+    *,
+    objective: str = "Sharpe",
+    title: str | None = None,
+    star: tuple[int, int] | None = None,
+) -> None:
+    """Objective surface over two swept parameters — used to show whether a
+    tuned preset sits on a robust *plateau* (neighbours score similarly) or a
+    fragile *spike* (a lone high cell surrounded by poor ones, the signature of
+    an overfit fit). ``grid[i][j]`` is the objective at (y_vals[i], x_vals[j]);
+    ``None`` cells render blank. ``star`` marks the shipped preset's (i, j)."""
+    if not x_vals or not y_vals:
+        return _placeholder(path, title or "Parameter sensitivity")
+    import numpy as np
+
+    arr = np.full((len(y_vals), len(x_vals)), np.nan)
+    for i, row in enumerate(grid):
+        for j, v in enumerate(row):
+            if v is not None:
+                arr[i, j] = v
+    fig, ax = plt.subplots(figsize=(0.9 * len(x_vals) + 3,
+                                    0.7 * len(y_vals) + 2.2))
+    finite = np.abs(arr[np.isfinite(arr)])
+    vmax = max(0.05, float(finite.max()) if finite.size else 0.05)
+    im = ax.imshow(arr, cmap="RdYlGn", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(x_vals)))
+    ax.set_xticklabels([f"{v:g}" for v in x_vals], fontsize=8)
+    ax.set_yticks(range(len(y_vals)))
+    ax.set_yticklabels([f"{v:g}" for v in y_vals], fontsize=8)
+    ax.set_xlabel(x_name)
+    ax.set_ylabel(y_name)
+    for i in range(len(y_vals)):
+        for j in range(len(x_vals)):
+            if np.isfinite(arr[i, j]):
+                ax.text(j, i, f"{arr[i, j]:.2f}", ha="center", va="center",
+                        fontsize=7)
+    if star is not None:
+        si, sj = star
+        ax.add_patch(plt.Rectangle((sj - 0.5, si - 0.5), 1, 1, fill=False,
+                                    edgecolor="#111", lw=2.2))
+    ax.set_title(title or f"{objective} sensitivity: {y_name} × {x_name}")
+    fig.colorbar(im, ax=ax, fraction=0.046, label=objective)
+    _save(fig, path)
