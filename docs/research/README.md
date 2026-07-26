@@ -27,6 +27,8 @@ Everything here obeys the honesty contract in [00_methodology.md](00_methodology
 | 13 | Implementation roadmap | [13_roadmap.md](13_roadmap.md) | **done (S7)** |
 | 14 | Prioritized backlog with estimates | [14_backlog.md](14_backlog.md) | **done (S7)** |
 | 15 | Final recommendation | [15_final_recommendation.md](15_final_recommendation.md) | **done (S7)** |
+| 18 | Literature review — cited evidence + measured OOS impact | [18_literature_review.md](18_literature_review.md) | **done (SO-E)** |
+| 19 | Strategy optimization report (Phase 10, consolidated) | [19_optimization_report.md](19_optimization_report.md) | **done (SO-E)** |
 
 ## Session plan (checkpoints in bold)
 
