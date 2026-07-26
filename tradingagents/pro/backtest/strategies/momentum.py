@@ -379,12 +379,123 @@ def _build_momentum_v2(params: dict[str, Any]) -> MomentumV2:
     return MomentumV2(params)
 
 
+# --- htf_momentum_v2: HTF alignment as a size SCALER, not a veto (SO-C3) ------
+
+HTF_MOMENTUM_V2_PARAMS = ParamSpace(
+    Param("roc_period", "int", 5, 40, default=14),
+    Param("roc_threshold", "float", 1.0, 15.0, step=1.0, default=4.0),
+    Param("stop_atr_mult", "float", 1.0, 4.0, step=0.5, default=2.0),
+    Param("target_atr_mult", "float", 1.0, 6.0, step=0.5, default=3.0),
+    Param("risk_pct", "float", 0.1, 3.0, step=0.1, default=1.0),
+    Param("allow_short", "categorical", choices=("yes", "no"), default="yes"),
+    # size multiplier when the higher timeframe strongly OPPOSES / ALIGNS with
+    # the entry; the trade is scaled continuously between the two by HTF trend
+    # strength (close-vs-mean), rather than hard-vetoed as in htf_momentum_v1.
+    Param("htf_scale_min", "float", 0.0, 1.0, step=0.25, default=0.25),
+    Param("htf_scale_max", "float", 1.0, 3.0, step=0.5, default=1.5),
+    Param("htf_ref_dev", "float", 0.02, 0.20, step=0.02, default=0.05),
+)
+
+
+class HtfMomentumV2:
+    """Higher-timeframe momentum where HTF alignment SCALES position size
+    instead of vetoing the trade (SO-C3). ``htf_momentum_v1`` blocks longs when
+    the HTF is below its mean and shorts when above — a binary veto that earned
+    zero tuned presets because it mostly just removed trades. v2 keeps every ROC
+    entry but sizes it by HTF conviction: ``risk_pct`` scales continuously from
+    ``htf_scale_min`` (HTF strongly opposes) through 1.0 (neutral / no HTF) up to
+    ``htf_scale_max`` (HTF strongly aligns), where "strength" is the HTF close's
+    signed distance from its own mean normalized by ``htf_ref_dev``. Fixed-R ATR
+    stop/target; long & short; look-ahead-safe. Evidence: multi-timeframe
+    confirmation + trend-strength position sizing (Kaufman)."""
+
+    htf_timeframes = (Timeframe.D1, Timeframe.W1)
+
+    def __init__(self, params: dict[str, Any]):
+        self.id = "htf_momentum_v2"
+        self.params = params
+
+    def on_start(self, ctx: StrategyContext) -> None: ...
+
+    def on_bar(self, ctx: StrategyContext) -> list[OrderIntent]:
+        bars = ctx.snapshot.bars
+        p = int(self.params["roc_period"])
+        if len(bars) < p + 2:
+            return []
+        atr = MomentumV1._atr(bars, p)
+        ref = bars[-(p + 1)]
+        if atr <= 0 or ref.close <= 0:
+            return []
+        last = bars[-1]
+        roc = (last.close / ref.close - 1.0) * 100.0
+        thr = float(self.params["roc_threshold"])
+        stop_m = float(self.params["stop_atr_mult"])
+        tgt_m = float(self.params["target_atr_mult"])
+        base = float(self.params["risk_pct"])
+        open_sides = {pos.side for pos in ctx.positions}
+
+        if roc > thr and "BUY" not in open_sides:
+            return [self._entry("BUY", last.close - stop_m * atr,
+                                last.close + tgt_m * atr,
+                                base * self._htf_scale(ctx, "BUY"))]
+        if (self.params["allow_short"] == "yes"
+                and roc < -thr and "SELL" not in open_sides):
+            return [self._entry("SELL", last.close + stop_m * atr,
+                                last.close - tgt_m * atr,
+                                base * self._htf_scale(ctx, "SELL"))]
+        return []
+
+    def on_fill(self, fill) -> None: ...
+
+    def on_stop(self, ctx: StrategyContext) -> None: ...
+
+    def _htf_scale(self, ctx: StrategyContext, side: str) -> float:
+        """Continuous size multiplier from HTF alignment. 1.0 when no HTF
+        context; else scales min→max by the signed HTF close-vs-mean deviation
+        (in the entry's direction) normalized by htf_ref_dev, clipped."""
+        smin = float(self.params["htf_scale_min"])
+        smax = float(self.params["htf_scale_max"])
+        if not ctx.htf:
+            return 1.0
+        tf = max(ctx.htf, key=lambda t: _TF_RANK.get(t.value, 0))
+        hb = ctx.htf[tf].bars
+        if len(hb) < 3:
+            return 1.0
+        sma = sum(b.close for b in hb) / len(hb)
+        if sma <= 0:
+            return 1.0
+        dev = hb[-1].close / sma - 1.0                 # signed HTF trend strength
+        aligned = dev if side == "BUY" else -dev       # >0 aligns with the entry
+        ref = float(self.params["htf_ref_dev"])
+        score = 0.5 + aligned / (2.0 * ref)            # 0 (opposed) .. 1 (aligned)
+        score = max(0.0, min(1.0, score))
+        return smin + (smax - smin) * score
+
+    @staticmethod
+    def _entry(side, stop, target, risk) -> OrderIntent:
+        return OrderIntent(
+            kind="market", side=side, risk_pct=risk,
+            bracket=BracketIntent(stop_loss=stop, take_profits=((target, 1.0),)),
+            tag=f"htfmom2_{side.lower()}")
+
+
+@register("htf_momentum_v2", HTF_MOMENTUM_V2_PARAMS,
+          description="Higher-timeframe momentum where HTF alignment SCALES "
+                      "position size (min→max by HTF trend strength) instead of "
+                      "vetoing the trade as htf_momentum_v1 does. Fixed-R ATR "
+                      "stop/target, long & short. No model calls.")
+def _build_htf_momentum_v2(params: dict[str, Any]) -> HtfMomentumV2:
+    return HtfMomentumV2(params)
+
+
 __all__ = [
     "HTF_MOMENTUM_V1_PARAMS",
+    "HTF_MOMENTUM_V2_PARAMS",
     "MOMENTUM_V1_PARAMS",
     "MOMENTUM_V2_PARAMS",
     "REGIME_MOMENTUM_V1_PARAMS",
     "HtfMomentumV1",
+    "HtfMomentumV2",
     "MomentumV1",
     "MomentumV2",
     "RegimeMomentumV1",

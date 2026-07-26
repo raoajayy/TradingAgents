@@ -35,10 +35,12 @@ from tradingagents.pro.backtest.strategies.mean_reversion import (
 )
 from tradingagents.pro.backtest.strategies.momentum import (
     HTF_MOMENTUM_V1_PARAMS,
+    HTF_MOMENTUM_V2_PARAMS,
     MOMENTUM_V1_PARAMS,
     MOMENTUM_V2_PARAMS,
     REGIME_MOMENTUM_V1_PARAMS,
     HtfMomentumV1,
+    HtfMomentumV2,
     MomentumV1,
     MomentumV2,
     RegimeMomentumV1,
