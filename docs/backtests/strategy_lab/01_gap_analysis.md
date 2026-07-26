@@ -160,3 +160,15 @@ Catalog grew 17 → **19** presets. The genuine, cited robustness win is the
 curve-fit, since the same mechanism won on two markets with the same direction
 of effect. The HTF size-scaler (C3) rescued a strategy family that previously
 earned nothing. C2 and C4 are documented negatives — reported, not buried.
+
+## BP — "best preset for every strategy": gap-fill for the 2 uncovered strategies (2026-07-26)
+
+Goal: give `htf_momentum_v1` and `rules_v1` (the only strategies with **no** preset) a fair chance to earn one, so every strategy can surface a best refined option. Walk-forward + DSR/PBO over BTC/ETH/SOL, same guard bar (OOS>0, DSR≥0.6, PBO≤0.5, share≥0.5).
+
+**Harness correctness fix (found here):** `pro_strategy_lab.py::evaluate_cell` passed a strategy's declared `htf_timeframes` unfiltered, so an HTF-consuming strategy on a **1d/1w base** raised *"htf 1d must be coarser than the bar timeframe"* and those cells errored out (this is also why `htf_momentum_v1`'s 1d cells were never scored in earlier runs). Now filtered to strictly-coarser frames, mirroring the dashboard job (`backtest_job.py`).
+
+**Results — both remain defaults-only (0 guard-passers):**
+- `rules_v1` (BTC/ETH/SOL × 4h/1d, capped 1200 bars): best raw-OOS cells (SOL 1d +0.045, SOL 4h +0.030) fail on PBO≈0.93–0.97 (overfit); the DSR-respectable BTC 4h is negative OOS. **No robust preset.**
+- `htf_momentum_v1` (4h + 1d, HTF active after the fix): best is ETH 1d OOS +0.049 but **DSR 0.43 < 0.6**; all others fail DSR or PBO. **No robust preset.**
+
+**Decision:** ship nothing for these two — a guard-failing fit is exactly what the robustness bar exists to reject. Both stay at a-priori defaults and are labelled honestly in the UI ("no robust preset found for this strategy yet"). Coverage: **9/11** strategies have a guard-validated best cell; 2 legitimately do not on the available data.

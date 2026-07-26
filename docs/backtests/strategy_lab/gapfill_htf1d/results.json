@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-07-26T14:04:52.219443+00:00",
+  "objective": "sharpe",
+  "cells": [
+    {
+      "strategy_id": "htf_momentum_v1",
+      "symbol": "BTC-USD",
+      "timeframe": "1d",
+      "bars": 939,
+      "status": "ok",
+      "windows": 2,
+      "n_trials": 9,
+      "oos_sharpe": -0.0018376026824787875,
+      "mean_oos_objective": -0.32969930738264347,
+      "worst_oos_objective": -0.9929161305094495,
+      "profitable_windows": 1,
+      "distinct_param_sets": 2,
+      "most_common_params": {
+        "roc_period": 20,
+        "roc_threshold": 6.0
+      },
+      "most_common_share": 0.5,
+      "is_best_objective": -0.2915847968728124,
+      "deflated_sharpe": 0.20854419347020337,
+      "pbo": 0.9563492063492064,
+      "verdict": "no evidence of out-of-sample edge \u2014 do not deploy (PBO 0.96, deflated Sharpe 0.21, 9 trials)",
+      "passes_guard": false,
+      "note": ""
+    },
+    {
+      "strategy_id": "htf_momentum_v1",
+      "symbol": "ETH-USD",
+      "timeframe": "1d",
+      "bars": 900,
+      "status": "ok",
+      "windows": 2,
+      "n_trials": 9,
+      "oos_sharpe": 0.04883431546667771,
+      "mean_oos_objective": 0.8206111346107785,
+      "worst_oos_objective": 0.13636296506126666,
+      "profitable_windows": 2,
+      "distinct_param_sets": 2,
+      "most_common_params": {
+        "roc_period": 10,
+        "roc_threshold": 6.0
+      },
+      "most_common_share": 0.5,
+      "is_best_objective": 0.20747491033976817,
+      "deflated_sharpe": 0.4299312135826948,
+      "pbo": 0.3253968253968254,
+      "verdict": "no evidence of out-of-sample edge \u2014 do not deploy (PBO 0.33, deflated Sharpe 0.43, 9 trials)",
+      "passes_guard": false,
+      "note": ""
+    },
+    {
+      "strategy_id": "htf_momentum_v1",
+      "symbol": "SOL-USD",
+      "timeframe": "1d",
+      "bars": 838,
+      "status": "ok",
+      "windows": 2,
+      "n_trials": 9,
+      "oos_sharpe": 0.01075418799982797,
+      "mean_oos_objective": 0.20678588506864945,
+      "worst_oos_objective": -0.14021424132541854,
+      "profitable_windows": 1,
+      "distinct_param_sets": 2,
+      "most_common_params": {
+        "roc_period": 20,
+        "roc_threshold": 6.0
+      },
+      "most_common_share": 0.5,
+      "is_best_objective": -0.5271940055567577,
+      "deflated_sharpe": 0.1625153379160298,
+      "pbo": 0.8214285714285714,
+      "verdict": "no evidence of out-of-sample edge \u2014 do not deploy (PBO 0.82, deflated Sharpe 0.16, 9 trials)",
+      "passes_guard": false,
+      "note": ""
+    }
+  ]
+}

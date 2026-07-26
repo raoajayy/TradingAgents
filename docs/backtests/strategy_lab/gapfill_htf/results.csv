@@ -1,0 +1,7 @@
+strategy_id,symbol,timeframe,bars,status,windows,n_trials,oos_sharpe,mean_oos_objective,worst_oos_objective,profitable_windows,distinct_param_sets,most_common_share,deflated_sharpe,pbo,passes_guard,verdict
+htf_momentum_v1,BTC-USD,4h,4000,ok,4,9,0.004855155317037814,0.8968306723118872,-0.2703979086413919,2,4,0.25,0.5674200082223869,0.17063492063492064,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.17, deflated Sharpe 0.57, 9 trials)"
+htf_momentum_v1,BTC-USD,1d,939,error: ValueError: htf 1d must be coarser than the bar timeframe 1d,0,0,,,,,,,,,False,""
+htf_momentum_v1,ETH-USD,4h,4000,ok,4,9,0.028628163778302202,1.1825554331098176,-2.8049056620672093,3,3,0.5,0.6552643156711341,0.5396825396825397,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.54, deflated Sharpe 0.66, 9 trials)"
+htf_momentum_v1,ETH-USD,1d,900,error: ValueError: htf 1d must be coarser than the bar timeframe 1d,0,0,,,,,,,,,False,""
+htf_momentum_v1,SOL-USD,4h,4000,ok,4,9,-0.02196012431943777,-1.7786121869221212,-6.45915371844958,1,3,0.5,0.44687031889169015,0.3968253968253968,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.40, deflated Sharpe 0.45, 9 trials)"
+htf_momentum_v1,SOL-USD,1d,838,error: ValueError: htf 1d must be coarser than the bar timeframe 1d,0,0,,,,,,,,,False,""

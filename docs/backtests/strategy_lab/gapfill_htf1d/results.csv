@@ -1,0 +1,4 @@
+strategy_id,symbol,timeframe,bars,status,windows,n_trials,oos_sharpe,mean_oos_objective,worst_oos_objective,profitable_windows,distinct_param_sets,most_common_share,deflated_sharpe,pbo,passes_guard,verdict
+htf_momentum_v1,BTC-USD,1d,939,ok,2,9,-0.0018376026824787875,-0.32969930738264347,-0.9929161305094495,1,2,0.5,0.20854419347020337,0.9563492063492064,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.96, deflated Sharpe 0.21, 9 trials)"
+htf_momentum_v1,ETH-USD,1d,900,ok,2,9,0.04883431546667771,0.8206111346107785,0.13636296506126666,2,2,0.5,0.4299312135826948,0.3253968253968254,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.33, deflated Sharpe 0.43, 9 trials)"
+htf_momentum_v1,SOL-USD,1d,838,ok,2,9,0.01075418799982797,0.20678588506864945,-0.14021424132541854,1,2,0.5,0.1625153379160298,0.8214285714285714,False,"no evidence of out-of-sample edge — do not deploy (PBO 0.82, deflated Sharpe 0.16, 9 trials)"

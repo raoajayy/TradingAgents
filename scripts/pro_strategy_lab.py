@@ -216,7 +216,11 @@ def evaluate_cell(strategy_id: str, symbol: str, tf: Timeframe,
     ppy = periods_per_year(tf, asset)
     config = ProConfig(asset=asset, mode=TradingMode.BACKTEST, max_debate_rounds=1)
     grid = LAB_GRIDS[strategy_id]
-    htf = _HTF_TIMEFRAMES.get(strategy_id, ())
+    # mirror the dashboard job: only keep HTFs strictly COARSER than the base
+    # timeframe (a 1d run can't take a 1d HTF, else the engine rejects it).
+    from tradingagents.pro.backtest.multitf import HTF_SECONDS
+    htf = tuple(t for t in _HTF_TIMEFRAMES.get(strategy_id, ())
+                if HTF_SECONDS[t] > HTF_SECONDS[tf])
 
     plan = window_plan(len(bars))
     if plan is None:
