@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-07-26T09:26:05.607208+00:00",
+  "objective": "sharpe",
+  "cells": [
+    {
+      "strategy_id": "htf_momentum_v2",
+      "symbol": "ETH-USD",
+      "timeframe": "4h",
+      "bars": 4000,
+      "status": "ok",
+      "windows": 4,
+      "n_trials": 9,
+      "oos_sharpe": 0.031059073886761927,
+      "mean_oos_objective": 1.4584715761708311,
+      "worst_oos_objective": -2.0572504064778108,
+      "profitable_windows": 3,
+      "distinct_param_sets": 3,
+      "most_common_params": {
+        "roc_period": 10,
+        "roc_threshold": 4.0
+      },
+      "most_common_share": 0.5,
+      "is_best_objective": 1.5803845250812982,
+      "deflated_sharpe": 0.8474901650328602,
+      "pbo": 0.23015873015873015,
+      "verdict": "survives the overfitting gauntlet (PBO 0.23, deflated Sharpe 0.85, 9 trials)",
+      "passes_guard": true,
+      "note": ""
+    }
+  ]
+}

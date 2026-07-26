@@ -126,7 +126,7 @@ clearing the bar (OOS Sharpe > 0, DSR ≥ 0.6, PBO ≤ 0.5, `share` ≥ 0.5) shi
 |---|---|---|---|---|---|---|---|
 | **C1 Chandelier exit** | volatility_breakout_v1 SOL 4h | `trail_mode=chandelier` | 0.0705 | 0.990 | 0.19 | 0.75 | pct 0.0157 → **+349%**, share 0.50→0.75 |
 | **C1 Chandelier exit** | volatility_breakout_v1 ETH 4h | `trail_mode=chandelier` | 0.0535 | 0.993 | 0.01 | 0.75 | pct 0.0338 → **+58%** |
-| **C3 HTF size-scaler** | htf_momentum_v2 ETH 4h | `roc_period=14, thr=3.0` | 0.0276 | 0.834 | 0.28 | 0.50 | v1 earned **0** presets → v2 earns one |
+| **C3 HTF size-scaler** | htf_momentum_v2 ETH 4h | `roc_period=10, thr=4.0` (HTF 1d/1w active) | 0.0311 | 0.847 | 0.23 | 0.50 | v1 earned **0** presets → v2 earns one |
 | (base) ma_crossover_v1 | ETH 1d | `fast=8, slow=30` | 0.0642 | 0.737 | 0.41 | 0.50 | first-ever preset for this strategy |
 
 ### Tried and rejected (honest negatives)

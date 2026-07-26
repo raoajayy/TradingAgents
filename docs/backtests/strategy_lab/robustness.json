@@ -1,0 +1,906 @@
+[
+  {
+    "strategy_id": "htf_momentum_v2",
+    "symbol": "ETH-USD",
+    "timeframe": "4h",
+    "bars": 5397,
+    "n_trades": 257,
+    "oos_sharpe": 0.0311,
+    "deflated_sharpe": 0.8475,
+    "total_return": 0.128,
+    "benchmark_total_return": -0.3413,
+    "alpha": 0.0514,
+    "beta": -0.0161,
+    "cagr": 0.0507,
+    "calmar": 1.5338,
+    "recovery_factor": 3.3668,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 98588.58676688778,
+      "final_equity_p50": 112555.4142772767,
+      "final_equity_p95": 128101.03251265759,
+      "max_drawdown_p50": 0.057532525715243886,
+      "max_drawdown_p95": 0.10953027189554543,
+      "prob_loss": 0.074
+    },
+    "regimes": {
+      "trending_up": {
+        "n_trades": 42,
+        "win_rate": 0.4762,
+        "total_pnl": 2052.82,
+        "avg_pnl": 48.88
+      },
+      "high_volatility": {
+        "n_trades": 36,
+        "win_rate": 0.3889,
+        "total_pnl": -890.79,
+        "avg_pnl": -24.74
+      },
+      "ranging": {
+        "n_trades": 142,
+        "win_rate": 0.507,
+        "total_pnl": 11975.35,
+        "avg_pnl": 84.33
+      },
+      "trending_down": {
+        "n_trades": 37,
+        "win_rate": 0.3784,
+        "total_pnl": -341.83,
+        "avg_pnl": -9.24
+      }
+    }
+  },
+  {
+    "strategy_id": "ma_crossover_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "1d",
+    "bars": 900,
+    "n_trades": 29,
+    "oos_sharpe": 0.0642,
+    "deflated_sharpe": 0.7368,
+    "total_return": 0.0391,
+    "benchmark_total_return": -0.4449,
+    "alpha": 0.0169,
+    "beta": -0.0007,
+    "cagr": 0.0168,
+    "calmar": 0.5044,
+    "recovery_factor": 1.0932,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 95556.9051748682,
+      "final_equity_p50": 103364.44738483761,
+      "final_equity_p95": 114191.77781309807,
+      "max_drawdown_p50": 0.028721122534996223,
+      "max_drawdown_p95": 0.05877502084509638,
+      "prob_loss": 0.259
+    },
+    "regimes": {
+      "crisis": {
+        "n_trades": 12,
+        "win_rate": 0.1667,
+        "total_pnl": -1879.55,
+        "avg_pnl": -156.63
+      },
+      "high_volatility": {
+        "n_trades": 17,
+        "win_rate": 0.3529,
+        "total_pnl": 5790.86,
+        "avg_pnl": 340.64
+      }
+    }
+  },
+  {
+    "strategy_id": "mean_reversion_v1",
+    "symbol": "BTC-USD",
+    "timeframe": "4h",
+    "bars": 5630,
+    "n_trades": 168,
+    "oos_sharpe": 0.0018,
+    "deflated_sharpe": 0.7305,
+    "total_return": 0.0883,
+    "benchmark_total_return": 0.5005,
+    "alpha": 0.0286,
+    "beta": 0.0192,
+    "cagr": 0.0339,
+    "calmar": 1.2485,
+    "recovery_factor": 2.9796,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 99063.96948391917,
+      "final_equity_p50": 108524.02398869696,
+      "final_equity_p95": 118050.53187460625,
+      "max_drawdown_p50": 0.03282888449588767,
+      "max_drawdown_p95": 0.06476820473098542,
+      "prob_loss": 0.065
+    },
+    "regimes": {
+      "low_volatility": {
+        "n_trades": 12,
+        "win_rate": 0.25,
+        "total_pnl": -978.43,
+        "avg_pnl": -81.54
+      },
+      "ranging": {
+        "n_trades": 97,
+        "win_rate": 0.4227,
+        "total_pnl": 5031.68,
+        "avg_pnl": 51.87
+      },
+      "trending_up": {
+        "n_trades": 27,
+        "win_rate": 0.4444,
+        "total_pnl": 795.26,
+        "avg_pnl": 29.45
+      },
+      "trending_down": {
+        "n_trades": 31,
+        "win_rate": 0.4516,
+        "total_pnl": 4500.66,
+        "avg_pnl": 145.18
+      },
+      "high_volatility": {
+        "n_trades": 1,
+        "win_rate": 0.0,
+        "total_pnl": -517.87,
+        "avg_pnl": -517.87
+      }
+    }
+  },
+  {
+    "strategy_id": "mean_reversion_v1",
+    "symbol": "SOL-USD",
+    "timeframe": "1d",
+    "bars": 838,
+    "n_trades": 20,
+    "oos_sharpe": 0.0192,
+    "deflated_sharpe": 0.6809,
+    "total_return": 0.0809,
+    "benchmark_total_return": -0.545,
+    "alpha": 0.0375,
+    "beta": 0.0059,
+    "cagr": 0.0372,
+    "calmar": 1.3648,
+    "recovery_factor": 2.739,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 99614.65146481936,
+      "final_equity_p50": 108233.65040169276,
+      "final_equity_p95": 116848.62220440028,
+      "max_drawdown_p50": 0.028501653381289342,
+      "max_drawdown_p95": 0.05518855580434087,
+      "prob_loss": 0.058
+    },
+    "regimes": {
+      "crisis": {
+        "n_trades": 13,
+        "win_rate": 0.6154,
+        "total_pnl": 6017.57,
+        "avg_pnl": 462.89
+      },
+      "high_volatility": {
+        "n_trades": 7,
+        "win_rate": 0.5714,
+        "total_pnl": 2069.43,
+        "avg_pnl": 295.63
+      }
+    }
+  },
+  {
+    "strategy_id": "momentum_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "4h",
+    "bars": 5397,
+    "n_trades": 336,
+    "oos_sharpe": 0.025,
+    "deflated_sharpe": 0.8543,
+    "total_return": 0.1464,
+    "benchmark_total_return": -0.3413,
+    "alpha": 0.0584,
+    "beta": -0.0158,
+    "cagr": 0.0577,
+    "calmar": 0.7961,
+    "recovery_factor": 1.7356,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 97924.64246420334,
+      "final_equity_p50": 115403.1910124984,
+      "final_equity_p95": 134506.71519857776,
+      "max_drawdown_p50": 0.07174007299740749,
+      "max_drawdown_p95": 0.14256451587191848,
+      "prob_loss": 0.082
+    },
+    "regimes": {
+      "trending_up": {
+        "n_trades": 52,
+        "win_rate": 0.4808,
+        "total_pnl": 2412.67,
+        "avg_pnl": 46.4
+      },
+      "high_volatility": {
+        "n_trades": 43,
+        "win_rate": 0.2558,
+        "total_pnl": -14459.35,
+        "avg_pnl": -336.26
+      },
+      "ranging": {
+        "n_trades": 189,
+        "win_rate": 0.4974,
+        "total_pnl": 18561.4,
+        "avg_pnl": 98.21
+      },
+      "trending_down": {
+        "n_trades": 52,
+        "win_rate": 0.5192,
+        "total_pnl": 8126.67,
+        "avg_pnl": 156.28
+      }
+    }
+  },
+  {
+    "strategy_id": "momentum_v2",
+    "symbol": "BTC-USD",
+    "timeframe": "4h",
+    "bars": 5630,
+    "n_trades": 94,
+    "oos_sharpe": 0.0044,
+    "deflated_sharpe": 0.8114,
+    "total_return": 0.0775,
+    "benchmark_total_return": 0.5005,
+    "alpha": 0.0288,
+    "beta": 0.0029,
+    "cagr": 0.0298,
+    "calmar": 1.4456,
+    "recovery_factor": 3.4598,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 101313.776486133,
+      "final_equity_p50": 107700.04922869019,
+      "final_equity_p95": 114401.68363765429,
+      "max_drawdown_p50": 0.021740365201237156,
+      "max_drawdown_p95": 0.04321905896735365,
+      "prob_loss": 0.021
+    },
+    "regimes": {
+      "ranging": {
+        "n_trades": 53,
+        "win_rate": 0.5472,
+        "total_pnl": 5469.45,
+        "avg_pnl": 103.2
+      },
+      "trending_up": {
+        "n_trades": 16,
+        "win_rate": 0.375,
+        "total_pnl": 232.76,
+        "avg_pnl": 14.55
+      },
+      "trending_down": {
+        "n_trades": 15,
+        "win_rate": 0.6,
+        "total_pnl": 1727.16,
+        "avg_pnl": 115.14
+      },
+      "low_volatility": {
+        "n_trades": 9,
+        "win_rate": 0.3333,
+        "total_pnl": -235.17,
+        "avg_pnl": -26.13
+      },
+      "high_volatility": {
+        "n_trades": 1,
+        "win_rate": 1.0,
+        "total_pnl": 553.85,
+        "avg_pnl": 553.85
+      }
+    }
+  },
+  {
+    "strategy_id": "regime_momentum_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "1d",
+    "bars": 900,
+    "n_trades": 61,
+    "oos_sharpe": 0.0669,
+    "deflated_sharpe": 0.6678,
+    "total_return": 0.0842,
+    "benchmark_total_return": -0.4449,
+    "alpha": 0.0363,
+    "beta": -0.0132,
+    "cagr": 0.0358,
+    "calmar": 0.674,
+    "recovery_factor": 1.4537,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 92455.37294420367,
+      "final_equity_p50": 108109.80705902098,
+      "final_equity_p95": 123074.25976969575,
+      "max_drawdown_p50": 0.06417083140721243,
+      "max_drawdown_p95": 0.1342434375127246,
+      "prob_loss": 0.197
+    },
+    "regimes": {
+      "high_volatility": {
+        "n_trades": 46,
+        "win_rate": 0.5,
+        "total_pnl": 8366.73,
+        "avg_pnl": 181.89
+      },
+      "crisis": {
+        "n_trades": 15,
+        "win_rate": 0.4,
+        "total_pnl": 48.47,
+        "avg_pnl": 3.23
+      }
+    }
+  },
+  {
+    "strategy_id": "regime_momentum_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "4h",
+    "bars": 5397,
+    "n_trades": 275,
+    "oos_sharpe": 0.0403,
+    "deflated_sharpe": 0.9175,
+    "total_return": 0.2186,
+    "benchmark_total_return": -0.3413,
+    "alpha": 0.0832,
+    "beta": -0.0132,
+    "cagr": 0.0846,
+    "calmar": 2.369,
+    "recovery_factor": 4.9502,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 104649.5030835278,
+      "final_equity_p50": 121900.06056493368,
+      "final_equity_p95": 137669.70386699756,
+      "max_drawdown_p50": 0.05196312257577256,
+      "max_drawdown_p95": 0.09494095766048952,
+      "prob_loss": 0.018
+    },
+    "regimes": {
+      "trending_up": {
+        "n_trades": 31,
+        "win_rate": 0.4839,
+        "total_pnl": 2947.33,
+        "avg_pnl": 95.08
+      },
+      "ranging": {
+        "n_trades": 215,
+        "win_rate": 0.4837,
+        "total_pnl": 18429.32,
+        "avg_pnl": 85.72
+      },
+      "trending_down": {
+        "n_trades": 28,
+        "win_rate": 0.3571,
+        "total_pnl": -584.59,
+        "avg_pnl": -20.88
+      },
+      "high_volatility": {
+        "n_trades": 1,
+        "win_rate": 1.0,
+        "total_pnl": 1067.96,
+        "avg_pnl": 1067.96
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "1d",
+    "bars": 900,
+    "n_trades": 45,
+    "oos_sharpe": 0.0749,
+    "deflated_sharpe": 0.9798,
+    "total_return": 0.1056,
+    "benchmark_total_return": -0.4449,
+    "alpha": 0.0441,
+    "beta": -0.0001,
+    "cagr": 0.0447,
+    "calmar": 3.0462,
+    "recovery_factor": 6.4898,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 102100.57141919226,
+      "final_equity_p50": 110767.29858981556,
+      "final_equity_p95": 120765.1920537006,
+      "max_drawdown_p50": 0.018160272861441458,
+      "max_drawdown_p95": 0.034450524218429035,
+      "prob_loss": 0.022
+    },
+    "regimes": {
+      "high_volatility": {
+        "n_trades": 29,
+        "win_rate": 0.4828,
+        "total_pnl": 10703.16,
+        "avg_pnl": 369.07
+      },
+      "crisis": {
+        "n_trades": 16,
+        "win_rate": 0.375,
+        "total_pnl": -145.1,
+        "avg_pnl": -9.07
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v1",
+    "symbol": "SOL-USD",
+    "timeframe": "4h",
+    "bars": 5024,
+    "n_trades": 92,
+    "oos_sharpe": 0.0243,
+    "deflated_sharpe": 0.7712,
+    "total_return": 0.0891,
+    "benchmark_total_return": -0.4699,
+    "alpha": 0.0387,
+    "beta": 0.0028,
+    "cagr": 0.0384,
+    "calmar": 1.0054,
+    "recovery_factor": 2.1081,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 97452.23106965369,
+      "final_equity_p50": 109095.94032961482,
+      "final_equity_p95": 122068.94049806845,
+      "max_drawdown_p50": 0.043232440834989096,
+      "max_drawdown_p95": 0.08376934466524057,
+      "prob_loss": 0.107
+    },
+    "regimes": {
+      "high_volatility": {
+        "n_trades": 19,
+        "win_rate": 0.5263,
+        "total_pnl": -745.89,
+        "avg_pnl": -39.26
+      },
+      "trending_down": {
+        "n_trades": 10,
+        "win_rate": 0.4,
+        "total_pnl": 824.12,
+        "avg_pnl": 82.41
+      },
+      "ranging": {
+        "n_trades": 56,
+        "win_rate": 0.4107,
+        "total_pnl": 11103.96,
+        "avg_pnl": 198.28
+      },
+      "trending_up": {
+        "n_trades": 7,
+        "win_rate": 0.1429,
+        "total_pnl": -2274.22,
+        "avg_pnl": -324.89
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v2",
+    "symbol": "ETH-USD",
+    "timeframe": "1d",
+    "bars": 900,
+    "n_trades": 56,
+    "oos_sharpe": 0.097,
+    "deflated_sharpe": 0.9984,
+    "total_return": 0.1718,
+    "benchmark_total_return": -0.4449,
+    "alpha": 0.0698,
+    "beta": 0.0007,
+    "cagr": 0.0714,
+    "calmar": 3.6946,
+    "recovery_factor": 7.5533,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 107019.84187498497,
+      "final_equity_p50": 117242.97696361344,
+      "final_equity_p95": 128162.73717878372,
+      "max_drawdown_p50": 0.016973094530289903,
+      "max_drawdown_p95": 0.03167831261766586,
+      "prob_loss": 0.002
+    },
+    "regimes": {
+      "high_volatility": {
+        "n_trades": 38,
+        "win_rate": 0.5526,
+        "total_pnl": 17328.95,
+        "avg_pnl": 456.03
+      },
+      "crisis": {
+        "n_trades": 18,
+        "win_rate": 0.3889,
+        "total_pnl": -152.2,
+        "avg_pnl": -8.46
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v2",
+    "symbol": "ETH-USD",
+    "timeframe": "4h",
+    "bars": 5397,
+    "n_trades": 187,
+    "oos_sharpe": 0.0367,
+    "deflated_sharpe": 0.9039,
+    "total_return": 0.1698,
+    "benchmark_total_return": -0.3413,
+    "alpha": 0.0655,
+    "beta": 0.0058,
+    "cagr": 0.0665,
+    "calmar": 1.3489,
+    "recovery_factor": 2.8195,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 102038.33326858589,
+      "final_equity_p50": 116404.00015834428,
+      "final_equity_p95": 132663.3796506417,
+      "max_drawdown_p50": 0.041571903355542776,
+      "max_drawdown_p95": 0.07945367524703986,
+      "prob_loss": 0.029
+    },
+    "regimes": {
+      "trending_up": {
+        "n_trades": 28,
+        "win_rate": 0.3214,
+        "total_pnl": -2073.97,
+        "avg_pnl": -74.07
+      },
+      "high_volatility": {
+        "n_trades": 15,
+        "win_rate": 0.3333,
+        "total_pnl": -2151.99,
+        "avg_pnl": -143.47
+      },
+      "ranging": {
+        "n_trades": 126,
+        "win_rate": 0.4444,
+        "total_pnl": 22317.83,
+        "avg_pnl": 177.13
+      },
+      "trending_down": {
+        "n_trades": 18,
+        "win_rate": 0.3889,
+        "total_pnl": -1114.2,
+        "avg_pnl": -61.9
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v2",
+    "symbol": "SOL-USD",
+    "timeframe": "1d",
+    "bars": 838,
+    "n_trades": 32,
+    "oos_sharpe": 0.0575,
+    "deflated_sharpe": 0.7648,
+    "total_return": 0.0451,
+    "benchmark_total_return": -0.545,
+    "alpha": 0.0209,
+    "beta": -0.0009,
+    "cagr": 0.021,
+    "calmar": 1.3327,
+    "recovery_factor": 2.7413,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 100896.99497968606,
+      "final_equity_p50": 104416.19452968561,
+      "final_equity_p95": 108608.05479506131,
+      "max_drawdown_p50": 0.009951261933150069,
+      "max_drawdown_p95": 0.021941793027497516,
+      "prob_loss": 0.019
+    },
+    "regimes": {
+      "crisis": {
+        "n_trades": 19,
+        "win_rate": 0.6316,
+        "total_pnl": 2832.19,
+        "avg_pnl": 149.06
+      },
+      "high_volatility": {
+        "n_trades": 13,
+        "win_rate": 0.6923,
+        "total_pnl": 1678.4,
+        "avg_pnl": 129.11
+      }
+    }
+  },
+  {
+    "strategy_id": "trend_following_v2",
+    "symbol": "SOL-USD",
+    "timeframe": "4h",
+    "bars": 5024,
+    "n_trades": 137,
+    "oos_sharpe": 0.0176,
+    "deflated_sharpe": 0.6682,
+    "total_return": 0.0536,
+    "benchmark_total_return": -0.4699,
+    "alpha": 0.0238,
+    "beta": 0.0018,
+    "cagr": 0.0233,
+    "calmar": 0.527,
+    "recovery_factor": 1.1248,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 95690.60821850193,
+      "final_equity_p50": 105107.13883318432,
+      "final_equity_p95": 115870.68046919286,
+      "max_drawdown_p50": 0.0404060137066819,
+      "max_drawdown_p95": 0.08287327149688822,
+      "prob_loss": 0.199
+    },
+    "regimes": {
+      "high_volatility": {
+        "n_trades": 29,
+        "win_rate": 0.3793,
+        "total_pnl": 308.29,
+        "avg_pnl": 10.63
+      },
+      "trending_down": {
+        "n_trades": 17,
+        "win_rate": 0.3529,
+        "total_pnl": -917.9,
+        "avg_pnl": -53.99
+      },
+      "ranging": {
+        "n_trades": 74,
+        "win_rate": 0.4595,
+        "total_pnl": 6698.35,
+        "avg_pnl": 90.52
+      },
+      "trending_up": {
+        "n_trades": 17,
+        "win_rate": 0.5294,
+        "total_pnl": -732.72,
+        "avg_pnl": -43.1
+      }
+    }
+  },
+  {
+    "strategy_id": "volatility_breakout_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "1d",
+    "bars": 900,
+    "n_trades": 40,
+    "oos_sharpe": 0.1213,
+    "deflated_sharpe": 0.8494,
+    "total_return": 0.1366,
+    "benchmark_total_return": -0.4449,
+    "alpha": 0.0559,
+    "beta": -0.002,
+    "cagr": 0.0573,
+    "calmar": 15.2148,
+    "recovery_factor": 31.8993,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 109229.9979621133,
+      "final_equity_p50": 113615.59811002482,
+      "final_equity_p95": 118674.08691183817,
+      "max_drawdown_p50": 0.0014322782951336,
+      "max_drawdown_p95": 0.0027236664355788504,
+      "prob_loss": 0.0
+    },
+    "regimes": {
+      "crisis": {
+        "n_trades": 13,
+        "win_rate": 0.7692,
+        "total_pnl": 3480.08,
+        "avg_pnl": 267.7
+      },
+      "high_volatility": {
+        "n_trades": 27,
+        "win_rate": 0.7778,
+        "total_pnl": 10176.27,
+        "avg_pnl": 376.9
+      }
+    }
+  },
+  {
+    "strategy_id": "volatility_breakout_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "1h",
+    "bars": 21588,
+    "n_trades": 555,
+    "oos_sharpe": 0.0073,
+    "deflated_sharpe": 0.6576,
+    "total_return": 0.0285,
+    "benchmark_total_return": -0.2324,
+    "alpha": 0.0132,
+    "beta": -0.0041,
+    "cagr": 0.0115,
+    "calmar": 0.175,
+    "recovery_factor": 0.4179,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 89098.59467483773,
+      "final_equity_p50": 103278.90573674726,
+      "final_equity_p95": 117707.45461902839,
+      "max_drawdown_p50": 0.08002941932443941,
+      "max_drawdown_p95": 0.15540255695268843,
+      "prob_loss": 0.373
+    },
+    "regimes": {
+      "ranging": {
+        "n_trades": 205,
+        "win_rate": 0.2634,
+        "total_pnl": -2587.3,
+        "avg_pnl": -12.62
+      },
+      "trending_up": {
+        "n_trades": 63,
+        "win_rate": 0.2857,
+        "total_pnl": -1973.85,
+        "avg_pnl": -31.33
+      },
+      "low_volatility": {
+        "n_trades": 246,
+        "win_rate": 0.2561,
+        "total_pnl": 9607.27,
+        "avg_pnl": 39.05
+      },
+      "trending_down": {
+        "n_trades": 41,
+        "win_rate": 0.2195,
+        "total_pnl": -2199.71,
+        "avg_pnl": -53.65
+      }
+    }
+  },
+  {
+    "strategy_id": "volatility_breakout_v1",
+    "symbol": "ETH-USD",
+    "timeframe": "4h",
+    "bars": 5397,
+    "n_trades": 165,
+    "oos_sharpe": 0.0535,
+    "deflated_sharpe": 0.9934,
+    "total_return": 0.4623,
+    "benchmark_total_return": -0.3413,
+    "alpha": 0.1576,
+    "beta": -0.0032,
+    "cagr": 0.169,
+    "calmar": 3.5386,
+    "recovery_factor": 6.5197,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 128880.4985717679,
+      "final_equity_p50": 144958.09153512478,
+      "final_equity_p95": 163454.82133537316,
+      "max_drawdown_p50": 0.0203620403774491,
+      "max_drawdown_p95": 0.03465250602171571,
+      "prob_loss": 0.0
+    },
+    "regimes": {
+      "trending_up": {
+        "n_trades": 26,
+        "win_rate": 0.5385,
+        "total_pnl": 5216.75,
+        "avg_pnl": 200.64
+      },
+      "high_volatility": {
+        "n_trades": 10,
+        "win_rate": 0.3,
+        "total_pnl": 536.43,
+        "avg_pnl": 53.64
+      },
+      "ranging": {
+        "n_trades": 114,
+        "win_rate": 0.5965,
+        "total_pnl": 39638.03,
+        "avg_pnl": 347.7
+      },
+      "trending_down": {
+        "n_trades": 15,
+        "win_rate": 0.4,
+        "total_pnl": 842.31,
+        "avg_pnl": 56.15
+      }
+    }
+  },
+  {
+    "strategy_id": "volatility_breakout_v1",
+    "symbol": "SOL-USD",
+    "timeframe": "1d",
+    "bars": 838,
+    "n_trades": 50,
+    "oos_sharpe": 0.1232,
+    "deflated_sharpe": 0.9195,
+    "total_return": 0.0292,
+    "benchmark_total_return": -0.545,
+    "alpha": 0.0136,
+    "beta": 0.0006,
+    "cagr": 0.0136,
+    "calmar": 9.0499,
+    "recovery_factor": 18.8473,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 102128.44225741836,
+      "final_equity_p50": 102904.53349854615,
+      "final_equity_p95": 103835.9501601268,
+      "max_drawdown_p50": 0.00040671539985150725,
+      "max_drawdown_p95": 0.0007684143519078633,
+      "prob_loss": 0.0
+    },
+    "regimes": {
+      "crisis": {
+        "n_trades": 29,
+        "win_rate": 0.8621,
+        "total_pnl": 2190.26,
+        "avg_pnl": 75.53
+      },
+      "high_volatility": {
+        "n_trades": 21,
+        "win_rate": 0.7619,
+        "total_pnl": 730.58,
+        "avg_pnl": 34.79
+      }
+    }
+  },
+  {
+    "strategy_id": "volatility_breakout_v1",
+    "symbol": "SOL-USD",
+    "timeframe": "4h",
+    "bars": 5024,
+    "n_trades": 108,
+    "oos_sharpe": 0.0705,
+    "deflated_sharpe": 0.9904,
+    "total_return": 0.3844,
+    "benchmark_total_return": -0.4699,
+    "alpha": 0.145,
+    "beta": -0.0023,
+    "cagr": 0.1545,
+    "calmar": 4.6207,
+    "recovery_factor": 8.2736,
+    "risk_of_ruin": 0.0,
+    "monte_carlo": {
+      "n_paths": 1000,
+      "final_equity_p5": 122212.16987026556,
+      "final_equity_p50": 137974.7428763032,
+      "final_equity_p95": 156915.01833648217,
+      "max_drawdown_p50": 0.019536986091664293,
+      "max_drawdown_p95": 0.03510833833055147,
+      "prob_loss": 0.0
+    },
+    "regimes": {
+      "ranging": {
+        "n_trades": 69,
+        "win_rate": 0.5507,
+        "total_pnl": 20178.4,
+        "avg_pnl": 292.44
+      },
+      "trending_down": {
+        "n_trades": 13,
+        "win_rate": 0.3077,
+        "total_pnl": 2610.64,
+        "avg_pnl": 200.82
+      },
+      "trending_up": {
+        "n_trades": 11,
+        "win_rate": 0.7273,
+        "total_pnl": 5688.08,
+        "avg_pnl": 517.1
+      },
+      "high_volatility": {
+        "n_trades": 15,
+        "win_rate": 0.8,
+        "total_pnl": 9959.33,
+        "avg_pnl": 663.96
+      }
+    }
+  }
+]

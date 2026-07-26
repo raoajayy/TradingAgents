@@ -95,8 +95,10 @@ CATALOG: dict[str, dict[tuple[str, str], Preset]] = {
     },
     "htf_momentum_v2": {
         # C3 win: the HTF size-scaler variant earned a preset where the binary-
-        # veto htf_momentum_v1 earned none. Provisional (share 0.50).
-        ("ETH-USD", "4h"): Preset(params={"roc_period": 14, "roc_threshold": 3.0}, oos_sharpe=0.0276, deflated_sharpe=0.8343, pbo=0.2817, n_trials=9, source="docs/backtests/strategy_lab/enh/results.json", evidence={"most_common_share": 0.50, "windows": 4, "enhancement": "C3-htf-scaler"}),
+        # veto htf_momentum_v1 earned none. Evaluated with the scaler ACTIVE
+        # (HTF = 1d/1w, as the strategy's htf_timeframes declares and the
+        # dashboard job wires) — OOS 0.0311, DSR 0.847. Provisional (share 0.50).
+        ("ETH-USD", "4h"): Preset(params={"roc_period": 10, "roc_threshold": 4.0}, oos_sharpe=0.0311, deflated_sharpe=0.8475, pbo=0.2302, n_trials=9, source="docs/backtests/strategy_lab/enh_htf/results.json", evidence={"most_common_share": 0.50, "windows": 4, "enhancement": "C3-htf-scaler", "htf": "1d/1w active"}),
     },
 }
 

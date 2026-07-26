@@ -108,7 +108,13 @@ LAB_GRIDS: dict[str, ParamSpace] = {
         _cat("min_risk_reward", 1.5, 1.8, 2.2)),
 }
 # strategies that consult higher-timeframe context (need an HTF-aware trial)
-_HTF_TIMEFRAMES = {"htf_momentum_v1": (Timeframe.D1, Timeframe.W1)}
+_HTF_TIMEFRAMES = {
+    "htf_momentum_v1": (Timeframe.D1, Timeframe.W1),
+    # htf_momentum_v2 (SO-C3) NEEDS a higher timeframe or its size-scaler is
+    # inert (_htf_scale returns 1.0 when ctx.htf is empty). Give the 4h/1d base
+    # the next TF up so the scaler is actually exercised in the sweep.
+    "htf_momentum_v2": (Timeframe.D1, Timeframe.W1),
+}
 
 
 @dataclass
