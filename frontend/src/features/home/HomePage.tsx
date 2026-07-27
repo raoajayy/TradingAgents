@@ -8,11 +8,13 @@ import { Link } from "react-router-dom";
 import { AlertFeedList } from "@/components/AlertFeedList";
 import { DecisionCard } from "@/components/DecisionCard";
 import { EmptyState } from "@/components/EmptyState";
+import { OpenPositions } from "@/components/OpenPositions";
 import { Sparkline } from "@/components/Sparkline";
 import { Button } from "@/components/ui/button";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { WidgetGrid, type WidgetDef } from "@/components/WidgetGrid";
+import { dedupeAlerts } from "@/lib/alerts";
 import {
   useAlerts,
   useBacktest,
@@ -20,6 +22,7 @@ import {
   useCalendar,
   useJournal,
   useOverview,
+  usePortfolioStats,
   useRecommendation,
   useRuns,
   useScanner,
@@ -34,6 +37,60 @@ import { useLayoutStore } from "@/stores/layout";
 import { useUiStore } from "@/stores/ui";
 
 const BOARD_SYMBOLS = ["XAUUSD", "BTC-USD"] as const;
+
+/** Make sense of an infrastructure outage in ONE honest line, instead of
+ * leaving the trader to infer it from 25 duplicate alerts + a wall of
+ * feed-starved rejections. A down feed (e.g. coinmetrics) starves crypto
+ * runs of evidence so they reject at "join"; say that plainly, and name
+ * what's UNaffected so the page doesn't read as wholesale broken. Renders
+ * nothing when feeds are healthy. */
+function SystemHealthBanner() {
+  const overview = useOverview();
+  const runs = useRuns();
+  const missing = overview.data?.missing_feeds ?? [];
+  if (missing.length === 0) return null;
+  // count recent runs that rejected at "join" — the no-evidence stage a
+  // starved feed produces (last 24h window)
+  const dayAgo = Date.now() - 24 * 3600_000;
+  const starved = (runs.data ?? []).filter(
+    (r) => r.rejected_at === "join" && Date.parse(r.started_at) > dayAgo,
+  );
+  const feedList = missing.map((f) => f.split(":")[0]).join(", ");
+  return (
+    <div
+      className="rounded-[14px] border border-stale/40 bg-stale/10 px-4 py-2.5 text-[13px]"
+      data-testid="system-health-banner"
+    >
+      <span className="font-bold text-stale">⚠ Data feed degraded</span>{" "}
+      <span className="text-fg">— {feedList} unavailable.</span>{" "}
+      {starved.length > 0 ? (
+        <span className="text-fg-muted">
+          {starved.length} recent run{starved.length > 1 ? "s" : ""} rejected for
+          missing evidence (analysis blind on the affected symbols). Decisions on
+          symbols with intact feeds are unaffected.
+        </span>
+      ) : (
+        <span className="text-fg-muted">
+          affected analysis degrades gracefully; other symbols are unaffected.
+        </span>
+      )}
+    </div>
+  );
+}
+
+function OpenPositionsWidget() {
+  const status = useStatus();
+  const stats = usePortfolioStats();
+  if (status.isPending) return <SkeletonCard lines={3} />;
+  return (
+    <OpenPositions
+      positions={status.data?.open_positions}
+      exposure={stats.data?.exposure}
+      unrealizedTotal={status.data?.unrealized_total}
+      compact
+    />
+  );
+}
 
 /** Decision board (G1): one current stance PER SYMBOL. The hero leads
  * with the ACTIVE symbol (the one the header/ticker emphasizes), so the
@@ -59,13 +116,24 @@ function DecisionHero() {
     // a run exists (traded OR rejected — both are decisions); "no
     // recommendation" means the symbol has never run
     const hasDecision = meta != null && meta.status !== "no recommendation";
-    return { sym, rec, runId: meta?.run_id ?? null,
-             at: meta?.run_started_at ?? "", tf, hasDecision };
+    // ACTIONABLE = a real BUY/SELL/HOLD, not a rejection. A feed-starved
+    // rejection ("couldn't run") must not headline the briefing over a real
+    // call — the review found the one actionable decision buried below a
+    // feed-outage rejection just because it was the active symbol.
+    const actionable = hasDecision && meta?.status !== "rejected";
+    const at = meta?.run_started_at ?? (rec as { created_at?: string } | null)?.created_at ?? "";
+    return { sym, rec, runId: meta?.run_id ?? null, at, tf, hasDecision, actionable };
   });
-  // hero = the active symbol (BTC-USD by default) so the hero's symbol +
-  // regime agree with the chrome — but a symbol WITH a decision always
-  // beats one without, so we never lead with an empty hero
+  // hero priority: (1) an actionable decision beats a rejection; among
+  // actionable, the FRESHEST leads — never a stale/feed-starved call over a
+  // real one. (2) failing that, a symbol with any decision beats an empty
+  // one. (3) ties break toward the active symbol so the hero agrees with the
+  // chrome. Per-symbol board (G1) preserved — both cards still render.
   entries.sort((a, b) => {
+    if (a.actionable !== b.actionable) return a.actionable ? -1 : 1;
+    if (a.actionable && b.actionable) {
+      if (a.at !== b.at) return a.at > b.at ? -1 : 1;
+    }
     if (a.hasDecision !== b.hasDecision) return a.hasDecision ? -1 : 1;
     if (a.sym === activeSymbol) return -1;
     if (b.sym === activeSymbol) return 1;
@@ -157,16 +225,43 @@ function PortfolioSnapshot() {
           )}
         </span>
       </div>
-      <div className="flex flex-1 items-center justify-between rounded-[14px] bg-white/[0.12] px-3.5 py-2">
-        <span className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.06em] text-white/80">
-          Backtest equity
-        </span>
-        {backtest.data?.equity_curve && backtest.data.equity_curve.length > 1 ? (
+      {/* the flagship card never shows dead space: a backtest curve when one
+          exists, else the LIVE open-risk (unrealized on the current book) —
+          more useful than "no backtest yet" for a returning trader */}
+      {backtest.data?.equity_curve && backtest.data.equity_curve.length > 1 ? (
+        <div className="flex flex-1 items-center justify-between rounded-[14px] bg-white/[0.12] px-3.5 py-2">
+          <span className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.06em] text-white/80">
+            Backtest equity
+          </span>
           <Sparkline values={backtest.data.equity_curve} width={150} height={30} stroke="#8fe3b4" />
-        ) : (
-          <span className="text-xs text-white/70">no backtest yet</span>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex flex-1 items-center justify-between rounded-[14px] bg-white/[0.12] px-3.5 py-2">
+          <span className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.06em] text-white/80">
+            Open risk
+          </span>
+          {(status.data?.open_positions?.length ?? 0) > 0 ? (
+            <span className="text-right text-[13px]">
+              <span className="font-mono font-bold tabular text-white">
+                {status.data!.open_positions!.length} position
+                {status.data!.open_positions!.length > 1 ? "s" : ""}
+              </span>
+              {status.data?.unrealized_total != null && (
+                <span
+                  className={cn(
+                    "ml-2 font-mono font-bold tabular",
+                    status.data.unrealized_total >= 0 ? "text-[#8fe3b4]" : "text-[#ff8a84]",
+                  )}
+                >
+                  {mask(fmtPnl(status.data.unrealized_total))}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="text-xs text-white/70">flat — no open risk</span>
+          )}
+        </div>
+      )}
       <Link
         to="/portfolio"
         className="inline-flex h-8 self-start items-center rounded-[10px] border border-white/35 bg-white/10 px-4 text-xs font-bold text-white hover:bg-white/[0.22]"
@@ -413,27 +508,33 @@ function WhatNext() {
 function AlertsWidget() {
   const alerts = useAlerts();
   if (alerts.isPending) return <SkeletonCard lines={3} />;
-  return <AlertFeedList alerts={alerts.data?.alerts ?? []} limit={5} />;
+  // collapse identical infra repeats (feed-outage floods) into ×N so a real
+  // trading alert isn't buried under 25 copies of "feed unavailable"
+  return <AlertFeedList alerts={dedupeAlerts(alerts.data?.alerts ?? [])} limit={5} />;
 }
 
 const WIDGETS: WidgetDef[] = [
-  // right column is non-overlapping so RGL keeps the mockup order:
-  // Portfolio Equity → Prices → Since you left → What's next
+  // left column = the reading path: what's decided → what I hold → alerts →
+  // where to look → watchlist. right column = money + context.
   { id: "decision", title: "Decision", chromeless: true, render: () => <DecisionHero />, layout: { x: 0, y: 0, w: 7, h: 14, minW: 4, minH: 8 } },
   { id: "snapshot", title: "Portfolio snapshot", chromeless: true, bleed: true, render: () => <PortfolioSnapshot />, layout: { x: 7, y: 0, w: 5, h: 7, minW: 3, minH: 6 } },
+  { id: "positions", title: "Open positions", render: () => <OpenPositionsWidget />, layout: { x: 0, y: 14, w: 7, h: 6, minW: 4, minH: 4 } },
   { id: "prices", title: "Prices", render: () => <PriceRibbon />, layout: { x: 7, y: 7, w: 5, h: 4, minW: 3, minH: 4 } },
-  { id: "alerts", title: "Alerts", render: () => <AlertsWidget />, layout: { x: 0, y: 14, w: 7, h: 8, minW: 3, minH: 4 } },
+  { id: "alerts", title: "Alerts", render: () => <AlertsWidget />, layout: { x: 0, y: 20, w: 7, h: 8, minW: 3, minH: 4 } },
   { id: "diff", title: "Since you left", render: () => <SinceYouLeft />, layout: { x: 7, y: 11, w: 5, h: 6, minW: 3, minH: 4 } },
-  { id: "opportunities", title: "Opportunities (deterministic scan)", render: () => <Opportunities />, layout: { x: 0, y: 22, w: 7, h: 6, minW: 3, minH: 4 } },
-  { id: "watchlist", title: "Watchlist", render: () => <WatchlistPanel />, layout: { x: 0, y: 28, w: 7, h: 6, minW: 4, minH: 4 } },
+  { id: "opportunities", title: "Opportunities (deterministic scan)", render: () => <Opportunities />, layout: { x: 0, y: 28, w: 7, h: 6, minW: 3, minH: 4 } },
+  { id: "watchlist", title: "Watchlist", render: () => <WatchlistPanel />, layout: { x: 0, y: 34, w: 7, h: 6, minW: 4, minH: 4 } },
   { id: "next", title: "What's next", render: () => <WhatNext />, layout: { x: 7, y: 17, w: 5, h: 6, minW: 4, minH: 4 } },
 ];
 
 export default function HomePage() {
   const { editing, setEditing } = useLayoutStore();
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-end no-print">
+    <div className="space-y-2">
+      {/* one honest line makes sense of a feed outage before the grid, so
+          the trader isn't left inferring it from a wall of noise */}
+      <SystemHealthBanner />
+      <div className="flex items-center justify-end no-print">
         <Button
           size="sm"
           variant="ghost"

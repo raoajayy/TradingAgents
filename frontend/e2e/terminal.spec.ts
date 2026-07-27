@@ -47,6 +47,21 @@ test.describe("terminal", () => {
     // note) is surfaced at the moment of decision, not hidden (fix #1)
     await expect(page.getByTestId("dissent")).toBeVisible();
     await expect(page.getByText("P&L", { exact: false }).first()).toBeVisible();
+    // Home reimagining: what am I holding? — open positions surfaced on Home
+    await expect(page.getByTestId("exposure-summary").first()).toBeVisible();
+    await expect(page.getByTestId("position-unrealized").first()).toBeVisible();
+    // the system-health banner is conditional on degraded feeds: present iff
+    // there are missing feeds (states the outage in one line instead of noise)
+    const degraded = await page.evaluate(async () => {
+      const r = await fetch("/api/overview", { credentials: "include" });
+      const d = (await r.json()) as { missing_feeds?: string[] };
+      return (d.missing_feeds ?? []).length > 0;
+    });
+    if (degraded) {
+      await expect(page.getByTestId("system-health-banner")).toBeVisible();
+    } else {
+      await expect(page.getByTestId("system-health-banner")).toHaveCount(0);
+    }
   });
 
   test("decision center shows debate, gates, and leaderboard", async ({
