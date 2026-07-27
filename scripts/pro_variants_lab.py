@@ -30,6 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from pro_portfolio_lab import _curve, _run_component  # noqa: E402
+from pro_strategy_lab import SYMBOL_ASSET  # noqa: E402
+
 from tradingagents.contracts import Timeframe  # noqa: E402
 from tradingagents.pro.backtest import variants as V  # noqa: E402
 from tradingagents.pro.backtest.metrics import (  # noqa: E402
@@ -39,8 +42,6 @@ from tradingagents.pro.backtest.metrics import (  # noqa: E402
     sortino_ratio,
 )
 from tradingagents.pro.dashboard.backtest_job import periods_per_year  # noqa: E402
-from pro_portfolio_lab import _curve, _run_component  # noqa: E402
-from pro_strategy_lab import SYMBOL_ASSET  # noqa: E402
 
 OUT = REPO_ROOT / "docs" / "backtests" / "strategy_lab" / "08_variants.md"
 INITIAL_EQUITY = 100_000.0
