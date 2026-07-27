@@ -231,6 +231,17 @@ this round).
   badge, timezone labels on timestamps, `30m` timeframe. Additive; removed nothing.
 - **Calibration/leaderboard empty states** — mockup shows populated fixtures; ours
   refuse to fabricate numbers until samples exist.
+- **Home reimagining — "what's live and true right now" (2026-07-27)** — Home
+  intentionally diverges from the mockup to surface what a trust-lens review of
+  LIVE production data showed was missing/buried: **open positions** on the
+  briefing (the book + unrealized P&L + exposure — the returning trader's first
+  question, previously absent), a conditional **system-health banner** that
+  states a feed outage in one honest line instead of a wall of 25 duplicate
+  alerts, a **hero re-anchored** to lead with the freshest actionable decision
+  (not a feed-starved "couldn't run" rejection), **alert de-dup** (identical
+  infra repeats → ×N), and a portfolio card that falls back to live open-risk
+  instead of an empty "no backtest yet". Shared `OpenPositions` component
+  (`OpenPositions.tsx`), `dedupeAlerts` (`lib/alerts.ts`), `LAYOUT_VERSION` 6.
 - **Trust-first decision hero (2026-07-27)** — the Home hero intentionally
   diverges from the mockup's ordering to wire trust-earning data to the moment of
   doubt (first-session audit): the strongest counterargument (or an honest "no
