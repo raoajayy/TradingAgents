@@ -13,3 +13,14 @@ results
 eval_results
 Dockerfile
 docker-compose.yml
+# teardown P1-07: tests/docs/mockups have no business in the prod image
+# (the replay provider lives in tradingagents/pro/evals/scripted.py)
+tests
+docs
+assets
+frontend/node_modules
+frontend/dist
+*.html
+PRO_TRADER_REVIEW_V5_PROMPT.md
+TRADER_REVIEW.md
+uv.lock
