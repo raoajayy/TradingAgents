@@ -1,0 +1,48 @@
+{
+  "as_of": "2026-07-28T15:01:59.931548+00:00",
+  "provider": "groq",
+  "quick": "openai/gpt-oss-20b",
+  "deep": "openai/gpt-oss-120b",
+  "k": 10,
+  "results": [
+    {
+      "symbol": "XAUUSD",
+      "case": "clean_uptrend_supportive_macro",
+      "k": 10,
+      "action_flip_rate": 0.1,
+      "confidence_stddev": 0.0,
+      "gate_flip_rate": 0.1,
+      "actions": {
+        "rejected": 9,
+        "BUY": 1
+      },
+      "gates": {
+        "critic": 9,
+        "approved": 1
+      },
+      "mean_confidence": 72
+    },
+    {
+      "symbol": "BTC-USD",
+      "case": "btc_h1_uptrend",
+      "k": 10,
+      "action_flip_rate": 0.1,
+      "confidence_stddev": 0.0,
+      "gate_flip_rate": 0.1,
+      "actions": {
+        "HOLD": 1,
+        "rejected": 9
+      },
+      "gates": {
+        "approved": 1,
+        "join": 9
+      },
+      "mean_confidence": 55
+    }
+  ],
+  "caveats": [
+    "Groq free tier: ~300K tokens/day across model buckets; the BTC case ran after the XAUUSD case exhausted most of the gpt-oss-20b budget \u2014 its 9x 'join' rejections are rate-limit evidence starvation, not pipeline behavior.",
+    "XAUUSD case is valid: 9x critic rejection + 1x approved BUY@72. The critic gate dominates outcomes under open-weight models \u2014 verdict stability is high (90% modal gate) but approval is rare.",
+    "Rerun both cases on a paid tier or after TPD reset for uncontaminated k=10."
+  ]
+}
