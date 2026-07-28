@@ -110,6 +110,27 @@ class TestBackfill:
         assert memory.records(MemoryKind.OUTCOME) == []
 
 
+class TestBrier:
+    def test_brier_of_stated_confidence(self):
+        from tradingagents.pro.dashboard.service import brier_summary
+
+        memory = ProMemory()
+        rec = make_recommendation()
+        p = rec.confidence / 100.0
+        t1 = memory.record_trade(rec)
+        memory.close_trade(t1.id, pnl=50.0, write_lesson=False)   # won
+        t2 = memory.record_trade(make_recommendation())
+        memory.close_trade(t2.id, pnl=-50.0, write_lesson=False)  # lost
+        out = brier_summary(memory)
+        assert out["n"] == 2
+        assert out["brier"] == pytest.approx(((p - 1) ** 2 + (p - 0) ** 2) / 2)
+
+    def test_brier_empty(self):
+        from tradingagents.pro.dashboard.service import brier_summary
+
+        assert brier_summary(ProMemory())["brier"] is None
+
+
 class TestPWin:
     def test_below_sample_floor_returns_none(self):
         memory = ProMemory()

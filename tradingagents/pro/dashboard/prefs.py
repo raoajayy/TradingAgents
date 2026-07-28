@@ -85,6 +85,9 @@ class PrefsDocument(_Mutable):
     watchlists: list[Watchlist] = Field(default_factory=list)
     notifications: list[Notification] = Field(default_factory=list)
     price_alerts: list[PriceAlert] = Field(default_factory=list, max_length=50)
+    # P1-06: intel condition-alert crossing state — persisted so container
+    # restarts never re-fire alerts that already crossed
+    intel_alert_state: dict = Field(default_factory=dict)
 
 
 class PrefsStore:
@@ -156,6 +159,15 @@ class PrefsStore:
     def price_alerts(self) -> list[dict]:
         with self._lock:
             return [a.model_dump() for a in self._document.price_alerts]
+
+    def intel_alert_state(self) -> dict:
+        with self._lock:
+            return dict(self._document.intel_alert_state)
+
+    def save_intel_alert_state(self, state: dict) -> None:
+        with self._lock:
+            self._document.intel_alert_state = dict(state)
+            self._write()
 
     def add_price_alert(self, data: dict) -> dict:
         from datetime import datetime, timezone

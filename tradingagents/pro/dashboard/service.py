@@ -374,7 +374,15 @@ def journal_performance(memory: ProMemory,
         curve.append(curve[-1] + entry["pnl"])
     trades = [SimpleNamespace(pnl=e["pnl"]) for e in entries]
     report = performance_report(curve, trades)
+    # P1-04: realized entry slippage vs the modeled assumption
+    slips = [o.payload["tca"]["entry_slippage_bps"]
+             for o in memory.records(MemoryKind.OUTCOME)
+             if o.payload.get("mode") != "retro"
+             and isinstance(o.payload.get("tca"), dict)
+             and o.payload["tca"].get("entry_slippage_bps") is not None]
     return {
+        "avg_entry_slippage_bps": (sum(slips) / len(slips)) if slips else None,
+        "n_slippage_samples": len(slips),
         "equity_curve": curve,
         "n_trades": report.n_trades,
         "win_rate": journal["win_rate"],
@@ -487,6 +495,27 @@ def memory_insights(memory: ProMemory) -> dict:
         "recent_lessons": [
             {"kind": r.kind.value, "text": r.text} for r in lessons[:10]
         ],
+    }
+
+
+def brier_summary(memory: ProMemory) -> dict:
+    """Brier score of stated ticket confidence vs realized outcomes
+    (P1-08). The literature is blunt: verbalized confidence is RLHF tone
+    (arXiv:2410.09724) — this number says whether OURS means anything."""
+    trades = {r.id: r for r in memory.records(MemoryKind.TRADE)}
+    sq_err = []
+    for outcome in memory.records(MemoryKind.OUTCOME):
+        trade = trades.get(outcome.ref_id)
+        conf = trade.payload.get("confidence") if trade else None
+        won = outcome.payload.get("won")
+        if conf is None or won is None:
+            continue
+        sq_err.append((conf / 100.0 - (1.0 if won else 0.0)) ** 2)
+    return {
+        "brier": sum(sq_err) / len(sq_err) if sq_err else None,
+        "n": len(sq_err),
+        # coin-flip-at-stated-confidence reference for the UI caption
+        "reference_always_half": 0.25,
     }
 
 

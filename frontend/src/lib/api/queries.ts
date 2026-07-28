@@ -10,6 +10,7 @@ import {
   CorrelationsSchema,
   AlertFeedSchema,
   BacktestSchema,
+  BrierSummarySchema,
   BacktestEquityArtifactSchema,
   BacktestDecisionsArtifactSchema,
   BacktestExtendedSchema,
@@ -251,6 +252,13 @@ export const useRegime = () =>
 
 export const useJournal = () =>
   useQuery({ queryKey: qk.journal, queryFn: fetchParsed("/api/journal", JournalSchema), ...live() });
+
+export const useBrierSummary = () =>
+  useQuery({
+    queryKey: ["calibration", "summary"] as const,
+    queryFn: fetchParsed("/api/calibration/summary", BrierSummarySchema),
+    staleTime: 120_000,
+  });
 
 export const useScanner = () =>
   useQuery({

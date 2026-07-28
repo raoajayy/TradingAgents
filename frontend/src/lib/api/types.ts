@@ -260,6 +260,13 @@ export const JournalSchema = z.object({
 });
 export type Journal = z.infer<typeof JournalSchema>;
 
+export const BrierSummarySchema = z.object({
+  brier: z.number().nullable(),
+  n: z.number(),
+  reference_always_half: z.number(),
+});
+export type BrierSummary = z.infer<typeof BrierSummarySchema>;
+
 export const ScannerSchema = z.object({
   rows: z.array(
     z
@@ -281,6 +288,8 @@ export type Scanner = z.infer<typeof ScannerSchema>;
 
 export const PortfolioStatsSchema = z
   .object({
+    avg_entry_slippage_bps: z.number().nullable().optional(),
+    n_slippage_samples: z.number().optional(),
     equity_curve: z.array(z.number()),
     n_trades: z.number(),
     win_rate: z.number().nullable(),

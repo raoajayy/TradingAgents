@@ -17,7 +17,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tradingagents.contracts import (
     MarketSnapshot,
@@ -61,6 +61,11 @@ class OpenPosition:
     fill_price: float
     quantity: float
     entry_commission: float
+    # P1-03: realized perp funding accrued while open (negative = paid)
+    funding_paid: float = 0.0
+    last_funding_at: object = None  # datetime of last accrual
+    # P1-04: TCA — arrival mid, entry slippage, post-fill markouts
+    tca: dict = field(default_factory=dict)
 
 
 class PaperTradingService:
@@ -298,6 +303,28 @@ class PaperTradingService:
                 )
                 summary["order_status"] = "blocked:data_health"
                 return summary
+            # P1-06 stale-data gate: never open a position on bars older
+            # than 2x the driving timeframe — a vendor incident must fail
+            # closed, not trade on yesterday's close
+            if snapshot.bars:
+                from tradingagents.pro.dashboard.marketdata import (
+                    TIMEFRAME_SECONDS,
+                )
+
+                last_bar = snapshot.bars[-1]
+                tf_s = TIMEFRAME_SECONDS.get(last_bar.timeframe, 3600)
+                # age at snapshot-build time: "were the bars fresh when we
+                # decided" — a stalled vendor fails closed
+                age_s = (snapshot.as_of - last_bar.start).total_seconds()
+                if age_s > 3 * tf_s:  # bar START lags one interval + slack
+                    self.alerts.emit(
+                        "warning", "order_rejected",
+                        f"entry for {rec.symbol} blocked: stale data — last "
+                        f"bar {age_s / 3600:.1f}h old ({last_bar.timeframe.value})",
+                        symbol=rec.symbol,
+                    )
+                    summary["order_status"] = "blocked:stale_data"
+                    return summary
             spread_bps = None
             if snapshot.quote and snapshot.quote.bid and snapshot.quote.ask:
                 mid = (snapshot.quote.bid + snapshot.quote.ask) / 2
@@ -334,12 +361,14 @@ class PaperTradingService:
                 self.dashboard.recorder.repersist(run)
             if result.status == "filled":
                 self.metrics.inc("orders_filled_total")
-                self.open_positions[rec.symbol] = OpenPosition(
+                position = OpenPosition(
                     recommendation=rec,
                     fill_price=result.fill_price,
                     quantity=result.filled_quantity,
                     entry_commission=result.commission,
                 )
+                self._capture_tca(position, rec.symbol, snapshot)
+                self.open_positions[rec.symbol] = position
         self._maybe_daily_pnl_summary(snapshot)
         return summary
 
@@ -359,7 +388,11 @@ class PaperTradingService:
         if intel is None:
             return
         if not hasattr(self, "_intel_state"):
-            self._intel_state: dict = {}
+            # P1-06: crossing state survives restarts (no re-fires)
+            try:
+                self._intel_state: dict = self.dashboard.prefs.intel_alert_state()
+            except Exception:
+                self._intel_state = {}
         try:
             snapshot = intel.snapshot()
             metrics = {m["name"]: m["value"]
@@ -417,6 +450,11 @@ class PaperTradingService:
                     self._intel_state[key] = True
         except Exception:
             pass
+        try:
+            self.dashboard.prefs.save_intel_alert_state(self._intel_state)
+        except Exception:
+            logger.warning("intel alert state not persisted; continuing",
+                           exc_info=True)
 
     def _emit_regime_change(self, symbol: str) -> None:
         """Alert on regime TRANSITIONS (trader review Phase 4): the regime
@@ -501,6 +539,73 @@ class PaperTradingService:
 
     # --- internals ----------------------------------------------------------------
 
+    def _capture_tca(self, position: OpenPosition, symbol: str,
+                     snapshot) -> None:
+        """P1-04: per-fill TCA — arrival mid at decision, signed entry
+        slippage, and best-effort markouts at +30s/+1m/+5m from the tick
+        cache. ponytail: markout timers die with the process — best-effort
+        by design; the entry slippage (the number that matters) is durable."""
+        quote = snapshot.quote
+        arrival = None
+        if quote and quote.bid and quote.ask:
+            arrival = (quote.bid + quote.ask) / 2
+        elif snapshot.bars:
+            arrival = snapshot.bars[-1].close
+        if not arrival:
+            return
+        long = position.recommendation.action is TradeAction.BUY
+        side = 1.0 if long else -1.0
+        position.tca = {
+            "arrival_mid": arrival,
+            # positive = paid worse than arrival
+            "entry_slippage_bps": side * (position.fill_price - arrival)
+            / arrival * 10_000.0,
+            "markouts_bps": {},
+        }
+        ticks = getattr(self.dashboard, "ticks", None)
+        if ticks is None:
+            return
+
+        def markout(label: str) -> None:
+            try:
+                cached = ticks.get(symbol)
+                if cached:
+                    last = cached[0]
+                    position.tca["markouts_bps"][label] = (
+                        side * (last - position.fill_price)
+                        / position.fill_price * 10_000.0)
+            except Exception:
+                pass
+
+        for delay, label in ((30, "30s"), (60, "1m"), (300, "5m")):
+            timer = threading.Timer(delay, markout, args=(label,))
+            timer.daemon = True
+            timer.start()
+
+    @staticmethod
+    def _accrue_funding(position: OpenPosition, snapshot, bar) -> None:
+        """P1-03: charge realized perp funding on open crypto positions.
+        Rate comes from the symbol's own snapshot FUNDING_RATE (%/8h,
+        Delta/Binance); accrual is continuous over elapsed hours. Spot/gold
+        snapshots carry no FUNDING_RATE and accrue nothing."""
+        rate_8h = None
+        for reading in [*snapshot.onchain, *snapshot.macro]:
+            if reading.name == "FUNDING_RATE":
+                rate_8h = reading.value
+                break
+        if rate_8h is None:
+            return
+        since = position.last_funding_at or snapshot.as_of
+        hours = max(0.0, (bar.start - since).total_seconds() / 3600.0)
+        position.last_funding_at = bar.start
+        if hours == 0:
+            return
+        notional = abs(position.quantity) * bar.close
+        pay = notional * (rate_8h / 100.0) * (hours / 8.0)
+        # positive funding: longs pay, shorts receive
+        long = position.recommendation.action is TradeAction.BUY
+        position.funding_paid += -pay if long else pay
+
     def _manage_positions(self, snapshot: MarketSnapshot) -> list[dict]:
         """Close positions whose stop or final target was breached at the
         latest bar close; report realized P&L to router + memory."""
@@ -511,6 +616,7 @@ class PaperTradingService:
         for symbol, position in list(self.open_positions.items()):
             if symbol != snapshot.symbol:
                 continue
+            self._accrue_funding(position, snapshot, bar)
             omses = (self.router.omses() if hasattr(self.router, "omses")
                      else [o for o in (getattr(self.router, "oms", None),) if o])
             if any(o.has_venue_protection(symbol) for o in omses):
@@ -536,6 +642,7 @@ class PaperTradingService:
                 sign * (result.fill_price - position.fill_price) * position.quantity
                 - position.entry_commission
                 - result.commission
+                + position.funding_paid  # P1-03: realized perp funding
             )
             reason = "stop" if stop_hit else "take_profit"
             self.router.record_close(symbol, pnl)
@@ -548,6 +655,8 @@ class PaperTradingService:
                     details={
                         "mode": self._trade_mode(symbol),
                         "commission": position.entry_commission + result.commission,
+                        "funding_paid": position.funding_paid,
+                        "tca": position.tca,
                         "venue_order_id": result.venue_symbol,
                         "fill_price": result.fill_price,
                         "entry_price": position.fill_price,

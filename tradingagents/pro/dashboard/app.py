@@ -1032,6 +1032,10 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         rows.sort(key=lambda r: r["score"], reverse=True)
         return {"rows": rows, "as_of": utc_now().isoformat()}
 
+    @app.get("/api/calibration/summary")
+    def calibration_summary() -> dict:
+        return service.brier_summary(state.memory)
+
     @app.post("/api/calibration/backfill")
     def calibration_backfill() -> dict:
         """Retro-score stored REAL runs against subsequent bars so the

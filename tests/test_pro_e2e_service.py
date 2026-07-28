@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+import pytest
+
 from tests.pro_fakes import BASE_TS
 from tests.test_pro_pipeline_graph import CONFIG, FakePipelineLLM, pipeline_snapshot
 from tradingagents.contracts import OHLCVBar, RiskLimits, Timeframe
@@ -122,6 +124,73 @@ class TestEndToEnd:
         spec = VENUES["paper"]
         for symbol in ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD"):
             assert spec.venue_symbol(symbol)
+
+    def test_tca_captured_on_entry_fill(self):
+        # P1-04: every fill records arrival mid + signed entry slippage
+        service = make_service([130.0, 150.0])
+        service.run_once()
+        assert "XAUUSD" in service.open_positions
+        tca = service.open_positions["XAUUSD"].tca
+        assert "arrival_mid" in tca and "entry_slippage_bps" in tca
+        # slippage rides the outcome once the trade closes
+        service.run_once()
+        outcome = service.memory.records(MemoryKind.OUTCOME)[-1]
+        assert isinstance(outcome.payload.get("tca"), dict)
+        assert "entry_slippage_bps" in outcome.payload["tca"]
+
+    def test_funding_accrual_on_open_perp_position(self):
+        # P1-03: an open position on a snapshot carrying FUNDING_RATE
+        # accrues realized funding; longs pay when the rate is positive
+        from datetime import timedelta
+        from types import SimpleNamespace
+
+        from tradingagents.contracts import MetricReading, TradeAction
+        from tradingagents.pro.service import OpenPosition, PaperTradingService
+
+        rec = SimpleNamespace(action=TradeAction.BUY)
+        pos = OpenPosition(recommendation=rec, fill_price=100.0,
+                           quantity=2.0, entry_commission=0.0)
+        t0 = BASE_TS
+        bar = SimpleNamespace(start=t0 + timedelta(hours=8), close=100.0)
+        snap = SimpleNamespace(
+            as_of=t0,
+            onchain=[MetricReading(name="FUNDING_RATE", value=0.01,
+                                   unit="percent", as_of=t0,
+                                   source="test")],
+            macro=[],
+        )
+        PaperTradingService._accrue_funding(pos, snap, bar)
+        # notional 200 x 0.01%/8h x 8h = 0.02 paid by the long
+        assert pos.funding_paid == pytest.approx(-0.02)
+        # second call, zero elapsed → no double charge
+        PaperTradingService._accrue_funding(pos, snap, bar)
+        assert pos.funding_paid == pytest.approx(-0.02)
+
+    def test_stale_bars_block_new_entries(self):
+        # P1-06: bars older than 3x the driving timeframe at snapshot-build
+        # time must fail closed — a vendor stall never trades on old data
+        service = make_service([130.0])
+        base = service.snapshot_source
+
+        def stale_source():
+            snap = base()
+            from datetime import timedelta
+            return snap.model_copy(
+                update={"as_of": snap.bars[-1].start + timedelta(days=10)})
+
+        service.snapshot_source = stale_source
+        summary = service.run_once()
+        assert summary["order_status"] == "blocked:stale_data"
+        assert "XAUUSD" not in service.open_positions
+
+    def test_intel_alert_state_persists_via_prefs(self, tmp_path):
+        from tradingagents.pro.dashboard.prefs import PrefsStore
+
+        store = PrefsStore(tmp_path / "prefs.json")
+        store.save_intel_alert_state({"funding_extreme": True, "cot_sign": -1})
+        reloaded = PrefsStore(tmp_path / "prefs.json")
+        assert reloaded.intel_alert_state() == {
+            "funding_extreme": True, "cot_sign": -1}
 
     def test_daily_order_cap_blocks_new_entries(self):
         # paper-mode daily order budget (trader review): live arming had

@@ -25,6 +25,7 @@ import { SkeletonCard } from "@/components/ui/skeleton";
 import { MIN_ANALOG_SIMILARITY } from "@/lib/thresholds";
 import {
   useAgents,
+  useBrierSummary,
   useOverview,
   useRecommendation,
   useRunEvidence,
@@ -142,6 +143,7 @@ export default function DecisionsPage() {
   const overview = useOverview();
   const recommendation = useRecommendation();
   const agents = useAgents();
+  const brier = useBrierSummary();
 
   const latestId = runs.data?.[runs.data.length - 1]?.run_id ?? null;
   const selected = params.runId ?? latestId;
@@ -399,6 +401,23 @@ export default function DecisionsPage() {
             <p className="mt-2 text-[11px] text-fg-subtle">
               Hollow points = insufficient sample. This chart is the product's
               honesty metric.
+              {brier.data?.brier != null && (
+                <>
+                  {" "}Brier score of stated confidence:{" "}
+                  <span
+                    className={cn(
+                      "font-mono font-bold",
+                      brier.data.brier <= brier.data.reference_always_half
+                        ? "text-bull"
+                        : "text-bear",
+                    )}
+                    title="mean (confidence/100 − outcome)² over scored decisions; 0.25 = always saying 50%"
+                  >
+                    {brier.data.brier.toFixed(3)}
+                  </span>{" "}
+                  (n={brier.data.n}; 0.25 = uninformative)
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

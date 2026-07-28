@@ -43,11 +43,21 @@ from tradingagents.contracts import (
 from tradingagents.pro.backtest import (
     BacktestEngine,
     BarReplay,
+    FundingModel,
     SimBroker,
     monte_carlo_summary,
     performance_report,
 )
 from tradingagents.pro.backtest.costs import cost_profile_for
+
+
+def _funding_for(asset) -> FundingModel | None:
+    """P1-03: perps pay funding; spot/gold don't. 10%/yr is the assumed
+    long-run average (ponytail: calibration knob — replace with realized
+    funding history when the archive lands)."""
+    from tradingagents.contracts import CRYPTO_ASSETS
+
+    return FundingModel(annual_rate_pct=10.0) if asset in CRYPTO_ASSETS else None
 from tradingagents.pro.dashboard import service
 from tradingagents.pro.dashboard.backtest_artifacts import (
     RunArtifacts,
@@ -754,6 +764,7 @@ def run_job(state: Any, job: BacktestJob, params: dict) -> None:
             periods_per_year=periods_per_year(tf, resolved["asset"]),
             htf_timeframes=htf_timeframes,
             risk_breaker=resolved["risk_breaker"],
+            funding=_funding_for(resolved["asset"]),
             on_progress=on_progress,
             on_trade=on_trade,
             on_checkpoint=on_checkpoint,
@@ -1583,7 +1594,8 @@ def run_bakeoff_job(state: Any, job: BacktestJob, params: dict) -> None:
                     max_same_direction=config.risk.max_same_direction_positions),
                 memory=None, min_history=MIN_HISTORY, decide_every=1,
                 periods_per_year=periods_per_year(tf, asset),
-                htf_timeframes=htf)
+                htf_timeframes=htf,
+                funding=_funding_for(asset))
             result = engine.run()
             report = result.report.as_dict()
             rows.append({

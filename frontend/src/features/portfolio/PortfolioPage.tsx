@@ -169,6 +169,11 @@ export default function PortfolioPage() {
               label="Expectancy / trade"
               value={perf && perf.n_trades > 0 ? fmtPnl(perf.expectancy) : "—"}
               n={perf?.n_trades}
+              sub={
+                perf?.avg_entry_slippage_bps != null
+                  ? `slippage ${perf.avg_entry_slippage_bps.toFixed(1)}bps vs 3bps model`
+                  : undefined
+              }
             />
             <StatCard
               elevated
