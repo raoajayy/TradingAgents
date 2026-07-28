@@ -41,9 +41,10 @@ class GoldhubCsvFeed:
 
     def get_metrics(self) -> list[MetricReading]:
         if not self._path.exists():
+            # keep the composed message <= 80 chars so the Intel page shows
+            # the instruction, not the exception class name
             raise NoMarketDataError(
-                "XAUUSD",
-                detail="goldhub CSV missing; download monthly from gold.org/goldhub",
+                "XAUUSD", detail="drop monthly CSV from gold.org/goldhub"
             )
         with self._path.open(newline="") as fh:
             rows = [r for r in csv.DictReader(fh) if (r.get("month") or "").strip()]

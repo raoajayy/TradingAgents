@@ -81,8 +81,11 @@ class TestGoldhubCsv:
         assert [r.name for r in readings] == ["GOLD_ETF_FLOWS_TONNES"]
 
     def test_missing_file_discloses_refresh_instruction(self, tmp_path):
-        with pytest.raises(NoMarketDataError, match="gold.org/goldhub"):
+        with pytest.raises(NoMarketDataError, match="gold.org/goldhub") as exc:
             GoldhubCsvFeed(tmp_path / "nope.csv").get_metrics()
+        # the Intel page's friendly-error path only passes messages <= 80
+        # chars through verbatim — longer ones collapse to the class name
+        assert len(str(exc.value)) <= 80
 
 
 def test_dvol_reaches_implied_vol_agent_prompt():
