@@ -34,6 +34,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None,
                         help="cap the number of cases")
     parser.add_argument("--list", action="store_true", help="list cases and exit")
+    parser.add_argument("--stability", action="store_true",
+                        help="P1-01: run the pass^k stability harness instead "
+                             "of the golden evals")
+    parser.add_argument("--k", type=int, default=10,
+                        help="runs per frozen snapshot for --stability "
+                             "(default 10)")
     args = parser.parse_args()
 
     cases = golden_cases()
@@ -59,11 +65,19 @@ def main() -> int:
         print(f"{key_env} not set (env or .env); aborting", file=sys.stderr)
         return 2
 
-    n_runs = len(cases) * args.samples
+    from tradingagents.pro.evals.stability import DEFAULT_CASE_NAMES
+
+    n_runs = (len(DEFAULT_CASE_NAMES) * args.k if args.stability
+              else len(cases) * args.samples)
     price_scale = price_for(routing.llm_provider).input_per_mtok / 3.0
     est = n_runs * EST_COST_PER_CASE_RUN * price_scale
-    print(f"running {len(cases)} cases x {args.samples} samples = {n_runs} "
-          f"pipeline runs (~${est:.2f} estimated at {routing.llm_provider} rates)\n")
+    if args.stability:
+        print(f"stability: {len(DEFAULT_CASE_NAMES)} frozen snapshots x "
+              f"k={args.k} = {n_runs} pipeline runs (~${est:.2f} estimated "
+              f"at {routing.llm_provider} rates)\n")
+    else:
+        print(f"running {len(cases)} cases x {args.samples} samples = {n_runs} "
+              f"pipeline runs (~${est:.2f} estimated at {routing.llm_provider} rates)\n")
 
     config = ProConfig(asset=AssetClass.GOLD, max_debate_rounds=1, models=routing)
     # low temperature for eval comparability across runs; note reasoning
@@ -74,6 +88,36 @@ def main() -> int:
     bundle.quick = CostTrackingLLM(bundle.quick, price=price)
     deep_tracker = CostTrackingLLM(bundle.deep, price=price)
     bundle.deep = deep_tracker if bundle.deep is not bundle.quick else bundle.quick
+
+    if args.stability:
+        import json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from tradingagents.pro.evals.stability import run_stability_evals
+
+        results = run_stability_evals(bundle, config, k=args.k,
+                                      agent_workers=8)
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "provider": routing.llm_provider,
+            "quick": routing.quick_think_llm,
+            "deep": routing.deep_think_llm,
+            "k": args.k,
+            "results": [r.as_dict() for r in results],
+        }
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = out_dir / f"stability_{stamp}.json"
+        out.write_text(json.dumps(payload, indent=2) + "\n")
+        for r in results:
+            print(f"{r.symbol} [{r.case}] k={r.k}: "
+                  f"action_flip={r.action_flip_rate:.0%} "
+                  f"conf_stddev={r.confidence_stddev:.1f} "
+                  f"gate_flip={r.gate_flip_rate:.0%}")
+        print(f"\nwrote {out}")
+        return 0
 
     report = run_decision_evals(bundle, config, cases=cases,
                                 samples=args.samples, agent_workers=8)
