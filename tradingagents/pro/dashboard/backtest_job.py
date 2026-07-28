@@ -49,15 +49,6 @@ from tradingagents.pro.backtest import (
     performance_report,
 )
 from tradingagents.pro.backtest.costs import cost_profile_for
-
-
-def _funding_for(asset) -> FundingModel | None:
-    """P1-03: perps pay funding; spot/gold don't. 10%/yr is the assumed
-    long-run average (ponytail: calibration knob — replace with realized
-    funding history when the archive lands)."""
-    from tradingagents.contracts import CRYPTO_ASSETS
-
-    return FundingModel(annual_rate_pct=10.0) if asset in CRYPTO_ASSETS else None
 from tradingagents.pro.dashboard import service
 from tradingagents.pro.dashboard.backtest_artifacts import (
     RunArtifacts,
@@ -73,6 +64,16 @@ if TYPE_CHECKING:
     from tradingagents.pro.backtest.broker import ClosedTrade, _OpenPosition
 
 logger = logging.getLogger(__name__)
+
+
+def _funding_for(asset) -> FundingModel | None:
+    """P1-03: perps pay funding; spot/gold don't. 10%/yr is the assumed
+    long-run average (ponytail: calibration knob — replace with realized
+    funding history when the archive lands)."""
+    from tradingagents.contracts import CRYPTO_ASSETS
+
+    return FundingModel(annual_rate_pct=10.0) if asset in CRYPTO_ASSETS else None
+
 
 # run length (operator-facing) → seconds. Bars are derived per timeframe.
 DURATION_SECONDS: dict[str, int] = {

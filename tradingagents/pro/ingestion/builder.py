@@ -143,23 +143,28 @@ class SnapshotBuilder:
 
 def build_gold_pipeline(
     loader=None, transport=None, correlation_window: int = 30,
-    cot_cache_path=None,
+    cot_cache_path=None, goldhub_csv_path=None,
 ) -> SnapshotBuilder:
     """Default gold (XAU) pipeline: GC=F daily bars + cross-asset context +
-    FRED macro + CFTC COT positioning + GVZ implied vol + session
-    awareness. All feeds free; FRED needs its free key."""
+    FRED macro + CFTC COT positioning + GVZ implied vol + Goldhub monthly
+    demand (ETF flows / central-bank buying, when the CSV is present) +
+    session awareness. All feeds free; FRED needs its free key."""
+    from tradingagents.pro.ingestion.goldhub import GoldhubCsvFeed
     from tradingagents.pro.ingestion.news import YahooFinanceNewsFeed
     from tradingagents.pro.ingestion.positioning import GoldCotFeed, GoldVolFeed
 
     bars_feed = YFinanceDailyBarsFeed(loader=loader)
+    macro_feeds = [
+        GoldCrossAssetFeed(bars_feed, correlation_window=correlation_window),
+        FredMacroFeed(transport=transport),
+        GoldCotFeed(transport=transport, cache_path=cot_cache_path),
+        GoldVolFeed(bars_feed),
+    ]
+    if goldhub_csv_path is not None:
+        macro_feeds.append(GoldhubCsvFeed(goldhub_csv_path))
     return SnapshotBuilder(
         bars_feed=bars_feed,
-        macro_feeds=(
-            GoldCrossAssetFeed(bars_feed, correlation_window=correlation_window),
-            FredMacroFeed(transport=transport),
-            GoldCotFeed(transport=transport, cache_path=cot_cache_path),
-            GoldVolFeed(bars_feed),
-        ),
+        macro_feeds=tuple(macro_feeds),
         news_feed=YahooFinanceNewsFeed("GC=F"),
         session_fn=current_session,
     )

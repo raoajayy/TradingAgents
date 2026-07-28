@@ -156,6 +156,16 @@ METRIC_INFO: dict[str, dict[str, str]] = {
                                  "note": "Day-over-day change in GVZ."},
     "XAU_XAG_CORR_30D": {"label": "XAU/XAG corr 30d",
                          "note": "30-day gold–silver return correlation."},
+    "DVOL": {"label": "BTC implied vol (DVOL)",
+             "note": "Deribit 30-day annualized implied-volatility index."},
+    "DVOL_CHANGE_1D": {"label": "DVOL 1d change",
+                       "note": "~24h change in the Deribit DVOL index."},
+    "GOLD_ETF_FLOWS_TONNES": {
+        "label": "Gold ETF flows (monthly)",
+        "note": "Global gold-ETF net flows, tonnes (WGC Goldhub, monthly CSV)."},
+    "CB_GOLD_NET_PURCHASES_TONNES": {
+        "label": "Central-bank gold buying (monthly)",
+        "note": "Central-bank net gold purchases, tonnes (WGC Goldhub, monthly CSV)."},
 }
 
 
@@ -209,10 +219,15 @@ class IntelService:
             from tradingagents.pro.ingestion.delta_exchange import (
                 DeltaExchangeFeed,
             )
+            from tradingagents.pro.ingestion.deribit import DeribitVolFeed
             from tradingagents.pro.ingestion.fred_macro import FredMacroFeed
             from tradingagents.pro.ingestion.gold_feeds import (
                 GoldCrossAssetFeed,
                 YFinanceDailyBarsFeed,
+            )
+            from tradingagents.pro.ingestion.goldhub import (
+                GOLDHUB_CSV_NAME,
+                GoldhubCsvFeed,
             )
             from tradingagents.pro.ingestion.onchain import (
                 CoinMetricsFeed,
@@ -241,6 +256,10 @@ class IntelService:
                     cache_path=default_data_dir() / "cot_cache.json"
                 ).get_metrics,
                 "gold_vol": GoldVolFeed(yf_daily).get_metrics,
+                "deribit_dvol": DeribitVolFeed().get_metrics,
+                "goldhub": GoldhubCsvFeed(
+                    default_data_dir() / GOLDHUB_CSV_NAME
+                ).get_metrics,
             }
         return self._feeds
 

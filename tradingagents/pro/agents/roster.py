@@ -164,20 +164,22 @@ MACRO_SPECS: tuple[AgentSpec, ...] = (
           "non-commercial futures exposure, its share of open interest, and "
           "the week-over-week shift (crowding vs capitulation).",
           metrics=("GOLD_COT_NET_NONCOMM", "GOLD_COT_NET_PCT_OI",
-                   "GOLD_COT_NET_CHANGE_1W")),
+                   "GOLD_COT_NET_CHANGE_1W", "GOLD_ETF_FLOWS_TONNES")),
     _spec("implied_volatility", _M,
-          "Implied volatility regime via GVZ (CBOE gold vol index): level "
-          "and 1-day change vs what realized-vol metrics show.",
-          metrics=("GOLD_VOL_INDEX", "GOLD_VOL_INDEX_CHANGE_1D")),
+          "Implied volatility regime: GVZ (gold) or Deribit DVOL (crypto) — "
+          "level and 1-day change vs what realized-vol metrics show.",
+          metrics=("GOLD_VOL_INDEX", "GOLD_VOL_INDEX_CHANGE_1D",
+                   "DVOL", "DVOL_CHANGE_1D")),
     _spec("commodity_correlation", _M,
           "Cross-commodity confirmation: gold/silver correlation regime and "
           "whether the complex moves together.",
           metrics=("XAU_XAG_CORR_30D",)),
     _spec("central_bank", _M,
-          "Global central-bank behavior: policy signals in the news flow plus "
-          "the current policy-rate anchor.",
-          metrics=("FED_FUNDS_RATE",), include_news=10,
-          notes="richer once central-bank purchase data (WGC) lands"),
+          "Global central-bank behavior: policy signals in the news flow, the "
+          "policy-rate anchor, and official-sector gold demand (WGC monthly "
+          "net purchases).",
+          metrics=("FED_FUNDS_RATE", "CB_GOLD_NET_PURCHASES_TONNES"),
+          include_news=10),
     _spec("geopolitical_risk", _M,
           "Geopolitical risk premium: conflict, sanctions, and safe-haven "
           "catalysts present in the shown news items.",

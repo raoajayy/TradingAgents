@@ -75,6 +75,7 @@ def _crypto_snapshot_builder(symbol: str):
     parameterized (Phase 2 of the score plan: ETH/SOL are config, not code)."""
     from tradingagents.pro.ingestion.builder import SnapshotBuilder
     from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
+    from tradingagents.pro.ingestion.deribit import DVOL_CURRENCIES, DeribitVolFeed
     from tradingagents.pro.ingestion.fred_macro import FredMacroFeed
     from tradingagents.pro.ingestion.news import YahooFinanceNewsFeed
     from tradingagents.pro.ingestion.onchain import CoinMetricsFeed, FearGreedFeed
@@ -82,11 +83,14 @@ def _crypto_snapshot_builder(symbol: str):
 
     vendor, cm_asset = CRYPTO_WIRING[symbol]
     delta = DeltaExchangeFeed()
+    onchain = [CoinMetricsFeed(asset=cm_asset), FearGreedFeed(),
+               _DeltaPerpMetrics(delta, vendor)]
+    if cm_asset.upper() in DVOL_CURRENCIES:  # Deribit has no SOL DVOL
+        onchain.append(DeribitVolFeed(currency=cm_asset.upper()))
     return SnapshotBuilder(
         bars_feed=_MappedBars(delta, {symbol: vendor}),
         macro_feeds=(FredMacroFeed(),),
-        onchain_feeds=(CoinMetricsFeed(asset=cm_asset), FearGreedFeed(),
-                       _DeltaPerpMetrics(delta, vendor)),
+        onchain_feeds=tuple(onchain),
         news_feed=YahooFinanceNewsFeed(symbol),
         session_fn=current_session,
     )
@@ -161,10 +165,12 @@ class PipelineTrigger:
                     return load_ohlcv("GC=F" if sym == "XAUUSD" else sym, curr_date)
 
                 from tradingagents.pro.ingestion.builder import build_gold_pipeline
+                from tradingagents.pro.ingestion.goldhub import GOLDHUB_CSV_NAME
 
                 builder = build_gold_pipeline(
                     loader=gold_loader,
                     cot_cache_path=default_data_dir() / "cot_cache.json",
+                    goldhub_csv_path=default_data_dir() / GOLDHUB_CSV_NAME,
                 )
             else:
                 # intraday gold: Delta XAUT (≈ spot) + the same macro context
@@ -351,8 +357,11 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
         return load_ohlcv("GC=F" if symbol == "XAUUSD" else symbol, curr_date)
 
+    from tradingagents.pro.ingestion.goldhub import GOLDHUB_CSV_NAME
+
     builder = build_gold_pipeline(loader=gold_loader,
-                                  cot_cache_path=data_path / "cot_cache.json")
+                                  cot_cache_path=data_path / "cot_cache.json",
+                                  goldhub_csv_path=data_path / GOLDHUB_CSV_NAME)
 
     # multi-symbol rotation (Phase 2): one symbol per hourly tick, so LLM
     # spend stays flat while the whole universe accrues decisions —
