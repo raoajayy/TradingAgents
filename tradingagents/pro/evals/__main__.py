@@ -40,6 +40,11 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=10,
                         help="runs per frozen snapshot for --stability "
                              "(default 10)")
+    parser.add_argument("--ablation", action="store_true",
+                        help="P1-02: pipeline vs single strong model on "
+                             "historical cut points, retro-scored")
+    parser.add_argument("--points", type=int, default=5,
+                        help="historical cut points for --ablation (default 5)")
     args = parser.parse_args()
 
     cases = golden_cases()
@@ -71,7 +76,11 @@ def main() -> int:
               else len(cases) * args.samples)
     price_scale = price_for(routing.llm_provider).input_per_mtok / 3.0
     est = n_runs * EST_COST_PER_CASE_RUN * price_scale
-    if args.stability:
+    if args.ablation:
+        print(f"ablation: {args.points} historical cut points x 2 arms "
+              f"(~${args.points * EST_COST_PER_CASE_RUN * price_scale:.2f} "
+              f"estimated at {routing.llm_provider} rates)\n")
+    elif args.stability:
         print(f"stability: {len(DEFAULT_CASE_NAMES)} frozen snapshots x "
               f"k={args.k} = {n_runs} pipeline runs (~${est:.2f} estimated "
               f"at {routing.llm_provider} rates)\n")
@@ -88,6 +97,39 @@ def main() -> int:
     bundle.quick = CostTrackingLLM(bundle.quick, price=price)
     deep_tracker = CostTrackingLLM(bundle.deep, price=price)
     bundle.deep = deep_tracker if bundle.deep is not bundle.quick else bundle.quick
+
+    if args.ablation:
+        import json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from tradingagents.contracts import AssetClass as AC
+        from tradingagents.pro.evals.ablation import run_ablation_series
+
+        abl_config = ProConfig(asset=AC.BITCOIN, max_debate_rounds=1,
+                               models=routing)
+        rows = run_ablation_series(bundle, abl_config, points=args.points,
+                                   agent_workers=8)
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "provider": routing.llm_provider,
+            "quick": routing.quick_think_llm,
+            "deep": routing.deep_think_llm,
+            "symbol": "BTC-USD",
+            "points": rows,
+        }
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = out_dir / f"ablation_{stamp}.json"
+        out.write_text(json.dumps(payload, indent=2) + "\n")
+        for row in rows:
+            for a in row["arms"]:
+                print(f"{row['as_of']} {a['arm']:>12}: action={a['action']} "
+                      f"conf={a['confidence']} rejected={a['rejected']} "
+                      f"pnl={a['pnl']} exit={a['exit_reason']}")
+        print(f"\nwrote {out}")
+        return 0
 
     if args.stability:
         import json

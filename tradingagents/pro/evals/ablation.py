@@ -153,3 +153,46 @@ def run_ablation(llm, config: ProConfig, snapshot, future_bars,
         outcome=simulate_ticket(single_rec, future_bars) if single_rec else None,
     )
     return [arm_a, arm_b]
+
+
+def run_ablation_series(llm, config: ProConfig, symbol: str = "BTC-USD",
+                        vendor: str = "BTCUSD", points: int = 5,
+                        horizon: int = 42, **kwargs) -> list[dict]:
+    """Real-data ablation: N historical cut points on Delta bars. Each
+    snapshot is bars + deterministic indicators as of the cut — no
+    macro/news feeds, so there is zero look-ahead leakage and both arms
+    see byte-identical inputs. Tickets are graded on the ``horizon`` bars
+    that actually followed."""
+    from tradingagents.contracts import Timeframe
+    from tradingagents.pro.ingestion.builder import SnapshotBuilder
+    from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
+    from tradingagents.pro.ingestion.sessions import current_session
+    from tradingagents.pro.main import _MappedBars
+
+    feed = DeltaExchangeFeed()
+    tf = Timeframe.H4
+    bars = feed.get_bars(vendor, tf, limit=500)
+    builder = SnapshotBuilder(
+        bars_feed=_MappedBars(feed, {symbol: vendor}),
+        session_fn=current_session,
+    )
+    first = 250  # need a full lookback window behind every cut
+    last = len(bars) - horizon
+    if last <= first:
+        raise ValueError(f"not enough bars: have {len(bars)}, "
+                         f"need > {first + horizon}")
+    step = max(1, (last - first) // points)
+    cuts = list(range(first, last, step))[:points]
+
+    rows: list[dict] = []
+    for cut in cuts:
+        as_of = bars[cut].start
+        snapshot = builder.build(symbol, config.asset,
+                                 timeframes=(tf,), bar_limit=250, as_of=as_of)
+        # strictly after: the cut bar is IN the snapshot; grading on it
+        # would let the ticket resolve on data the decision already saw
+        future = [b for b in bars if b.start > as_of][:horizon]
+        arms = run_ablation(llm, config, snapshot, future, **kwargs)
+        rows.append({"as_of": as_of.isoformat(),
+                     "arms": [a.as_dict() for a in arms]})
+    return rows
