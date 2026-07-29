@@ -101,6 +101,37 @@ class TestPrefsStore:
         assert len(store.notifications(unread_only=True)) == MAX_NOTIFICATIONS - 2
         assert store.mark_read() == MAX_NOTIFICATIONS - 2  # mark all
 
+    def test_condition_alert_crud_and_persistence(self, store, tmp_path):
+        created = store.add_condition_alert({
+            "metric": "FUNDING_RATE", "operator": "gt",
+            "threshold": 0.05, "note": "crowded longs",
+        })
+        assert created["id"] and created["created_at"]
+        assert created["active"] is True
+        # P2-07 AC: survives a restart (fresh store over the same file)
+        reloaded = PrefsStore(tmp_path / "prefs.json")
+        alerts = reloaded.condition_alerts()
+        assert len(alerts) == 1 and alerts[0]["metric"] == "FUNDING_RATE"
+        assert reloaded.delete_condition_alert(created["id"]) is True
+        assert reloaded.delete_condition_alert(created["id"]) is False
+        assert reloaded.condition_alerts() == []
+
+    def test_condition_alert_validation_and_cap(self, store):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            store.add_condition_alert({"metric": "DVOL", "operator": "nope",
+                                       "threshold": 1.0})
+        with pytest.raises(ValidationError):
+            store.add_condition_alert({"metric": "", "operator": "gt",
+                                       "threshold": 1.0})
+        for i in range(50):
+            store.add_condition_alert({"metric": "DVOL", "operator": "gt",
+                                       "threshold": float(i)})
+        with pytest.raises(ValueError, match="limit"):
+            store.add_condition_alert({"metric": "DVOL", "operator": "gt",
+                                       "threshold": 99.0})
+
     def test_notification_sink_bridges_alerts(self, store):
         manager = AlertManager(sinks=[NotificationSink(store)])
         manager.emit("critical", "kill_switch", "halted")
@@ -136,6 +167,29 @@ class TestPrefsEndpoints:
         assert client.get("/api/watchlists").json()[0]["name"] == "metals"
         assert client.delete("/api/watchlists/metals").json() == {"deleted": "metals"}
         assert client.delete("/api/watchlists/metals").status_code == 404
+
+    def test_condition_alert_endpoints(self, client):
+        created = client.post("/api/condition-alerts", json={
+            "metric": "GOLD_VOL_INDEX_CHANGE_1D", "operator": "crosses_above",
+            "threshold": 2.0, "note": "vol regime shift",
+        })
+        assert created.status_code == 200
+        alert_id = created.json()["id"]
+        listed = client.get("/api/condition-alerts").json()
+        assert [a["id"] for a in listed] == [alert_id]
+        assert client.delete(
+            f"/api/condition-alerts/{alert_id}").json() == {"deleted": alert_id}
+        assert client.delete(
+            f"/api/condition-alerts/{alert_id}").status_code == 404
+
+    def test_condition_alert_rejects_unknown_metric_and_operator(self, client):
+        unknown = client.post("/api/condition-alerts", json={
+            "metric": "NOT_A_METRIC", "operator": "gt", "threshold": 1.0})
+        assert unknown.status_code == 422
+        assert "supported" in unknown.json()["detail"]
+        bad_op = client.post("/api/condition-alerts", json={
+            "metric": "DVOL", "operator": "eq", "threshold": 1.0})
+        assert bad_op.status_code == 422
 
     def test_notification_endpoints(self, client, state):
         # notifications arrive via the sink in production; seed directly here

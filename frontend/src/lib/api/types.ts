@@ -204,6 +204,21 @@ export const PriceAlertSchema = z
 export const PriceAlertListSchema = z.array(PriceAlertSchema);
 export type PriceAlert = z.infer<typeof PriceAlertSchema>;
 
+// P2-07 custom alert-builder: metric condition alerts (notify-only)
+export const ConditionAlertSchema = z
+  .object({
+    id: z.string(),
+    metric: z.string(),
+    operator: z.enum(["gt", "lt", "crosses_above", "crosses_below"]),
+    threshold: z.number(),
+    note: z.string().optional(),
+    active: z.boolean(),
+    created_at: z.string().optional(),
+  })
+  .passthrough();
+export const ConditionAlertListSchema = z.array(ConditionAlertSchema);
+export type ConditionAlert = z.infer<typeof ConditionAlertSchema>;
+
 export const RegimeSchema = z
   .object({
     symbols: z.record(
@@ -831,6 +846,8 @@ export const IntelSchema = z.object({
       source: z.string().nullable(),
     }),
   ),
+  // P2-07 alert builder: the data dictionary's metric vocabulary
+  metric_keys: z.array(z.string()).optional(),
   headlines: z
     .array(
       z.object({

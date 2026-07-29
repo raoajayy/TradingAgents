@@ -221,6 +221,47 @@ class TestDisabledByDefault:
         assert check.ok, check.reasons
 
 
+# --- service -> router provider wiring (P2-05) --------------------------------
+
+
+class TestServiceRouterWiring:
+    def test_router_receives_context_when_positions_exist(self):
+        # the service attaches its zero-arg provider at construction; with
+        # an open book + stub daily bars the router sees signed notionals
+        # and a covariance covering the open symbols
+        from tests.test_pro_e2e_service import make_service
+
+        service = make_service([130.0])
+        assert service.run_once()["order_status"] == "filled"
+        rng = np.random.default_rng(5)
+        closes = {"XAUUSD": 130.0 * np.exp(np.cumsum(rng.normal(0, 0.01, 40)))}
+        service.dashboard.marketdata = _StubMarketData(closes)
+        assert service.router.portfolio_risk_provider is not None
+        ctx = service.router.portfolio_risk_provider()
+        assert ctx is not None
+        assert ctx.open_notional_by_symbol["XAUUSD"] > 0  # long book, signed
+        assert "XAUUSD" in ctx.cov_symbols
+        assert ctx.covariance is not None
+
+    def test_provider_returns_none_on_a_flat_book(self):
+        from tests.test_pro_e2e_service import make_service
+
+        service = make_service([130.0])
+        assert service.router.portfolio_risk_provider() is None
+
+    def test_provider_fails_open_when_bars_raise(self):
+        from tests.test_pro_e2e_service import make_service
+
+        class _Boom:
+            def get_bars(self, *a, **k):
+                raise RuntimeError("vendor down")
+
+        service = make_service([130.0])
+        assert service.run_once()["order_status"] == "filled"
+        service.dashboard.marketdata = _Boom()
+        assert service.router.portfolio_risk_provider() is None
+
+
 # --- dashboard exposure view -------------------------------------------------
 
 

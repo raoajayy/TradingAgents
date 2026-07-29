@@ -245,6 +245,84 @@ class TestEndToEnd:
         assert len(calls) == 2  # sleeps between iterations only
 
 
+class _CaptureSink:
+    def __init__(self):
+        self.alerts = []
+
+    def deliver(self, alert):
+        self.alerts.append(alert)
+
+
+class _FakeIntel:
+    def __init__(self, value):
+        self.value = value
+
+    def snapshot(self):
+        return {"metrics": [{"name": "DVOL", "value": self.value}]}
+
+
+class TestConditionAlerts:
+    """P2-07: stored condition alerts evaluate beside the operator
+    defaults, fire once per crossing, and survive restarts."""
+
+    def _service(self, tmp_path, value: float):
+        from tradingagents.pro.alerting import AlertManager
+        from tradingagents.pro.dashboard.prefs import PrefsStore
+
+        service = make_service([130.0])
+        service.dashboard.prefs = PrefsStore(tmp_path / "prefs.json")
+        service.dashboard.intel = _FakeIntel(value)
+        sink = _CaptureSink()
+        service.alerts = AlertManager(sinks=[sink])
+        return service, sink
+
+    @staticmethod
+    def _fired(sink):
+        return [a for a in sink.alerts if a.event == "condition_alert"]
+
+    def test_gt_fires_once_and_never_refires_across_restart(self, tmp_path):
+        service, sink = self._service(tmp_path, value=80.0)
+        service.dashboard.prefs.add_condition_alert({
+            "metric": "DVOL", "operator": "gt", "threshold": 60.0,
+            "note": "implied vol elevated"})
+        service._evaluate_intel_alerts()
+        service._evaluate_intel_alerts()  # still true -> stays quiet
+        fired = self._fired(sink)
+        assert len(fired) == 1
+        assert "implied vol elevated" in fired[0].text
+        assert "BTC implied vol" in fired[0].text  # METRIC_INFO label
+
+        # restart: new service over the SAME prefs file; state persisted
+        restarted, sink2 = self._service(tmp_path, value=80.0)
+        restarted._evaluate_intel_alerts()
+        assert self._fired(sink2) == []
+
+    def test_crossing_operator_needs_a_prior_reading(self, tmp_path):
+        service, sink = self._service(tmp_path, value=80.0)
+        service.dashboard.prefs.add_condition_alert({
+            "metric": "DVOL", "operator": "crosses_above", "threshold": 60.0})
+        service._evaluate_intel_alerts()  # first observation: no fire
+        assert self._fired(sink) == []
+        service.dashboard.intel = _FakeIntel(50.0)
+        service._evaluate_intel_alerts()  # below the line
+        service.dashboard.intel = _FakeIntel(80.0)
+        service._evaluate_intel_alerts()  # the crossing
+        assert len(self._fired(sink)) == 1
+
+    def test_inactive_and_deleted_alerts_never_fire(self, tmp_path):
+        service, sink = self._service(tmp_path, value=80.0)
+        created = service.dashboard.prefs.add_condition_alert({
+            "metric": "DVOL", "operator": "gt", "threshold": 60.0,
+            "active": False})
+        service._evaluate_intel_alerts()
+        assert self._fired(sink) == []
+        service.dashboard.prefs.delete_condition_alert(created["id"])
+        service._evaluate_intel_alerts()
+        assert self._fired(sink) == []
+        # deleted alerts leave no crossing state behind
+        assert not any(k.startswith("cond:") for k in service._intel_state)
+
+
 class TestBenchmarks:
     """Loose performance guards: catch order-of-magnitude regressions, not
     micro-variance. Fake-LLM pipeline runs are pure orchestration cost."""

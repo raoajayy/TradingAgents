@@ -368,6 +368,9 @@ class IntelService:
             "as_of": utc_now().isoformat(),
             "session": current_session(utc_now()).value,
             "metrics": metrics,
+            # P2-07 alert builder: the data dictionary's keys are the
+            # metric vocabulary users can build condition alerts over
+            "metric_keys": sorted(METRIC_INFO),
             "headlines": headlines,
             "missing_feeds": missing,
             # honest map of what money hasn't bought yet (UX: trust signal)

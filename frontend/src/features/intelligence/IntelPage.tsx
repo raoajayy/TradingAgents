@@ -4,6 +4,7 @@
 import { Lock } from "lucide-react";
 import { useState } from "react";
 
+import { AlertBuilder } from "@/components/AlertBuilder";
 import { EmptyState } from "@/components/EmptyState";
 import { StatCard } from "@/components/StatCard";
 import { Badge } from "@/components/ui/badge";
@@ -240,6 +241,17 @@ export default function IntelPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* P2-07 custom alert-builder: user conditions over the same metric
+          readings the operator defaults watch */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Custom alerts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <AlertBuilder metricKeys={intel.data.metric_keys ?? []} />
+        </CardContent>
+      </Card>
 
       {/* Headlines: the same feed the pipeline's sentiment team reads —
           ingested-but-invisible was a trader-review finding (P1.3) */}

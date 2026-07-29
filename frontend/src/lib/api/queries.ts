@@ -45,6 +45,7 @@ import {
   VolumeProfileSchema,
   WatchlistsSchema,
   PriceAlertListSchema,
+  ConditionAlertListSchema,
   RegimeSchema,
   ChartAnnotationsSchema,
 } from "./types";
@@ -61,6 +62,7 @@ export const qk = {
   runRecommendation: (id: string) => ["runs", id, "recommendation"] as const,
   regime: ["regime"] as const,
   priceAlerts: ["price-alerts"] as const,
+  conditionAlerts: ["condition-alerts"] as const,
   journal: ["journal"] as const,
   portfolioStats: ["portfolio", "stats"] as const,
   scanner: ["scanner"] as const,
@@ -176,6 +178,14 @@ export const usePriceAlerts = () =>
     staleTime: 10_000,
   });
 
+/** P2-07 custom alert-builder conditions (metric vs threshold). */
+export const useConditionAlerts = () =>
+  useQuery({
+    queryKey: qk.conditionAlerts,
+    queryFn: fetchParsed("/api/condition-alerts", ConditionAlertListSchema),
+    staleTime: 10_000,
+  });
+
 /** Notify-only by design: a triggered alert raises a notification, it
  * can never place or modify an order. */
 export interface EvidenceAnswer {
@@ -240,6 +250,29 @@ export async function createPriceAlert(
 export async function deletePriceAlert(client: QueryClient, id: string) {
   await apiFetch(`/api/price-alerts/${id}`, { method: "DELETE" });
   await client.invalidateQueries({ queryKey: qk.priceAlerts });
+}
+
+export async function createConditionAlert(
+  client: QueryClient,
+  alert: {
+    metric: string;
+    operator: "gt" | "lt" | "crosses_above" | "crosses_below";
+    threshold: number;
+    note?: string;
+  },
+): Promise<{ id?: string }> {
+  const created = await apiFetch<{ id?: string }>("/api/condition-alerts", {
+    method: "POST",
+    body: JSON.stringify(alert),
+    headers: { "Content-Type": "application/json" },
+  });
+  await client.invalidateQueries({ queryKey: qk.conditionAlerts });
+  return created ?? {};
+}
+
+export async function deleteConditionAlert(client: QueryClient, id: string) {
+  await apiFetch(`/api/condition-alerts/${id}`, { method: "DELETE" });
+  await client.invalidateQueries({ queryKey: qk.conditionAlerts });
 }
 
 export const useRegime = () =>

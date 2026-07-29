@@ -124,11 +124,15 @@ class PaperTradingService:
 
             notionals: dict[str, float] = {}
             for position in self.router.adapter.positions():
-                mark = getattr(position, "mark_price", None) or getattr(
-                    position, "entry_price", None)
-                if mark is None:
+                # BrokerPosition carries avg_price + side (quantity is
+                # positive); richer adapters may expose a live mark
+                mark = (getattr(position, "mark_price", None)
+                        or getattr(position, "avg_price", None)
+                        or getattr(position, "entry_price", None))
+                if not mark:
                     continue
-                notionals[position.symbol] = position.quantity * mark
+                sign = -1 if getattr(position, "side", "BUY") == "SELL" else 1
+                notionals[position.symbol] = sign * position.quantity * mark
             if not notionals:
                 return None
             marketdata = getattr(self.dashboard, "marketdata", None)
@@ -497,11 +501,59 @@ class PaperTradingService:
                     self._intel_state[key] = True
         except Exception:
             pass
+        self._evaluate_condition_alerts(metrics)
         try:
             self.dashboard.prefs.save_intel_alert_state(self._intel_state)
         except Exception:
             logger.warning("intel alert state not persisted; continuing",
                            exc_info=True)
+
+    def _evaluate_condition_alerts(self, metrics: dict) -> None:
+        """P2-07: user-built condition alerts (prefs ``condition_alerts``)
+        over the same intel metric readings as the operator defaults.
+        Crossing state lives in the SAME persisted ``_intel_state`` dict
+        (keys ``cond:<alert_id>``) so restarts never re-fire. gt/lt fire
+        when the condition becomes true (quiet while it stays true);
+        crosses_above/below additionally require a prior reading on the
+        other side — a fresh alert never fires on its first observation."""
+        try:
+            alerts = self.dashboard.prefs.condition_alerts()
+        except Exception:
+            return
+        live_keys = {f"cond:{a['id']}" for a in alerts}
+        for key in [k for k in self._intel_state
+                    if k.startswith("cond:") and k not in live_keys]:
+            del self._intel_state[key]  # deleted alerts leave no state
+        for alert in alerts:
+            if not alert.get("active"):
+                continue
+            value = metrics.get(alert["metric"])
+            if value is None:
+                continue
+            key = f"cond:{alert['id']}"
+            was = self._intel_state.get(key)
+            operator, threshold = alert["operator"], alert["threshold"]
+            if operator in ("gt", "crosses_above"):
+                now_true = value > threshold
+            else:  # lt / crosses_below
+                now_true = value < threshold
+            fire = (now_true and was is not None and not was
+                    if operator.startswith("crosses")
+                    else now_true and not was)
+            if fire:
+                from tradingagents.pro.dashboard.intel import METRIC_INFO
+
+                label = (METRIC_INFO.get(alert["metric"], {}).get("label")
+                         or alert["metric"])
+                arrow = ("above" if operator in ("gt", "crosses_above")
+                         else "below")
+                note = alert.get("note") or ""
+                self.alerts.emit(
+                    "warning", "condition_alert",
+                    f"{label} {arrow} {threshold:g}: now {value:g}"
+                    + (f" — {note}" if note else ""),
+                )
+            self._intel_state[key] = now_true
 
     def _emit_regime_change(self, symbol: str) -> None:
         """Alert on regime TRANSITIONS (trader review Phase 4): the regime

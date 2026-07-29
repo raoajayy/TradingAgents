@@ -65,6 +65,20 @@ class PriceAlert(_Mutable):
     active: bool = True
 
 
+class ConditionAlert(_Mutable):
+    """P2-07 custom alert-builder condition: metric vs threshold. Metric
+    names are METRIC_INFO keys — validated at the endpoint (the store must
+    not import the intel module). Notify-only, like PriceAlert."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    metric: str = Field(min_length=1, max_length=64)
+    operator: str = Field(pattern="^(gt|lt|crosses_above|crosses_below)$")
+    threshold: float
+    note: str = Field(default="", max_length=200)
+    active: bool = True
+    created_at: str = ""
+
+
 class SavedView(_Mutable):
     name: str = Field(min_length=1, max_length=64)
     path: str = Field(min_length=1, max_length=512)
@@ -85,6 +99,9 @@ class PrefsDocument(_Mutable):
     watchlists: list[Watchlist] = Field(default_factory=list)
     notifications: list[Notification] = Field(default_factory=list)
     price_alerts: list[PriceAlert] = Field(default_factory=list, max_length=50)
+    # P2-07: custom metric condition alerts (alert-builder UI)
+    condition_alerts: list[ConditionAlert] = Field(default_factory=list,
+                                                   max_length=50)
     # P1-06: intel condition-alert crossing state — persisted so container
     # restarts never re-fire alerts that already crossed
     intel_alert_state: dict = Field(default_factory=dict)
@@ -243,6 +260,37 @@ class PrefsStore:
                     alert.triggered_at = datetime.now(timezone.utc).isoformat()
                     self._write()
                     return
+
+    # --- condition alerts (P2-07) ----------------------------------------------
+
+    def condition_alerts(self) -> list[dict]:
+        with self._lock:
+            return [a.model_dump() for a in self._document.condition_alerts]
+
+    def add_condition_alert(self, data: dict) -> dict:
+        from datetime import datetime, timezone
+
+        alert = ConditionAlert.model_validate(data)
+        if not alert.created_at:
+            alert.created_at = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            if len(self._document.condition_alerts) >= 50:
+                raise ValueError(
+                    "condition alert limit reached (50); delete some first")
+            self._document.condition_alerts.append(alert)
+            self._write()
+            return alert.model_dump()
+
+    def delete_condition_alert(self, alert_id: str) -> bool:
+        with self._lock:
+            before = len(self._document.condition_alerts)
+            self._document.condition_alerts = [
+                a for a in self._document.condition_alerts if a.id != alert_id
+            ]
+            changed = len(self._document.condition_alerts) != before
+            if changed:
+                self._write()
+            return changed
 
     # --- notifications -----------------------------------------------------------
 

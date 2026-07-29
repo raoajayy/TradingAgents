@@ -946,6 +946,34 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             raise HTTPException(status_code=404, detail=f"no alert {alert_id}")
         return {"deleted": alert_id}
 
+    @app.get("/api/condition-alerts")
+    def condition_alerts() -> list[dict]:
+        return state.prefs.condition_alerts()
+
+    @app.post("/api/condition-alerts")
+    async def create_condition_alert(request: Request) -> dict:
+        from tradingagents.pro.dashboard.intel import METRIC_INFO
+
+        data = await request.json()
+        metric = data.get("metric")
+        if metric not in METRIC_INFO:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown metric {metric!r}; "
+                       f"supported: {sorted(METRIC_INFO)}")
+        try:
+            return state.prefs.add_condition_alert(data)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except Exception as exc:  # pydantic validation
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.delete("/api/condition-alerts/{alert_id}")
+    def delete_condition_alert(alert_id: str) -> dict:
+        if not state.prefs.delete_condition_alert(alert_id):
+            raise HTTPException(status_code=404, detail=f"no alert {alert_id}")
+        return {"deleted": alert_id}
+
     @app.get("/api/notifications")
     def notifications(unread: int = 0) -> dict:
         notes = state.prefs.notifications(unread_only=bool(unread))
