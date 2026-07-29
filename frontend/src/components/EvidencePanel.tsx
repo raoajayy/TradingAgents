@@ -2,18 +2,24 @@
  * popover — source, raw value. Quarantined feeds surface as security
  * badges, never silently dropped. */
 import { ShieldAlert } from "lucide-react";
+import { Link } from "react-router";
 
 import { DirectionBadge } from "./DirectionBadge";
 import { Badge } from "./ui/badge";
 import { Tip } from "./ui/tooltip";
 import type { EvidencePanels } from "@/lib/api/types";
+import { levelFromRef, levelToSearchParams } from "@/lib/levelFromRef";
 
 export function EvidencePanel({
   panels,
   missingFeeds = [],
+  symbol,
 }: {
   panels: EvidencePanels;
   missingFeeds?: string[];
+  /** run symbol: enables level-bearing refs to link to /trade/<symbol>
+   * with the level plotted (P2-09). Omitted → all chips render inert. */
+  symbol?: string;
 }) {
   const quarantined = missingFeeds.filter((f) => f.startsWith("news:quarantined"));
   const degraded = missingFeeds.filter((f) => !f.startsWith("news:quarantined"));
@@ -55,21 +61,45 @@ export function EvidencePanel({
                 : <span className="text-fg-muted">{item.claim}</span>
                 {(item.data_refs ?? []).length > 0 && (
                   <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
-                    {(item.data_refs ?? []).slice(0, 6).map((ref, j) => (
-                      <Tip
-                        key={j}
-                        content={
-                          <div className="font-mono text-[11px]">
-                            <div className="font-semibold">{ref.name}</div>
-                            <div>{JSON.stringify(ref.value)}</div>
-                          </div>
-                        }
-                      >
-                        <span className="cursor-help rounded-[7px] bg-surface-2 px-2 py-px font-mono text-[10px] text-fg-muted">
-                          {ref.name}
-                        </span>
-                      </Tip>
-                    ))}
+                    {(item.data_refs ?? []).slice(0, 6).map((ref, j) => {
+                      // P2-09: refs carrying a price level link to the
+                      // Trade chart with the level plotted; everything
+                      // else keeps the inert tooltip chip.
+                      const level = symbol ? levelFromRef(ref) : null;
+                      return (
+                        <Tip
+                          key={j}
+                          content={
+                            <div className="font-mono text-[11px]">
+                              <div className="font-semibold">{ref.name}</div>
+                              <div>{JSON.stringify(ref.value)}</div>
+                              {level && (
+                                <div className="mt-1 text-fg-subtle">
+                                  click to plot on the {symbol} chart
+                                </div>
+                              )}
+                            </div>
+                          }
+                        >
+                          {level ? (
+                            <Link
+                              to={{
+                                pathname: `/trade/${symbol}`,
+                                search: levelToSearchParams(level).toString(),
+                              }}
+                              data-testid="level-chip"
+                              className="rounded-[7px] bg-accent-muted px-2 py-px font-mono text-[10px] text-accent underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+                            >
+                              {ref.name}
+                            </Link>
+                          ) : (
+                            <span className="cursor-help rounded-[7px] bg-surface-2 px-2 py-px font-mono text-[10px] text-fg-muted">
+                              {ref.name}
+                            </span>
+                          )}
+                        </Tip>
+                      );
+                    })}
                   </span>
                 )}
               </li>

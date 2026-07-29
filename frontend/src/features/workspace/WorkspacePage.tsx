@@ -4,7 +4,7 @@
  * Honestly cut: no fake DOM ladder, no manual order ticket. */
 import { Maximize2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 
 import { EmptyState } from "@/components/EmptyState";
 import { IndicatorPicker } from "@/components/IndicatorPicker";
@@ -43,6 +43,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
 import type { Bar } from "@/lib/api/types";
 import { fmtCountdown, fmtPnl, fmtPrice } from "@/lib/format";
+import { levelFromSearchParams, type RefLevel } from "@/lib/levelFromRef";
 import { snapToBar } from "@/components/charts/annotationSnap";
 import {
   ExplainRunPopover,
@@ -78,6 +79,17 @@ export default function WorkspacePage() {
   const params = useParams<{ symbol: string }>();
   const symbol = params.symbol ?? "BTC-USD";
   const navigate = useNavigate();
+  // evidence-chip level (P2-09): carried in the URL by the Decisions page
+  // level chips, cleared by the badge's × (or simply by navigating away)
+  const [searchParams, setSearchParams] = useSearchParams();
+  const refLevel = useMemo(
+    () => levelFromSearchParams(searchParams),
+    [searchParams],
+  );
+  const chartLevels = useMemo<RefLevel[]>(
+    () => (refLevel ? [refLevel] : []),
+    [refLevel],
+  );
   const {
     timeframe,
     setTimeframe,
@@ -494,11 +506,32 @@ export default function WorkspacePage() {
               </div>
             )}
             <div className="mb-2 flex items-center justify-between no-print">
-              <ReplayControls
-                replay={replay}
-                totalBars={allBars.length}
-                cursorLabel={cursorLabel}
-              />
+              <div className="flex items-center gap-2">
+                <ReplayControls
+                  replay={replay}
+                  totalBars={allBars.length}
+                  cursorLabel={cursorLabel}
+                />
+                {refLevel && (
+                  <span
+                    data-testid="level-badge"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-accent-muted px-2 py-1 font-mono text-xs text-accent"
+                  >
+                    {refLevel.label}{" "}
+                    {refLevel.kind === "line"
+                      ? fmtPrice(refLevel.price)
+                      : `${fmtPrice(refLevel.low)}–${fmtPrice(refLevel.high)}`}
+                    <button
+                      aria-label="Clear plotted level"
+                      data-testid="level-clear"
+                      className="font-semibold hover:text-fg"
+                      onClick={() => setSearchParams({}, { replace: true })}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+              </div>
               {replay.active && (
                 <span className="text-xs text-stale">
                   replayed history — live ticks suspended
@@ -566,6 +599,7 @@ export default function WorkspacePage() {
                       showAnnotations={showAnnotations}
                       showPlan={showPlan}
                       onContextMenu={(p) => setCtxMenu(p)}
+                      levels={chartLevels}
                     />
                     {openPosition?.unrealized_pnl != null && (
                       <div

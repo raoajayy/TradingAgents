@@ -674,6 +674,41 @@ test.describe("chart phase 2: drawing kinds", () => {
   });
 });
 
+test.describe("P2-09 evidence level chips", () => {
+  test.beforeEach(async ({ page }) => unlock(page));
+
+  test("evidence level chip navigates to Trade with the level plotted", async ({
+    page,
+  }) => {
+    await page.goto("/decisions");
+    await expect(page.getByTestId("evidence-panel")).toBeVisible({
+      timeout: 15_000,
+    });
+    // level-bearing refs (LAST_CLOSE etc.) render as clickable chips;
+    // non-numeric refs keep the inert tooltip chip
+    const chip = page.getByTestId("level-chip").first();
+    await expect(chip).toBeVisible();
+    const label = (await chip.innerText()).trim();
+    await chip.click();
+
+    // lands on the run's Trade page carrying the level in the URL
+    await expect(page).toHaveURL(/\/trade\/[A-Z0-9-]+\?.*label=/);
+    const chart = page.getByTestId("price-chart");
+    await expect(chart.locator("canvas").first()).toBeVisible({
+      timeout: 20_000,
+    });
+    // the chart plots the cited level (price line via data-levels, the
+    // same technique the drawing specs use for data-drawings)
+    await expect(chart).toHaveAttribute("data-levels", /^[1-9]/);
+    // labeled badge names the level; its × clears line + params
+    await expect(page.getByTestId("level-badge")).toContainText(label);
+    await page.getByTestId("level-clear").click();
+    await expect(chart).toHaveAttribute("data-levels", "0");
+    await expect(page).not.toHaveURL(/label=/);
+    await expect(page.getByTestId("level-badge")).toHaveCount(0);
+  });
+});
+
 test.describe("backtesting", () => {
   test.beforeEach(async ({ page }) => {
     await unlock(page);

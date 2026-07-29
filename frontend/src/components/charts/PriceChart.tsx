@@ -47,6 +47,7 @@ import type {
   VolumeProfile,
 } from "@/lib/api/types";
 import { directionOf } from "@/lib/format";
+import type { RefLevel } from "@/lib/levelFromRef";
 import { useDrawingsStore } from "@/stores/drawings";
 import { useTickerStore } from "@/stores/ticker";
 import { useUiStore } from "@/stores/ui";
@@ -123,6 +124,7 @@ export function PriceChart({
   showAnnotations = true,
   showPlan = true,
   onContextMenu,
+  levels = null,
 }: {
   bars: Bar[];
   style?: SeriesStyle;
@@ -179,6 +181,9 @@ export function PriceChart({
     price: number | null;
     runId: string | null;
   }) => void;
+  /** evidence-chip price levels (P2-09): reference lines / zones plotted
+   * on the price pane, same createPriceLine path as the AI ticket */
+  levels?: RefLevel[] | null;
 }) {
   const seriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const extraSeriesRef = useRef<ISeriesApi<SeriesType>[]>([]);
@@ -516,6 +521,47 @@ export function PriceChart({
       lines.forEach((line) => series.removePriceLine(line));
     };
   }, [recommendation, showPlan, bars, style, indicators, showVolume]);
+
+  // evidence-chip levels (P2-09): same price-line path as the AI ticket
+  // above, but neutral + dashed so they read as cited reference levels,
+  // not the active plan. Zones render as a low/high line pair.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !levels?.length) return;
+    const colors = chartColors();
+    const base = {
+      color: colors.neutral,
+      axisLabelTextColor: colors.onSolid,
+      lineWidth: 1 as const,
+      lineStyle: 2 as const,
+    };
+    const lines: ReturnType<typeof series.createPriceLine>[] = [];
+    for (const level of levels) {
+      if (level.kind === "line") {
+        lines.push(
+          series.createPriceLine({ ...base, price: level.price, title: level.label }),
+        );
+      } else {
+        lines.push(
+          series.createPriceLine({
+            ...base,
+            price: level.low,
+            title: `${level.label} · low`,
+          }),
+          series.createPriceLine({
+            ...base,
+            price: level.high,
+            title: `${level.label} · high`,
+          }),
+        );
+      }
+    }
+    return () => {
+      // rebuild cleanup may have removed the series already (shared deps)
+      if (seriesRef.current !== series) return;
+      lines.forEach((line) => series.removePriceLine(line));
+    };
+  }, [levels, bars, style, indicators, showVolume]);
 
   // annotation times snapped to this chart's exact bar times (LWC v5:
   // any other time renders nothing). Off-range annotations drop out and
@@ -1072,6 +1118,7 @@ export function PriceChart({
       data-testid="price-chart"
       data-drawings={drawingsSymbol ? drawings.length : undefined}
       data-annotations={annotations ? snappedAnnotations.length : undefined}
+      data-levels={levels ? levels.length : undefined}
     >
       {legend && (
         <div

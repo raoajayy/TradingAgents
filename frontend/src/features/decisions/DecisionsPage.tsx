@@ -328,7 +328,11 @@ export default function DecisionsPage() {
             {evidence.isPending ? (
               <SkeletonCard lines={6} />
             ) : evidence.data ? (
-              <EvidencePanel panels={evidence.data} missingFeeds={missingFeeds} />
+              <EvidencePanel
+                panels={evidence.data}
+                missingFeeds={missingFeeds}
+                symbol={selectedRun?.symbol}
+              />
             ) : (
               <EmptyState kind="error" title="Evidence unavailable" />
             )}
