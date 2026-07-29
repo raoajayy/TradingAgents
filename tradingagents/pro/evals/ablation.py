@@ -34,7 +34,7 @@ from tradingagents.contracts import (
 from tradingagents.pro.agents import compute_risk_metrics
 from tradingagents.pro.agents.metrics import infer_timeframe
 from tradingagents.pro.analytics.retro import simulate_ticket
-from tradingagents.pro.pipeline import run_pipeline
+from tradingagents.pro.pipeline import build_vote_breakdown, run_pipeline
 from tradingagents.pro.pipeline.gates import risk_gate, trade_quality_gate
 from tradingagents.pro.pipeline.nodes import _all_evidence, _evidence_block
 from tradingagents.pro.pipeline.schemas import JudgeVerdict
@@ -80,12 +80,15 @@ def _ticket_from_verdict(verdict, snapshot, config: ProConfig, equity: float,
     levels for the ruled side, then the same risk + quality gates."""
     action = TradeAction(verdict.action)
     if action is TradeAction.HOLD:
-        return TradeRecommendation(
-            symbol=snapshot.symbol, asset=snapshot.asset,
-            action=TradeAction.HOLD, confidence=verdict.confidence,
-            position_size=PositionSize(quantity=0), evidence=evidence,
-            market_regime=regime, vote_breakdown=vote_breakdown,
-        ), None
+        try:
+            return TradeRecommendation(
+                symbol=snapshot.symbol, asset=snapshot.asset,
+                action=TradeAction.HOLD, confidence=verdict.confidence,
+                position_size=PositionSize(quantity=0), evidence=evidence,
+                market_regime=regime, vote_breakdown=vote_breakdown,
+            ), None
+        except ValidationError as exc:
+            return None, f"contract: {exc}"
     timeframe = infer_timeframe(snapshot)
     sided = compute_risk_metrics(snapshot, config.risk, equity,
                                  side=action.value, timeframe=timeframe)
@@ -141,9 +144,15 @@ def run_ablation(llm, config: ProConfig, snapshot, future_bars,
     prompt = SINGLE_MODEL_PROMPT.format(symbol=snapshot.symbol,
                                         evidence=_evidence_block(evidence))
     verdict = model.with_structured_output(JudgeVerdict).invoke(prompt)
+    # a pipeline arm that rejected pre-vote leaves no vote_breakdown in
+    # state; arm B still needs one on its ticket — build it from the same
+    # evidence (the helper the pipeline itself uses). Missing regime or
+    # empty evidence surfaces as a contract rejection, not a crash.
+    vote_breakdown = state.get("vote_breakdown") or (
+        build_vote_breakdown(evidence) if evidence else None)
     single_rec, rejected = _ticket_from_verdict(
         verdict, snapshot, config, equity, evidence,
-        regime=state["regime"], vote_breakdown=state["vote_breakdown"])
+        regime=state.get("regime"), vote_breakdown=vote_breakdown)
     arm_b = ArmResult(
         arm="single_model",
         action=verdict.action,
