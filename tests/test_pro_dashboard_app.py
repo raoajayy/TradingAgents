@@ -364,3 +364,25 @@ class TestMetricsEndpoint:
         state.metrics.inc("runs_total")
         text = TestClient(create_app(state)).get("/metrics").text
         assert "runs_total 1" in text
+
+    def test_open_with_auth_enabled_and_prometheus_content_type(self):
+        # scrapers carry no dashboard credentials: /metrics must bypass the
+        # API-key middleware (like /healthz) and serve the exposition
+        # content type, even when a token gates every /api route (P2-08)
+        from tradingagents.pro.observability import MetricsRegistry
+
+        state = DashboardState(memory=ProMemory())
+        state.metrics = MetricsRegistry()
+        state.metrics.inc("runs_total")
+        state.metrics.inc("iteration_errors_total")
+        state.metrics.set_gauge("last_run_ts", 1700000000.0)
+        client = TestClient(create_app(state, api_token="secret-token"))
+
+        assert client.get("/api/runs").status_code == 401  # auth is on...
+        resp = client.get("/metrics")                      # ...metrics open
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/plain")
+        assert "version=0.0.4" in resp.headers["content-type"]
+        assert "# TYPE runs_total counter\nruns_total 1.0" in resp.text
+        assert "# TYPE iteration_errors_total counter" in resp.text
+        assert "# TYPE last_run_ts gauge\nlast_run_ts 1700000000.0" in resp.text

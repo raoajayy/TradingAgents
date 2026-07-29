@@ -46,6 +46,32 @@ class TestMetricsRegistry:
         assert "orders_filled_total 3.0" in text
         assert "llm_est_cost_usd 0.42" in text
 
+    def test_prometheus_exposition_exact_format(self):
+        # exact exposition text (P2-08): families grouped under # TYPE
+        # lines, counters before gauges, samples sorted within a family
+        metrics = MetricsRegistry()
+        metrics.inc("runs_total")
+        metrics.inc("runs_total")
+        metrics.inc("iteration_errors_total")
+        metrics.inc("rejections_total", stage="critic")
+        metrics.inc("rejections_total", stage="judge")
+        metrics.set_gauge("last_run_ts", 1700000000.0)
+
+        assert metrics.render_prometheus() == (
+            "# TYPE iteration_errors_total counter\n"
+            "iteration_errors_total 1.0\n"
+            "# TYPE rejections_total counter\n"
+            'rejections_total{stage="critic"} 1.0\n'
+            'rejections_total{stage="judge"} 1.0\n'
+            "# TYPE runs_total counter\n"
+            "runs_total 2.0\n"
+            "# TYPE last_run_ts gauge\n"
+            "last_run_ts 1700000000.0\n"
+        )
+
+    def test_prometheus_exposition_empty_registry(self):
+        assert MetricsRegistry().render_prometheus() == "\n"
+
 
 class TestCostTracking:
     def test_pipeline_run_is_fully_costed(self):

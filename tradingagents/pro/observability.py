@@ -75,12 +75,32 @@ class MetricsRegistry:
         return self._gauges.get(self._key(name, labels), 0.0)
 
     def render_prometheus(self) -> str:
-        lines = []
+        """Prometheus text exposition format (version 0.0.4).
+
+        Zero-dep exporter (P2-08): the dashboard's open ``/metrics`` route
+        serves this text for any external scraper (Managed Prometheus,
+        Grafana Agent, plain Prometheus) — no google-cloud-monitoring or
+        prometheus_client dependency needed. Samples are grouped per metric
+        family under a ``# TYPE`` line so counters and gauges are classified
+        correctly by the scraper.
+        """
         with self._lock:
-            for key, value in sorted(self._counters.items()):
-                lines.append(f"{key} {value}")
-            for key, value in sorted(self._gauges.items()):
-                lines.append(f"{key} {value}")
+            counters = dict(self._counters)
+            gauges = dict(self._gauges)
+
+        lines: list[str] = []
+
+        def emit(samples: dict[str, float], kind: str) -> None:
+            families: dict[str, list[str]] = {}
+            for key, value in samples.items():
+                family = key.split("{", 1)[0]
+                families.setdefault(family, []).append(f"{key} {value}")
+            for family in sorted(families):
+                lines.append(f"# TYPE {family} {kind}")
+                lines.extend(sorted(families[family]))
+
+        emit(counters, "counter")
+        emit(gauges, "gauge")
         return "\n".join(lines) + "\n"
 
 
