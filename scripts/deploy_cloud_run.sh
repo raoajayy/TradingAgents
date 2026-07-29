@@ -54,9 +54,12 @@ gcloud builds submit \
   .
 
 echo "==> Deploying ${SERVICE} to Cloud Run (${REGION})"
-# --max-instances=1 enforces the app's single-writer invariant over the
-# /data volume (memory.jsonl, run history, hash-chained audit log, arming
-# state — see docs/DEPLOYMENT.md); --min-instances=1 keeps that singleton
+# --max-instances=1 keeps a single writer. Since P2-01 this is ADVISORY
+# for runs/memory/prefs (they live in the SQLite event store on local
+# disk, Litestream-replicated to gs://$BUCKET/litestream — a second
+# instance would fork replication history, so keep 1 until leases exist)
+# and still REQUIRED for the /data whole-file writers (hash-chained audit
+# log, arming state, paper book). --min-instances=1 keeps that singleton
 # WARM: with scale-to-zero, every cold boot briefly served "monitor only"
 # safety chrome before the paper service attached, so equity/status chips
 # flickered between page loads (trader review P0.4 — a control surface
@@ -78,7 +81,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency 250 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/data" \
-  --update-env-vars "TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${PRO_LOOP_DISABLED:-0},PRO_BACKTEST_STORE=firestore" \
+  --update-env-vars "TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${PRO_LOOP_DISABLED:-0},PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${BUCKET}/litestream" \
   --update-secrets "PRO_DASHBOARD_TOKEN=pro-dashboard-token:latest,${LLM_KEY_ENV}=${LLM_PROVIDER}-api-key:latest" \
   --allow-unauthenticated
 

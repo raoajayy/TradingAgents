@@ -34,10 +34,15 @@ RUN find tradingagents/pro/dashboard/static -name "*.map" -delete \
 
 FROM python:3.12-slim
 
+# P2-01: SQLite event store on LOCAL disk (GCS FUSE at /data cannot hold
+# SQLite locks); Litestream replicates it to the bucket when
+# LITESTREAM_REPLICA_URL is set (see deploy/entrypoint-pro.sh).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TRADINGAGENTS_PRO_DATA=/data
+    TRADINGAGENTS_PRO_DATA=/data \
+    TRADINGAGENTS_PRO_DB=/tmp/pro.db
 
+COPY --from=litestream/litestream:0.3 /usr/local/bin/litestream /usr/local/bin/litestream
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -52,4 +57,5 @@ EXPOSE 8600
 # service loop + dashboard in one process (single worker required:
 # the SSE broadcaster is in-process). Without an LLM key the loop
 # self-disables and the dashboard serves in monitor mode.
-CMD ["python", "-m", "tradingagents.pro.main"]
+COPY deploy/entrypoint-pro.sh /entrypoint-pro.sh
+CMD ["/entrypoint-pro.sh"]

@@ -206,3 +206,29 @@ Until every box is ticked, the system will refuse live routing on its own.
   health can't be confirmed for that long while live-armed, all resting
   orders are cancelled and the kill switch engages.
 - Operator procedures live in docs/LIVE_TRADING_RUNBOOK.md.
+
+## Event store (P2-01): SQLite + Litestream
+
+Since P2-01, runs / memory / prefs live in one SQLite (WAL) database —
+the event store — not in per-run JSON / JSONL files. Key facts:
+
+- **The DB must be on local disk.** `TRADINGAGENTS_PRO_DB=/tmp/pro.db` in
+  the image. The GCS FUSE mount at `/data` cannot hold SQLite locks — do
+  not point the DB there.
+- **Durability = Litestream.** When `LITESTREAM_REPLICA_URL` is set (the
+  deploy script sets `gcs://$BUCKET/litestream`), the entrypoint restores
+  the DB from the bucket on a fresh container and then runs the app under
+  `litestream replicate -exec`. Scale-to-zero is safe: WAL pages stream to
+  GCS within seconds of each write.
+- **Migration is automatic + idempotent.** On boot, an empty store imports
+  the legacy `runs/*.json`, `memory.jsonl`, `dashboard_prefs.json` from
+  `/data` once; legacy files stay in place as backup. JSONL is now the
+  EXPORT format: `python -m tradingagents.pro.store export`.
+- **Restore drill** (AC): `BUCKET=<bucket> ./scripts/pro_restore_drill.sh`
+  restores the replica to a scratch DB and exports it to JSONL for a count
+  diff against the live `/api/runs`. Run it after the first deploy and
+  quarterly.
+- **`--max-instances=1` is now advisory** for the event store (a second
+  instance would fork Litestream's replication history) and still REQUIRED
+  for the remaining whole-file writers on `/data` (audit log, arming state,
+  paper book).
