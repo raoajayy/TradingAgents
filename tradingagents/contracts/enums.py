@@ -20,21 +20,25 @@ class AssetClass(str, Enum):
     BITCOIN = "BTC"
     ETHEREUM = "ETH"
     SOLANA = "SOL"
-    # daily equities + FX (track T4). Unlike the 1:1 crypto/gold mapping, one
-    # class spans many tickers, so these have no DEFAULT_SYMBOLS entry — the
-    # per-run symbol is the instrument.
+    # daily equities (track T4) + FX majors (P2-10). Unlike the 1:1
+    # crypto/gold mapping, one class spans many tickers — the per-run
+    # symbol is the instrument. FX pairs are enumerated in FX_SYMBOLS
+    # (mirroring how CRYPTO_WIRING keys crypto by symbol); EQUITY still
+    # has no DEFAULT_SYMBOLS entry.
     EQUITY = "EQ"
     FX = "FX"
 
 
 # Default broker-style symbol per asset. The existing dataflows layer
 # (symbol_utils.normalize_symbol) already maps these to vendor symbols
-# (XAUUSD -> GC=F on Yahoo, BTC-USD stays as is).
+# (XAUUSD -> GC=F on Yahoo, BTC-USD stays as is). FX defaults to EURUSD;
+# other pairs are chosen per run via ProConfig(symbol=...).
 DEFAULT_SYMBOLS: dict[AssetClass, str] = {
     AssetClass.GOLD: "XAUUSD",
     AssetClass.BITCOIN: "BTC-USD",
     AssetClass.ETHEREUM: "ETH-USD",
     AssetClass.SOLANA: "SOL-USD",
+    AssetClass.FX: "EURUSD",
 }
 
 # Crypto assets share one ingestion/agent wiring (derivatives + on-chain
@@ -42,6 +46,20 @@ DEFAULT_SYMBOLS: dict[AssetClass, str] = {
 CRYPTO_ASSETS: frozenset[AssetClass] = frozenset(
     {AssetClass.BITCOIN, AssetClass.ETHEREUM, AssetClass.SOLANA}
 )
+
+# FX pairs share the single AssetClass.FX (one class, symbol distinguishes
+# the pair — the crypto pattern, but crypto got one enum member per coin
+# before the multi-ticker convention landed). Feed wiring per pair lives
+# in tradingagents.pro.main.FX_WIRING.
+FX_SYMBOLS: tuple[str, ...] = ("EURUSD", "USDJPY")
+
+# Symbol -> asset for every symbol the loop can trade. DEFAULT_SYMBOLS is
+# 1:1 so its inversion misses the non-default FX pairs; this is the single
+# honest map (trigger routing, backtest symbol resolution).
+ASSET_BY_SYMBOL: dict[str, AssetClass] = {
+    **{sym: asset for asset, sym in DEFAULT_SYMBOLS.items()},
+    **dict.fromkeys(FX_SYMBOLS, AssetClass.FX),
+}
 
 
 class TradingMode(str, Enum):

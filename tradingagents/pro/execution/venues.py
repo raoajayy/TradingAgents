@@ -51,7 +51,8 @@ VENUES: dict[str, VenueSpec] = {
     "paper": VenueSpec(
         name="paper",
         symbol_map={"XAUUSD": "XAUUSD", "BTC-USD": "BTCUSD",
-                    "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD"},
+                    "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD",
+                    "EURUSD": "EURUSD", "USDJPY": "USDJPY"},
         quantity_precision=4,
         min_quantity=0.0001,
         commission=CommissionModel(rate_bps=5),
@@ -89,7 +90,8 @@ VENUES: dict[str, VenueSpec] = {
     ),
     "oanda": VenueSpec(
         name="oanda",
-        symbol_map={"XAUUSD": "XAU_USD"},
+        symbol_map={"XAUUSD": "XAU_USD", "EURUSD": "EUR_USD",
+                    "USDJPY": "USD_JPY"},
         quantity_precision=0,
         min_quantity=1.0,
         commission=CommissionModel(rate_bps=0),

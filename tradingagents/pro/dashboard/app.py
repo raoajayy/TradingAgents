@@ -264,7 +264,8 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             # one poller per live symbol whose vendor supports quotes;
             # registry access runs the vendor probes (logged) exactly once
             for spec in state.marketdata.registry.values():
-                if spec.live and spec.source in ("delta_exchange", "oanda_gold"):
+                if spec.live and spec.source in ("delta_exchange", "oanda_gold",
+                                                 "oanda"):
                     poller = QuoteTickPoller(
                         spec.feed_factory(), state.broadcaster,
                         symbol=spec.vendor_symbol, display_symbol=spec.symbol,

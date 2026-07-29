@@ -122,8 +122,45 @@ class TestEndToEnd:
         from tradingagents.pro.execution import VENUES
 
         spec = VENUES["paper"]
-        for symbol in ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD"):
+        for symbol in ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD",
+                       "EURUSD", "USDJPY"):
             assert spec.venue_symbol(symbol)
+
+    def test_eurusd_pipeline_run_end_to_end_on_paper(self):
+        # P2-10: one full EURUSD run through the same service the loop uses
+        # (FakePipelineLLM + scripted FX bars) must reach a verdict — an
+        # approved order filled on the paper venue, or an honest rejection
+        # with the stage recorded. Never a silent nothing.
+        from tests.test_pro_pipeline_graph import pipeline_snapshot
+        from tradingagents.contracts import AssetClass, ProConfig
+
+        fx_config = ProConfig(asset=AssetClass.FX, max_debate_rounds=1)
+        assert fx_config.symbol == "EURUSD"  # FX default pair
+
+        def fx_snapshots():
+            return pipeline_snapshot(symbol="EURUSD", asset=AssetClass.FX)
+
+        memory = ProMemory()
+        router = ExecutionRouter(
+            adapter=PaperVenueAdapter(VENUES["paper"], starting_cash=100_000.0),
+            limits=LIMITS,
+            kill_switch=KillSwitch(),
+            breaker=CircuitBreaker(LIMITS, equity_base=100_000.0),
+            audit=AuditLog(),
+        )
+        service = PaperTradingService(
+            FakePipelineLLM(), fx_config, fx_snapshots,
+            router=router, memory=memory,
+            dashboard_state=DashboardState(memory=memory),
+        )
+        summary = service.run_once()
+        assert summary["run_id"]
+        if summary.get("order_status") == "filled":
+            assert "EURUSD" in service.open_positions
+            assert service.router.audit.verify()
+        else:
+            # honest rejection: the stage that said no is recorded
+            assert summary.get("rejected_at") or summary.get("order_status")
 
     def test_tca_captured_on_entry_fill(self):
         # P1-04: every fill records arrival mid + signed entry slippage

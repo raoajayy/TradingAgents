@@ -81,10 +81,19 @@ def default_registry() -> dict[str, SymbolSpec]:
     from tradingagents.pro.ingestion.binance import BinanceSpotFeed
     from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
     from tradingagents.pro.ingestion.gold_feeds import YFinanceDailyBarsFeed
-    from tradingagents.pro.ingestion.oanda_gold import OandaGoldFeed
+    from tradingagents.pro.ingestion.oanda_gold import OandaFeed, OandaGoldFeed
 
     logger = logging.getLogger(__name__)
     delta_alive = DeltaExchangeFeed.probe()
+    # one probe validates the token for gold AND the FX majors (token
+    # validity is instrument-independent). Probed via the OandaGoldFeed
+    # name so existing probe monkeypatches/overrides keep working.
+    oanda_alive = OandaGoldFeed.configured() and OandaGoldFeed.probe()
+    if OandaGoldFeed.configured() and not oanda_alive:
+        logger.warning(
+            "OANDA_API_TOKEN is set but the API rejected it — "
+            "falling back to yfinance daily bars (gold + FX)"
+        )
     if delta_alive:
         logger.info("Delta Exchange reachable — serving BTC-USD (BTCUSD perp) "
                     "and XAUUSD (XAUTUSD Tether Gold) live")
@@ -137,7 +146,7 @@ def default_registry() -> dict[str, SymbolSpec]:
             feed_factory=DeltaExchangeFeed,
             tradeable=True,
         )
-    elif OandaGoldFeed.configured() and OandaGoldFeed.probe():
+    elif oanda_alive:
         registry["XAUUSD"] = SymbolSpec(
             symbol="XAUUSD",
             vendor_symbol="XAU_USD",
@@ -148,13 +157,6 @@ def default_registry() -> dict[str, SymbolSpec]:
             tradeable=True,
         )
     else:
-        if OandaGoldFeed.configured():
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "OANDA_API_TOKEN is set but the API rejected it — "
-                "falling back to yfinance daily gold"
-            )
         registry["XAUUSD"] = SymbolSpec(
             symbol="XAUUSD",
             vendor_symbol="GC=F",
@@ -164,6 +166,32 @@ def default_registry() -> dict[str, SymbolSpec]:
             feed_factory=YFinanceDailyBarsFeed,
             tradeable=True,
         )
+
+    # FX majors (P2-10): live intraday via OANDA when the token works,
+    # else yfinance daily (=X tickers) — same disclosed degradation as gold
+    def fx_spec(symbol: str, oanda_sym: str, yf_sym: str) -> SymbolSpec:
+        if oanda_alive:
+            return SymbolSpec(
+                symbol=symbol,
+                vendor_symbol=oanda_sym,
+                source="oanda",
+                timeframes=tuple(OandaFeed.GRANULARITY),
+                live=True,
+                feed_factory=OandaFeed,
+                tradeable=True,
+            )
+        return SymbolSpec(
+            symbol=symbol,
+            vendor_symbol=yf_sym,
+            source="yfinance_daily",
+            timeframes=(Timeframe.D1,),
+            live=False,
+            feed_factory=YFinanceDailyBarsFeed,
+            tradeable=True,
+        )
+
+    registry["EURUSD"] = fx_spec("EURUSD", "EUR_USD", "EURUSD=X")
+    registry["USDJPY"] = fx_spec("USDJPY", "USD_JPY", "USDJPY=X")
     return registry
 
 

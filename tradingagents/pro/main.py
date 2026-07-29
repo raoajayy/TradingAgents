@@ -71,6 +71,14 @@ CRYPTO_WIRING: dict[str, tuple[str, str]] = {
     "SOL-USD": ("SOLUSD", "sol"),
 }
 
+# FX majors wiring (P2-10): dashboard symbol -> (OANDA instrument, yfinance
+# ticker). One AssetClass.FX spans the pairs — symbol picks the instrument,
+# exactly how CRYPTO_WIRING parameterizes the shared crypto build.
+FX_WIRING: dict[str, tuple[str, str]] = {
+    "EURUSD": ("EUR_USD", "EURUSD=X"),
+    "USDJPY": ("USD_JPY", "USDJPY=X"),
+}
+
 
 def _crypto_snapshot_builder(symbol: str):
     """One SnapshotBuilder per crypto symbol: Delta bars/derivatives +
@@ -105,6 +113,40 @@ def _crypto_snapshot_builder(symbol: str):
     )
 
 
+def _fx_snapshot_builder(symbol: str):
+    """One SnapshotBuilder per FX pair: OANDA intraday bars when the token
+    is configured (else yfinance daily), FRED rates + dollar/yield context,
+    Yahoo news, FX session awareness. Deliberately composed WITHOUT crypto
+    on-chain feeds and without the gold-only GoldHub/COT feeds — an FX
+    snapshot never fakes coverage it doesn't have."""
+    from tradingagents.pro.ingestion.builder import SnapshotBuilder
+    from tradingagents.pro.ingestion.fred_macro import FredMacroFeed
+    from tradingagents.pro.ingestion.gold_feeds import (
+        GoldCrossAssetFeed,
+        YFinanceDailyBarsFeed,
+    )
+    from tradingagents.pro.ingestion.news import YahooFinanceNewsFeed
+    from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+    from tradingagents.pro.ingestion.sessions import current_session
+
+    oanda_sym, yf_sym = FX_WIRING[symbol]
+    if OandaFeed.configured():
+        bars_feed = _MappedBars(OandaFeed(instrument=oanda_sym),
+                                {symbol: oanda_sym})
+    else:
+        bars_feed = _MappedBars(YFinanceDailyBarsFeed(), {symbol: yf_sym})
+    # GoldCrossAssetFeed doubles as the DXY / US10Y provider (the macro
+    # rates/dollar agents read those metrics); its gold-correlation extras
+    # are simply unused by FX-relevant agents
+    return SnapshotBuilder(
+        bars_feed=bars_feed,
+        macro_feeds=(FredMacroFeed(),
+                     GoldCrossAssetFeed(YFinanceDailyBarsFeed())),
+        news_feed=YahooFinanceNewsFeed(yf_sym),
+        session_fn=current_session,
+    )
+
+
 class TriggerBusy(RuntimeError):
     pass
 
@@ -115,7 +157,7 @@ class PipelineTrigger:
     One at a time: `busy()` backs the API's 409; the service's run_lock
     additionally serializes against the loop itself."""
 
-    SYMBOLS = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD")
+    SYMBOLS = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD", "EURUSD", "USDJPY")
     TIMEFRAMES = ("1h", "4h", "1d")
 
     def __init__(self, service):
@@ -128,7 +170,7 @@ class PipelineTrigger:
 
     def run(self, symbol: str, timeframe: str) -> dict:
         from tradingagents.contracts import (
-            DEFAULT_SYMBOLS,
+            ASSET_BY_SYMBOL,
             ProConfig,
             Timeframe,
         )
@@ -141,8 +183,11 @@ class PipelineTrigger:
             raise TriggerBusy("a pipeline run is already in progress")
         try:
             self.current = {"symbol": symbol, "timeframe": timeframe}
-            asset = {sym: a for a, sym in DEFAULT_SYMBOLS.items()}[symbol]
-            config = ProConfig(asset=asset, max_debate_rounds=1,
+            asset = ASSET_BY_SYMBOL[symbol]
+            # symbol passed explicitly: AssetClass.FX spans multiple pairs,
+            # so the per-asset default would mislabel a USDJPY run
+            config = ProConfig(asset=asset, symbol=symbol,
+                               max_debate_rounds=1,
                                models=self.service.config.models)
             tf = Timeframe(timeframe)
             snapshot = self._build_snapshot(symbol, asset, tf)
@@ -195,6 +240,8 @@ class PipelineTrigger:
                     ),
                     session_fn=current_session,
                 )
+        elif symbol in FX_WIRING:
+            builder = _fx_snapshot_builder(symbol)
         else:
             builder = _crypto_snapshot_builder(symbol)
         return builder.build(symbol, asset, timeframes=(tf,), bar_limit=250)
@@ -394,27 +441,30 @@ def build_service(llm=None, data_dir: str | Path | None = None):
                                   cot_cache_path=data_path / "cot_cache.json",
                                   goldhub_csv_path=data_path / GOLDHUB_CSV_NAME)
 
-    # multi-symbol rotation (Phase 2): one symbol per hourly tick, so LLM
-    # spend stays flat while the whole universe accrues decisions —
-    # XAUUSD every 4h, each crypto every 4h. Builders are shared across
-    # ticks (feed instances carry caches / respect rate limits).
+    # multi-symbol rotation (Phase 2, P2-10): one symbol per hourly tick,
+    # so LLM spend stays flat while the whole universe accrues decisions —
+    # each of the 6 symbols every 6h. Builders are shared across ticks
+    # (feed instances carry caches / respect rate limits).
     import itertools
 
-    from tradingagents.contracts import DEFAULT_SYMBOLS, AssetClass as AC
+    from tradingagents.contracts import ASSET_BY_SYMBOL, AssetClass as AC
 
     crypto_builders = {sym: _crypto_snapshot_builder(sym)
                        for sym in CRYPTO_WIRING}
-    asset_by_symbol = {sym: a for a, sym in DEFAULT_SYMBOLS.items()}
-    rotation = itertools.cycle(("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD"))
+    fx_builders = {sym: _fx_snapshot_builder(sym) for sym in FX_WIRING}
+    rotation = itertools.cycle(("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD",
+                                "EURUSD", "USDJPY"))
 
     def snapshot_source():
         symbol = next(rotation)
-        run_config = ProConfig(asset=asset_by_symbol[symbol],
+        # symbol passed explicitly: AssetClass.FX spans multiple pairs
+        run_config = ProConfig(asset=ASSET_BY_SYMBOL[symbol], symbol=symbol,
                                max_debate_rounds=1, models=routing)
         if symbol == "XAUUSD":
             return builder.build("XAUUSD", AC.GOLD, bar_limit=250), run_config
-        snapshot = crypto_builders[symbol].build(
-            symbol, asset_by_symbol[symbol], bar_limit=250)
+        source = fx_builders if symbol in fx_builders else crypto_builders
+        snapshot = source[symbol].build(
+            symbol, ASSET_BY_SYMBOL[symbol], bar_limit=250)
         return snapshot, run_config
 
     def next_major_event():
@@ -432,7 +482,8 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     )
     # P2-06: the event-trigger check scans the same universe the loop
     # rotates through (bars come from the dashboard's cached market data)
-    service.event_symbols = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD")
+    service.event_symbols = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD",
+                             "EURUSD", "USDJPY")
     state.metrics = service.metrics  # /metrics scrape target
     service.alerts.metrics = service.metrics  # count deliveries + failures
     state.alerts = service.alerts    # emergency-flatten alerting

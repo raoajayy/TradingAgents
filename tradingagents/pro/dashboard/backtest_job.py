@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from tradingagents.contracts import (
-    DEFAULT_SYMBOLS,
+    ASSET_BY_SYMBOL,
     AssetClass,
     OHLCVBar,
     ProConfig,
@@ -106,9 +106,10 @@ _EST_DECISIONS_PER_SECOND = 10
 # how many closed trades the poll snapshot carries (full list is in the
 # artifact — this bounds a 2s-interval poll payload, it loses nothing)
 SNAPSHOT_TRADES = 100
-_ASSET_BY_SYMBOL = {sym: asset for asset, sym in DEFAULT_SYMBOLS.items()}
+_ASSET_BY_SYMBOL = dict(ASSET_BY_SYMBOL)  # includes non-default FX pairs
 # assets that do NOT trade 24/7: daily bar counts scale by trading days
-_MARKET_CLOSURE_ASSETS = {AssetClass.GOLD}
+# (FX closes Fri 21:00 → Sun 22:00 UTC, same weekend convention as gold)
+_MARKET_CLOSURE_ASSETS = {AssetClass.GOLD, AssetClass.FX}
 _TRADING_DAYS_PER_YEAR = 252
 
 

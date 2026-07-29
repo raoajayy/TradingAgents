@@ -1,4 +1,4 @@
-"""Deterministic trading-session awareness for gold (XAU).
+"""Deterministic trading-session awareness for gold (XAU) and FX majors.
 
 Boundaries are a documented approximation of FX/metals liquidity windows
 in UTC (see ADR-0012); they are intentionally simple, timezone-fixed

@@ -110,6 +110,22 @@ class TestPipelineTrigger:
         assert calls["build"] == ("BTC-USD", AssetClass.BITCOIN, Timeframe("1h"))
         assert calls["config"].asset is AssetClass.BITCOIN
 
+    def test_fx_routing_carries_the_pair_symbol(self):
+        # AssetClass.FX spans EURUSD and USDJPY: the config must carry the
+        # actual pair, never the class default (P2-10)
+        from tradingagents.contracts import AssetClass, Timeframe
+
+        trigger, calls = self._trigger()
+        trigger.run("EURUSD", "1d")
+        assert calls["build"] == ("EURUSD", AssetClass.FX, Timeframe("1d"))
+        assert calls["config"].asset is AssetClass.FX
+        assert calls["config"].symbol == "EURUSD"
+
+        trigger.run("USDJPY", "1h")
+        assert calls["build"] == ("USDJPY", AssetClass.FX, Timeframe("1h"))
+        assert calls["config"].asset is AssetClass.FX
+        assert calls["config"].symbol == "USDJPY"
+
     def test_rejects_unknown_symbol_and_timeframe(self):
         trigger, _ = self._trigger()
         with pytest.raises(ValueError):

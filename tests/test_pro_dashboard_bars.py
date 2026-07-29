@@ -294,6 +294,45 @@ class TestOandaGoldFeed:
             OandaGoldFeed(transport=FakeOandaTransport(), token="t", env="staging")
 
 
+class TestOandaFeedInstrument:
+    """P2-10: the feed is instrument-parameterized (EUR_USD, USD_JPY, ...)."""
+
+    def test_bound_instrument_overrides_per_call_symbol(self):
+        from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+
+        transport = FakeOandaTransport()
+        feed = OandaFeed(transport=transport, token="t", instrument="EUR_USD")
+        bars = feed.get_bars("EURUSD", Timeframe.H1, limit=3)  # dashboard name
+        assert len(bars) == 3
+        url, _params = transport.requests[0]
+        assert "instruments/EUR_USD/candles" in url
+
+    def test_quote_uses_bound_instrument(self):
+        from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+
+        transport = FakeOandaTransport()
+        feed = OandaFeed(transport=transport, token="t", instrument="USD_JPY")
+        quote = feed.get_quote("USDJPY")
+        assert quote.bid == 4066.5
+        url, params = transport.requests[0]
+        assert "instruments/USD_JPY/candles" in url and params["price"] == "BAM"
+
+    def test_unbound_feed_uses_call_symbol(self):
+        from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+
+        transport = FakeOandaTransport()
+        OandaFeed(transport=transport, token="t").get_bars(
+            "EUR_USD", Timeframe.H1, limit=2)
+        assert "instruments/EUR_USD/candles" in transport.requests[0][0]
+
+    def test_gold_alias_is_a_thin_subclass(self):
+        from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+
+        assert issubclass(OandaGoldFeed, OandaFeed)
+        assert OandaGoldFeed.name == "oanda_gold" and OandaFeed.name == "oanda"
+        assert OandaGoldFeed.GRANULARITY is OandaFeed.GRANULARITY
+
+
 class TestGoldTickPoller:
     def test_skips_vendor_when_no_subscribers(self):
         feed = OandaGoldFeed(transport=FakeOandaTransport(), token="t")
@@ -354,6 +393,42 @@ class TestRegistryFallback:
         assert registry["XAUUSD"].source == "oanda_gold"
         assert registry["XAUUSD"].live is True
         assert "1h" in registry["XAUUSD"].timeframes
+
+    def test_fx_pairs_fall_back_to_yfinance_daily(self, monkeypatch):
+        from tradingagents.pro.dashboard.marketdata import default_registry
+        from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
+        from tradingagents.pro.ingestion.oanda_gold import OandaGoldFeed
+
+        monkeypatch.setenv("OANDA_API_TOKEN", "configured-but-invalid")
+        monkeypatch.setattr(DeltaExchangeFeed, "probe",
+                            classmethod(lambda cls, timeout=8.0: False))
+        monkeypatch.setattr(OandaGoldFeed, "probe",
+                            classmethod(lambda cls, timeout=8.0: False))
+        registry = default_registry()
+        for symbol, yf_sym in (("EURUSD", "EURUSD=X"), ("USDJPY", "USDJPY=X")):
+            spec = registry[symbol]
+            assert spec.source == "yfinance_daily"
+            assert spec.vendor_symbol == yf_sym
+            assert spec.timeframes == (Timeframe.D1,)
+            assert spec.live is False and spec.tradeable is True
+
+    def test_fx_pairs_live_when_oanda_probe_passes(self, monkeypatch):
+        from tradingagents.pro.dashboard.marketdata import default_registry
+        from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
+        from tradingagents.pro.ingestion.oanda_gold import OandaGoldFeed
+
+        monkeypatch.setenv("OANDA_API_TOKEN", "valid")
+        monkeypatch.setattr(DeltaExchangeFeed, "probe",
+                            classmethod(lambda cls, timeout=8.0: False))
+        monkeypatch.setattr(OandaGoldFeed, "probe",
+                            classmethod(lambda cls, timeout=8.0: True))
+        registry = default_registry()
+        for symbol, oanda_sym in (("EURUSD", "EUR_USD"), ("USDJPY", "USD_JPY")):
+            spec = registry[symbol]
+            assert spec.source == "oanda"
+            assert spec.vendor_symbol == oanda_sym
+            assert spec.live is True and spec.tradeable is True
+            assert "1h" in spec.timeframes
 
 
 class TestDeltaPreference:
