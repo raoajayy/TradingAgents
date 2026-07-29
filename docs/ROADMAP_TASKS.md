@@ -6,6 +6,19 @@ Derived from `docs/COMPETITIVE_TEARDOWN.md` (§21 roadmap, §22 backlog, top-25 
 
 ## Phase 1 — Quick wins (2 weeks) · goal: prove/kill the core premise + free realism
 
+> **STATUS: CLOSED 2026-07-29.** All eight tasks shipped: P1-01 `73a11df`,
+> P1-02 `d50bdb7`/`5e18c67`, P1-03/04/06/08 `938fc11`, P1-05 `c4b6b6b`,
+> P1-07 `f63cc54`; eval runs landed via the `claude-cli` provider
+> (`3dfb6df`). **Gate verdict** (see `docs/evals/ablation.md` +
+> `stability_20260729T061251Z.json`): the debate's directional view is
+> stable and 83%-agrees with a single strong model on identical evidence;
+> the nondeterminism and the P&L drag live in the LLM critic/gate boundary
+> (8/20 critic rejections vs 0; 30–50% approve/reject flip at k=10).
+> Per the gate rule, Phases 2–5 proceed unchanged; debate is kept for
+> auditability while the decision boundary should be made deterministic.
+> Confirm at ≥100 points on the production provider before structural
+> changes. (P1-05d Token Terminal: skipped, explicitly optional.)
+
 ### P1-01 pass^k decision-stability harness — 2d
 - **What**: run the full pipeline k times (k=10) on one frozen snapshot; measure verdict/action/confidence flip rate.
 - **Files**: new `tradingagents/pro/evals/stability.py`; CLI entry in `pro/evals/__main__.py`; reuse `pipeline_snapshot()` + real LLM bundle from `pro/models.py`.

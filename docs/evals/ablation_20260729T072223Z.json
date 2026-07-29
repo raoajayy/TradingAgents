@@ -1,0 +1,429 @@
+{
+  "as_of": "2026-07-29T07:22:23.762088+00:00",
+  "provider": "claude-cli",
+  "quick": "haiku",
+  "deep": "sonnet",
+  "symbol": "BTC-USD",
+  "points": [
+    {
+      "as_of": "2026-06-17T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 66,
+          "rejected": null,
+          "pnl": 143.6911876161758,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-19T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 70,
+          "rejected": null,
+          "pnl": -269.1105368124345,
+          "exit_reason": "stop"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-21T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 45,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-22T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-24T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 63,
+          "rejected": null,
+          "pnl": 119.73848841463042,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-26T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "SELL",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 68,
+          "rejected": null,
+          "pnl": 192.8169890440803,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-27T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "SELL",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": 163.79816734603284,
+          "exit_reason": "take_profit"
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 63,
+          "rejected": null,
+          "pnl": 162.66896564150164,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-06-29T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "SELL",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": 100.29325527877258,
+          "exit_reason": "take_profit"
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 63,
+          "rejected": null,
+          "pnl": 143.25456431752883,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-01T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "SELL",
+          "confidence": 63,
+          "rejected": null,
+          "pnl": 141.12326801151298,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-02T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "BUY",
+          "confidence": 52,
+          "rejected": null,
+          "pnl": 53.25806635317854,
+          "exit_reason": "take_profit"
+        },
+        {
+          "arm": "single_model",
+          "action": "BUY",
+          "confidence": 62,
+          "rejected": null,
+          "pnl": 160.92400084298694,
+          "exit_reason": "take_profit"
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-04T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-06T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "BUY",
+          "confidence": 52,
+          "rejected": null,
+          "pnl": -161.6799801299534,
+          "exit_reason": "stop"
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-07T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 62,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-09T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 34,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-11T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 40,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-12T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 40,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-14T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 34,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-16T00:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": null,
+          "confidence": null,
+          "rejected": "critic",
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 58,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-17T16:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "BUY",
+          "confidence": 46,
+          "rejected": null,
+          "pnl": 127.06853311972436,
+          "exit_reason": "take_profit"
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 55,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    },
+    {
+      "as_of": "2026-07-19T08:00:00+00:00",
+      "arms": [
+        {
+          "arm": "pipeline",
+          "action": "HOLD",
+          "confidence": 42,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        },
+        {
+          "arm": "single_model",
+          "action": "HOLD",
+          "confidence": 62,
+          "rejected": null,
+          "pnl": null,
+          "exit_reason": null
+        }
+      ]
+    }
+  ]
+}
