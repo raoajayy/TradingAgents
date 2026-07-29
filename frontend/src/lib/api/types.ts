@@ -356,6 +356,13 @@ export const BacktestReportSchema = z
     ulcer_index: z.number().optional(),
     mar: z.number().optional(),
     sharpe_stability: z.number().optional(),
+    // overfitting guard (P2-02): deflated Sharpe — probability the observed
+    // Sharpe reflects skill rather than selection over n_trials attempts —
+    // and PBO (null unless a search produced a returns matrix). Nullable +
+    // optional so pre-P2-02 payloads keep parsing.
+    dsr: z.number().nullable().optional(),
+    pbo: z.number().nullable().optional(),
+    n_trials: z.number().nullable().optional(),
   })
   .passthrough();
 
@@ -648,6 +655,11 @@ export const BakeoffViewSchema = z
     window: z.array(z.string()).nullable().optional(),
     window_truncated: z.boolean().optional(),
     initial_equity: z.number().optional(),
+    // overfitting guard (P2-02): winner's deflated Sharpe + CSCV PBO over
+    // the contenders' aligned per-bar returns (nullable: older records)
+    dsr: z.number().nullable().optional(),
+    pbo: z.number().nullable().optional(),
+    n_trials: z.number().nullable().optional(),
     results: z.array(BakeoffResultSchema).default([]),
   })
   .passthrough();

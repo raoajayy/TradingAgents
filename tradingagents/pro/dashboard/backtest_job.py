@@ -148,6 +148,12 @@ class BacktestRunRequest(BaseModel):
     # halt new entries after a daily-loss or consecutive-loss breach. Off by
     # default; inert for pipeline strategies (they use the pipeline risk_gate).
     risk_breaker: bool = False
+    # overfitting guard (P2-02): how many configurations were tried before
+    # settling on this one. Deflates the reported Sharpe (report.dsr) — a
+    # result selected after N attempts must clear a higher bar. Default 1 =
+    # "first and only attempt"; callers replaying an optimizer/bakeoff
+    # winner should pass that search's real trial count.
+    n_trials: int = Field(default=1, ge=1, le=1_000_000)
 
 
 def bars_for_duration(duration: str, timeframe: Timeframe,
@@ -578,6 +584,7 @@ def resolve_request(marketdata: MarketDataService, params: dict) -> dict:
         "max_position_pct": float(params.get("max_position_pct", 33.0)),
         "emit_report": bool(params.get("emit_report", False)),
         "risk_breaker": bool(params.get("risk_breaker", False)),
+        "n_trials": max(1, int(params.get("n_trials", 1))),
     }
 
 
@@ -786,6 +793,22 @@ def run_job(state: Any, job: BacktestJob, params: dict) -> None:
             if not partial:
                 state.backtest, state.monte_carlo = result, mc
             view = service.backtest_view(result, mc)
+            # overfitting guard (P2-02): deflated Sharpe from the run's own
+            # per-bar returns, with the caller-declared trial count as the
+            # selection-bias hurdle. PBO needs a configs×periods returns
+            # matrix — only a search (optimizer/bakeoff) produces one — so a
+            # single run honestly reports null instead of a fake 0.
+            from tradingagents.pro.analytics.validation import (
+                deflated_sharpe_ratio,
+            )
+            from tradingagents.pro.backtest.metrics import equity_returns
+
+            guard = deflated_sharpe_ratio(
+                equity_returns(result.equity_curve), resolved["n_trials"])
+            view["report"].update({
+                "dsr": guard["dsr"], "pbo": None,
+                "n_trials": guard["n_trials"],
+            })
             # bulk arrays live in the artifacts, not the record/event
             view.pop("equity_curve", None)
             artifact_names = (["equity", "trades", "decisions", "orders"]
@@ -1574,6 +1597,8 @@ def run_bakeoff_job(state: Any, job: BacktestJob, params: dict) -> None:
         objective = resolved["objective"]
         total = len(resolved["strategies"])
         rows: list[dict] = []
+        returns_by_sid: dict[str, list[float]] = {}  # P2-02 guard inputs
+        from tradingagents.pro.backtest.metrics import equity_returns
         for n, (sid, sparams) in enumerate(resolved["strategies"], 1):
             if job.cancel.is_set():
                 break
@@ -1599,6 +1624,7 @@ def run_bakeoff_job(state: Any, job: BacktestJob, params: dict) -> None:
                 funding=_funding_for(asset))
             result = engine.run()
             report = result.report.as_dict()
+            returns_by_sid[sid] = equity_returns(result.equity_curve)
             rows.append({
                 "strategy_id": sid,
                 "objective_value": float(getattr(result.report, objective, 0.0) or 0.0),
@@ -1623,6 +1649,28 @@ def run_bakeoff_job(state: Any, job: BacktestJob, params: dict) -> None:
             raise ValueError("no strategies completed")
         rows.sort(key=lambda r: r["objective_value"], reverse=True)  # best first
 
+        # overfitting guard (P2-02): a bakeoff IS a multi-trial search, so the
+        # winner's Sharpe deflates by the number of strategies tried, and the
+        # contenders' aligned per-bar returns give CSCV its matrix. Best-effort
+        # reporting — a guard failure never fails the bakeoff.
+        guard = {"dsr": None, "pbo": None, "n_trials": len(rows)}
+        try:
+            from tradingagents.pro.analytics.validation import (
+                deflated_sharpe_ratio,
+                probability_of_backtest_overfitting,
+            )
+
+            rets = [returns_by_sid.get(r["strategy_id"]) or [] for r in rows]
+            guard["dsr"] = deflated_sharpe_ratio(
+                rets[0], n_trials=len(rows))["dsr"]
+            if len(rets) >= 2 and len({len(x) for x in rets}) == 1:
+                import numpy as np
+
+                guard["pbo"] = probability_of_backtest_overfitting(
+                    np.column_stack(rets))
+        except Exception:  # noqa: BLE001 — the guard is advisory, not gating
+            logger.warning("bakeoff overfitting guard failed", exc_info=True)
+
         created_at = datetime.now(timezone.utc).isoformat()
         status = "cancelled" if job.cancel.is_set() else "done"
         summary = {"id": job.id, "created_at": created_at, "type": "bakeoff",
@@ -1639,6 +1687,8 @@ def run_bakeoff_job(state: Any, job: BacktestJob, params: dict) -> None:
                                       bars[-1].start.date().isoformat()],
                            "window_truncated": truncated,
                            "initial_equity": resolved["initial_equity"],
+                           "dsr": guard["dsr"], "pbo": guard["pbo"],
+                           "n_trials": guard["n_trials"],
                            "results": rows}}
         if store is not None:
             try:

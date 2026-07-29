@@ -116,9 +116,13 @@ export default function PortfolioPage() {
                 {backtest.data.report && (
                   <div className="mt-2 flex flex-wrap gap-x-[18px] text-xs text-fg-muted tabular">
                     <span>Sharpe <span className="font-bold">{backtest.data.report.sharpe?.toFixed(2) ?? "—"}</span></span>
+                    <span>DSR <span className="font-bold">{backtest.data.report.dsr?.toFixed(2) ?? "—"}</span></span>
                     <span>Sortino <span className="font-bold">{backtest.data.report.sortino?.toFixed(2) ?? "—"}</span></span>
                     <span>max DD <span className="font-bold text-bear">{backtest.data.report.max_drawdown != null ? fmtPct(backtest.data.report.max_drawdown) : "—"}</span></span>
                     <span>PF <span className="font-bold">{backtest.data.report.profit_factor?.toFixed(2) ?? "—"}</span></span>
+                    {backtest.data.report.dsr != null && backtest.data.report.dsr < 0.95 && (
+                      <Badge variant="stale" data-testid="dsr-badge">not deployable (DSR)</Badge>
+                    )}
                   </div>
                 )}
                 <p className="mt-2 text-xs text-fg-subtle">

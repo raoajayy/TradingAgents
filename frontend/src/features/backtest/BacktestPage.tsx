@@ -910,6 +910,11 @@ function ResultPanel({
               {status}
             </Badge>
           )}
+          {report.dsr != null && report.dsr < 0.95 && (
+            <Badge variant="stale" data-testid="dsr-badge">
+              not deployable (DSR)
+            </Badge>
+          )}
           <Badge variant={view.provider === "deterministic" || view.provider === "rules" ? "default" : "accent"}>
             {view.provider}
           </Badge>
@@ -947,12 +952,18 @@ function ResultPanel({
           <StatCard label="Trades" value={view.n_trades ?? 0} />
         </div>
         {(report.mar != null || report.omega != null ||
-          report.ulcer_index != null || report.annualized_return != null) && (
+          report.ulcer_index != null || report.annualized_return != null ||
+          report.dsr != null) && (
           <div
-            className="grid grid-cols-2 gap-2 sm:grid-cols-5"
+            className="grid grid-cols-2 gap-2 sm:grid-cols-6"
             data-testid="backtest-extended-metrics"
           >
             <StatCard label="Annualized" value={fmtPct(report.annualized_return)} />
+            <StatCard
+              label="DSR"
+              value={report.dsr != null ? report.dsr.toFixed(2) : "—"}
+              sub={report.n_trials != null ? `${report.n_trials} trial${report.n_trials === 1 ? "" : "s"}` : "deflated Sharpe"}
+            />
             <StatCard
               label="MAR"
               value={report.mar != null && Number.isFinite(report.mar)
