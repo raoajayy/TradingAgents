@@ -190,6 +190,16 @@ class ProConfig(ContractModel):
     risk: RiskLimits = Field(default_factory=RiskLimits)
     models: ModelRouting = Field(default_factory=ModelRouting)
     max_debate_rounds: int = Field(default=1, ge=1, le=10)
+    critic_samples: int = Field(
+        default=3, ge=1, le=9,
+        description=(
+            "Self-consistency at the decision boundary: the critic verdict is "
+            "the majority of this many independent samples (ties fail closed). "
+            "P1-01 measured a 30-50% approve/reject flip at k=10 from a single "
+            "near-threshold LLM call; majority-of-N cuts boundary variance at "
+            "the cost of N-1 extra deep calls per run. Use an odd number."
+        ),
+    )
     max_risk_discuss_rounds: int = Field(default=1, ge=1, le=10)
     event_block_hours: float = Field(
         default=4.0, ge=0, le=48,

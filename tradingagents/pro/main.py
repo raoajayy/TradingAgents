@@ -80,6 +80,10 @@ def _crypto_snapshot_builder(symbol: str):
     from tradingagents.pro.ingestion.news import YahooFinanceNewsFeed
     from tradingagents.pro.ingestion.onchain import CoinMetricsFeed, FearGreedFeed
     from tradingagents.pro.ingestion.sessions import current_session
+    from tradingagents.pro.ingestion.token_terminal import (
+        KEY_ENV as TT_KEY_ENV,
+        TokenTerminalFeed,
+    )
 
     vendor, cm_asset = CRYPTO_WIRING[symbol]
     delta = DeltaExchangeFeed()
@@ -87,6 +91,8 @@ def _crypto_snapshot_builder(symbol: str):
                _DeltaPerpMetrics(delta, vendor)]
     if cm_asset.upper() in DVOL_CURRENCIES:  # Deribit has no SOL DVOL
         onchain.append(DeribitVolFeed(currency=cm_asset.upper()))
+    if os.environ.get(TT_KEY_ENV):  # optional keyed feed (P1-05d)
+        onchain.append(TokenTerminalFeed(asset=cm_asset))
     return SnapshotBuilder(
         bars_feed=_MappedBars(delta, {symbol: vendor}),
         macro_feeds=(FredMacroFeed(),),

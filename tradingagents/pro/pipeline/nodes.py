@@ -420,25 +420,48 @@ class PipelineNodes:
             evidence_block=_evidence_block(_all_evidence(state)),
             debate_block=_debate_block(state["debate"]),
         )
-        report = self._invoke(CriticReport, prompt, deep=True)
-        if report is None:
-            # fail closed: an unauditable debate does not proceed
-            report = CriticReport(verdict="fail", issues=["critic model unavailable"])
+        # self-consistency (P1-01): one near-threshold LLM call flipped the
+        # approve/reject boundary 30-50% at k=10 while direction never
+        # flipped once — the noise lives HERE, not in the debate. Majority
+        # of N independent samples; a failed call counts as fail (the old
+        # fail-closed rule, per sample); ties fail closed.
+        samples = max(1, int(getattr(self.config, "critic_samples", 1)))
+        verdicts: list[CriticReport] = []
+        for _ in range(samples):
+            report = self._invoke(CriticReport, prompt, deep=True)
+            if report is None:
+                report = CriticReport(verdict="fail",
+                                      issues=["critic model unavailable"])
+            verdicts.append(report)
+        n_pass = sum(1 for r in verdicts if r.verdict == "pass")
+        passed = n_pass > len(verdicts) - n_pass
+        # surface every distinct defect the failing samples found
+        seen: set[str] = set()
+        issues = [i for r in verdicts if r.verdict == "fail"
+                  for i in r.issues if not (i in seen or seen.add(i))]
+        if passed:
+            issues = []
+        argument = "; ".join(issues) if issues else "no defects found"
+        if samples > 1:
+            argument += f" [{n_pass}/{len(verdicts)} samples passed]"
         entry = {
             "speaker": "critic",
-            "stance": report.verdict,
-            "argument": "; ".join(report.issues) if report.issues else "no defects found",
+            "stance": "pass" if passed else "fail",
+            "argument": argument,
             "cited": [],
-            "confidence": 100,
+            "confidence": round(100 * max(n_pass, samples - n_pass) / samples),
         }
         update: dict[str, Any] = {
             "debate": [*state["debate"], entry],
             "gate_results": {**state.get("gate_results", {}),
-                             "critic": {"passed": report.verdict == "pass",
-                                        "issues": report.issues}},
+                             "critic": {"passed": passed,
+                                        "issues": issues,
+                                        "samples": samples,
+                                        "votes_pass": n_pass}},
         }
-        if report.verdict == "fail":
-            update["rejection"] = {"stage": "critic", "reasons": report.issues}
+        if not passed:
+            update["rejection"] = {"stage": "critic", "reasons": issues or
+                                   ["critic majority failed with no stated issues"]}
         return update
 
     def reflection(self, state: dict) -> dict:

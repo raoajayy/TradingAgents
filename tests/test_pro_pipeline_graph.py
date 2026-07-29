@@ -368,3 +368,64 @@ def test_counterarguments_preserve_losing_side():
     # all fake evidence is bullish -> no counterarguments, all supporting
     assert rec.counterarguments == []
     assert all(e.direction.value == "bullish" for e in rec.evidence)
+
+
+class _SequencedCriticLLM(FakePipelineLLM):
+    """FakePipelineLLM whose CriticReport calls pop from a script, so the
+    majority-of-N boundary (P1-01 fix) is testable sample by sample."""
+
+    def __init__(self, critic_script: list[CriticReport], **kwargs):
+        super().__init__(**kwargs)
+        self._critic_script = list(critic_script)
+
+    def with_structured_output(self, schema):
+        if schema is CriticReport and self._critic_script:
+            outer = self
+
+            class _Popping:
+                def invoke(self, prompt):
+                    outer.prompts.setdefault("CriticReport", []).append(prompt)
+                    return outer._critic_script.pop(0)
+
+            return _Popping()
+        return super().with_structured_output(schema)
+
+
+def test_critic_majority_pass_overrides_one_fail():
+    llm = _SequencedCriticLLM([
+        CriticReport(verdict="pass", issues=[]),
+        CriticReport(verdict="fail", issues=["flaky nit"]),
+        CriticReport(verdict="pass", issues=[]),
+    ])
+    config = CONFIG.model_copy(update={"critic_samples": 3})
+    state = run_pipeline(llm, config, pipeline_snapshot())
+    critic = state["gate_results"]["critic"]
+    assert critic["passed"] is True
+    assert critic["votes_pass"] == 2 and critic["samples"] == 3
+    assert (state.get("rejection") or {}).get("stage") != "critic"
+
+
+def test_critic_majority_fail_merges_distinct_issues():
+    llm = _SequencedCriticLLM([
+        CriticReport(verdict="fail", issues=["cited ghost evidence"]),
+        CriticReport(verdict="pass", issues=[]),
+        CriticReport(verdict="fail", issues=["cited ghost evidence",
+                                             "direction contradicts rsi"]),
+    ])
+    config = CONFIG.model_copy(update={"critic_samples": 3})
+    state = run_pipeline(llm, config, pipeline_snapshot())
+    assert state["rejection"]["stage"] == "critic"
+    # deduped, order-preserving union of failing samples' issues
+    assert state["rejection"]["reasons"] == [
+        "cited ghost evidence", "direction contradicts rsi"]
+
+
+def test_critic_tie_fails_closed():
+    llm = _SequencedCriticLLM([
+        CriticReport(verdict="pass", issues=[]),
+        CriticReport(verdict="fail", issues=["borderline"]),
+    ])
+    config = CONFIG.model_copy(update={"critic_samples": 2})
+    state = run_pipeline(llm, config, pipeline_snapshot())
+    assert state["rejection"]["stage"] == "critic"
+    assert state["gate_results"]["critic"]["votes_pass"] == 1

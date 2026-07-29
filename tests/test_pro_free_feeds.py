@@ -102,3 +102,54 @@ def test_dvol_reaches_implied_vol_agent_prompt():
     prompt = llm.structured.prompts[0]
     assert "DVOL: 55.2 % ann. IV" in prompt
     assert "DVOL_CHANGE_1D: -1.3 % ann. IV" in prompt
+
+
+# --- P1-05d Token Terminal (optional, keyed free tier) -----------------------
+
+TT_PAYLOAD = {
+    "data": [
+        {"timestamp": "2026-07-27T00:00:00Z", "fees": 1_100_000.0,
+         "user_dau": 950_000},
+        {"timestamp": "2026-07-28T00:00:00Z", "fees": 1_234_567.0,
+         "user_dau": 1_020_000},
+    ]
+}
+
+
+class TestTokenTerminal:
+    def test_latest_row_becomes_readings(self):
+        from tradingagents.pro.ingestion.token_terminal import TokenTerminalFeed
+
+        transport = StubTransport(TT_PAYLOAD)
+        feed = TokenTerminalFeed(asset="eth", transport=transport,
+                                 api_key="tt_test")
+        by_name = {r.name: r for r in feed.get_metrics()}
+        assert by_name["TT_FEES_USD_24H"].value == pytest.approx(1_234_567.0)
+        assert by_name["TT_ACTIVE_USERS_24H"].value == pytest.approx(1_020_000)
+        assert by_name["TT_FEES_USD_24H"].as_of == datetime(
+            2026, 7, 28, tzinfo=timezone.utc)
+        url, params = transport.calls[0]
+        assert url.endswith("/projects/ethereum/metrics")
+        assert params == {"metric_ids": "fees,user_dau"}
+
+    def test_keyless_reports_unavailable_under_ui_cutoff(self, monkeypatch):
+        from tradingagents.pro.ingestion.token_terminal import (
+            KEY_ENV,
+            TokenTerminalFeed,
+        )
+
+        monkeypatch.delenv(KEY_ENV, raising=False)
+        feed = TokenTerminalFeed(asset="btc", transport=StubTransport({}))
+        with pytest.raises(NoMarketDataError) as err:
+            feed.get_metrics()
+        assert len(str(err.value)) < 80  # intel UI truncates at 80 chars
+
+    def test_unmapped_asset_and_empty_rows_raise(self):
+        from tradingagents.pro.ingestion.token_terminal import TokenTerminalFeed
+
+        with pytest.raises(NoMarketDataError):
+            TokenTerminalFeed(asset="doge", transport=StubTransport({}),
+                              api_key="k").get_metrics()
+        with pytest.raises(NoMarketDataError):
+            TokenTerminalFeed(asset="eth", transport=StubTransport({"data": []}),
+                              api_key="k").get_metrics()

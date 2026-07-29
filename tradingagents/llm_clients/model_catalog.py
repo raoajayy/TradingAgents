@@ -141,6 +141,20 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    # Claude Code CLI (subscription-billed, local only): accepts aliases
+    # (haiku/sonnet/opus) and full IDs. Prefer full IDs in evals so runs are
+    # attributable (AI-07); Anthropic dates only some snapshots.
+    "claude-cli": {
+        "quick": [
+            ("Claude Haiku 4.5 - Fast", "claude-haiku-4-5-20251001"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("Claude Sonnet 5 - Flagship", "claude-sonnet-5"),
+            ("Claude Opus 5 - Deep reasoning", "claude-opus-5"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     # Qwen: same model IDs across global (dashscope-intl) and China
     # (dashscope) endpoints, so the two provider keys share one model list.
     "qwen": _QWEN_MODELS,

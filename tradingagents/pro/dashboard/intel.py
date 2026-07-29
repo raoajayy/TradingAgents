@@ -122,6 +122,12 @@ def correlation_matrix(marketdata, symbols, window: int = 30,
 # the macro debate. Keys are metric names; absent keys fall back to the
 # raw name in the UI.
 METRIC_INFO: dict[str, dict[str, str]] = {
+    "TT_FEES_USD_24H": {"label": "Protocol fees (24h)",
+                        "note": "Token Terminal daily fees, USD — the chain's "
+                                "cash-flow proxy (free tier, keyed)."},
+    "TT_ACTIVE_USERS_24H": {"label": "Active users (24h)",
+                            "note": "Token Terminal daily active users — usage "
+                                    "fundamentals (free tier, keyed)."},
     "FED_FUNDS_RATE": {"label": "Fed funds rate",
                        "note": "Effective federal funds rate (FRED DFF)."},
     "US10Y": {"label": "US 10Y yield",
@@ -237,6 +243,9 @@ class IntelService:
                 GoldCotFeed,
                 GoldVolFeed,
             )
+            from tradingagents.pro.ingestion.token_terminal import (
+                TokenTerminalFeed,
+            )
 
             derivatives = BinanceDerivativesFeed()
             spot = BinanceSpotFeed()
@@ -260,6 +269,7 @@ class IntelService:
                 "goldhub": GoldhubCsvFeed(
                     default_data_dir() / GOLDHUB_CSV_NAME
                 ).get_metrics,
+                "token_terminal": TokenTerminalFeed().get_metrics,
             }
         return self._feeds
 
