@@ -1,0 +1,46 @@
+{
+  "as_of": "2026-07-29T12:41:39.932065+00:00",
+  "provider": "claude-cli",
+  "quick": "claude-haiku-4-5-20251001",
+  "deep": "claude-sonnet-5",
+  "k": 10,
+  "results": [
+    {
+      "symbol": "XAUUSD",
+      "case": "clean_uptrend_supportive_macro",
+      "k": 10,
+      "action_flip_rate": 0.4,
+      "confidence_stddev": 7.87,
+      "gate_flip_rate": 0.2,
+      "actions": {
+        "BUY": 6,
+        "rejected": 2,
+        "HOLD": 2
+      },
+      "gates": {
+        "approved": 8,
+        "critic": 1,
+        "quality_gate": 1
+      },
+      "mean_confidence": 45.1
+    },
+    {
+      "symbol": "BTC-USD",
+      "case": "btc_h1_uptrend",
+      "k": 10,
+      "action_flip_rate": 0.3,
+      "confidence_stddev": 3.99,
+      "gate_flip_rate": 0.3,
+      "actions": {
+        "rejected": 3,
+        "BUY": 7
+      },
+      "gates": {
+        "critic": 1,
+        "approved": 7,
+        "quality_gate": 2
+      },
+      "mean_confidence": 48.7
+    }
+  ]
+}
