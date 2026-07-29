@@ -45,6 +45,13 @@ def main() -> int:
                              "historical cut points, retro-scored")
     parser.add_argument("--points", type=int, default=5,
                         help="historical cut points for --ablation (default 5)")
+    parser.add_argument("--memorization-audit", action="store_true",
+                        help="P2-03: re-run the frozen stability snapshots "
+                             "named vs anonymized (tickers/dates masked) and "
+                             "compare action agreement per symbol")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="label-mapping seed for --memorization-audit "
+                             "(default 0)")
     args = parser.parse_args()
 
     cases = golden_cases()
@@ -72,11 +79,20 @@ def main() -> int:
 
     from tradingagents.pro.evals.stability import DEFAULT_CASE_NAMES
 
-    n_runs = (len(DEFAULT_CASE_NAMES) * args.k if args.stability
-              else len(cases) * args.samples)
+    if args.stability:
+        n_runs = len(DEFAULT_CASE_NAMES) * args.k
+    elif args.memorization_audit:
+        n_runs = len(DEFAULT_CASE_NAMES) * args.samples * 2  # named + anon arms
+    else:
+        n_runs = len(cases) * args.samples
     price_scale = price_for(routing.llm_provider).input_per_mtok / 3.0
     est = n_runs * EST_COST_PER_CASE_RUN * price_scale
-    if args.ablation:
+    if args.memorization_audit:
+        print(f"memorization audit: {len(DEFAULT_CASE_NAMES)} frozen snapshots "
+              f"x {args.samples} samples x 2 arms (named/anonymized) = "
+              f"{n_runs} pipeline runs (~${est:.2f} estimated at "
+              f"{routing.llm_provider} rates)\n")
+    elif args.ablation:
         print(f"ablation: {args.points} historical cut points x 2 arms "
               f"(~${args.points * EST_COST_PER_CASE_RUN * price_scale:.2f} "
               f"estimated at {routing.llm_provider} rates)\n")
@@ -97,6 +113,40 @@ def main() -> int:
     bundle.quick = CostTrackingLLM(bundle.quick, price=price)
     deep_tracker = CostTrackingLLM(bundle.deep, price=price)
     bundle.deep = deep_tracker if bundle.deep is not bundle.quick else bundle.quick
+
+    if args.memorization_audit:
+        import json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from tradingagents.pro.evals.anonymize import run_memorization_audit
+
+        rows = run_memorization_audit(bundle, config, samples=args.samples,
+                                      seed=args.seed, agent_workers=8)
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "provider": routing.llm_provider,
+            "quick": routing.quick_think_llm,
+            "deep": routing.deep_think_llm,
+            "samples": args.samples,
+            "seed": args.seed,
+            "rows": rows,
+        }
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = out_dir / f"memorization_{stamp}.json"
+        out.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"{'case':<34} {'symbol':<8} {'token':<8} "
+              f"{'named':<10} {'anon':<10} {'agree':<6} flag")
+        for r in rows:
+            named = "/".join(r["named_actions"])
+            anon = "/".join(r["anon_actions"])
+            print(f"{r['case']:<34} {r['symbol']:<8} {r['token']:<8} "
+                  f"{named:<10} {anon:<10} {r['action_agreement']:<6.0%} "
+                  f"{'CONTAMINATION?' if r['flagged'] else 'ok'}")
+        print(f"\nwrote {out}")
+        return 0
 
     if args.ablation:
         import json

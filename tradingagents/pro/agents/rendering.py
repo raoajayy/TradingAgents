@@ -9,7 +9,10 @@ cannot cite data it never saw, and code (not the model) owns attribution.
 from __future__ import annotations
 
 import re as _re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 from tradingagents.contracts import (
     DataRef,
@@ -95,6 +98,40 @@ def wrap_untrusted(text: str, label: str) -> str:
     )
 
 
+# --- anonymization boundary (P2-03) -----------------------------------------
+# The memorization audit re-runs stored snapshots with identity+calendar
+# masked. The masker plugs in HERE — the snapshot->prompt boundary — so no
+# agent code changes for a masked run. Named mode is byte-identical: when no
+# masker is active, the rendered text never enters the masking path.
+# The masker itself lives in ``pro/evals/anonymize.py`` (evals depend on
+# agents, never the reverse).
+
+
+@runtime_checkable
+class PromptMasker(Protocol):
+    def mask(self, text: str) -> str: ...
+
+
+_ACTIVE_MASKER: ContextVar[PromptMasker | None] = ContextVar(
+    "pro_rendering_anonymizer", default=None)
+
+
+@contextmanager
+def anonymization_scope(masker: PromptMasker):
+    """While active, every ``render_context`` data block in this context is
+    passed through ``masker.mask`` — the pipeline runs masked without any
+    per-agent plumbing."""
+    token = _ACTIVE_MASKER.set(masker)
+    try:
+        yield masker
+    finally:
+        _ACTIVE_MASKER.reset(token)
+
+
+def active_masker() -> PromptMasker | None:
+    return _ACTIVE_MASKER.get()
+
+
 def _source_type_for(source_id: str) -> SourceType:
     for prefix, source_type in _SOURCE_TYPES:
         if source_id.startswith(prefix):
@@ -135,11 +172,17 @@ def render_context(
     snapshot: MarketSnapshot,
     spec: AgentSpec,
     extra_metrics: dict[str, MetricReading] | None = None,
+    anonymize: PromptMasker | bool | None = None,
 ) -> RenderedContext:
     """Build the deterministic data block one agent is allowed to see.
 
     ``extra_metrics`` carries pipeline-computed values (risk engine, quant
     features) that aren't part of the snapshot itself.
+
+    ``anonymize`` (P2-03): pass a masker (or ``True`` inside an
+    ``anonymization_scope``) to strip identity + calendar from the rendered
+    text. Default ``None`` honors any active scope; ``False`` opts out.
+    Numbers are never masked — only tickers/asset words and absolute dates.
     """
     ctx = RenderedContext()
     lines: list[str] = []
@@ -271,4 +314,21 @@ def render_context(
             ctx.missing.append("news")
 
     ctx.text = "\n".join(lines)
+
+    masker: PromptMasker | None
+    if anonymize is False:
+        masker = None
+    elif anonymize is None or anonymize is True:
+        masker = _ACTIVE_MASKER.get()
+        if masker is None and anonymize is True:
+            raise ValueError(
+                "render_context(anonymize=True) requires an active "
+                "anonymization_scope (or pass the masker directly)")
+    else:
+        masker = anonymize
+    if masker is not None and ctx.text:
+        register = getattr(masker, "register", None)
+        if register is not None:
+            register(snapshot.symbol)
+        ctx.text = masker.mask(ctx.text)
     return ctx

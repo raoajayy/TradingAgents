@@ -12,7 +12,12 @@ from tradingagents.pro.agents.metrics import (
     compute_quant_metrics,
     compute_risk_metrics,
 )
-from tradingagents.pro.agents.rendering import RenderedContext, render_context
+from tradingagents.pro.agents.rendering import (
+    RenderedContext,
+    active_masker,
+    anonymization_scope,
+    render_context,
+)
 from tradingagents.pro.agents.roster import (
     MACRO_SPECS,
     NEWS_SENTIMENT_SPECS,
@@ -36,6 +41,8 @@ __all__ = [
     "compute_quant_metrics",
     "compute_risk_metrics",
     "RenderedContext",
+    "active_masker",
+    "anonymization_scope",
     "render_context",
     "MACRO_SPECS",
     "NEWS_SENTIMENT_SPECS",
