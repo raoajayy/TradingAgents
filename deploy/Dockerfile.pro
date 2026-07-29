@@ -48,6 +48,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 RUN useradd --create-home trader && mkdir -p /data && chown trader /data
 USER trader
+# P2-04: bake the embedding model into the image so cold boots never
+# depend on the HF Hub (fallback would silently degrade to hashing)
+RUN python -c "from model2vec import StaticModel; \
+    StaticModel.from_pretrained('minishlab/potion-base-8M')"
 VOLUME /data
 
 # Paper trading is the only mode this image runs by default (Constraint 5).

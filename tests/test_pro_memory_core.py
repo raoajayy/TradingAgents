@@ -109,3 +109,63 @@ class TestKnowledgeGraph:
 
     def test_empty_block_for_unknown_node(self):
         assert default_gold_graph().to_prompt_block("TSLA") == ""
+
+
+class TestSemanticEmbedder:
+    """P2-04: semantic default with hashing fallback."""
+
+    def test_fallback_to_hashing_when_model_unavailable(self, monkeypatch):
+        from tradingagents.pro.memory import embedding as emb
+
+        def boom(self):
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr(emb.SemanticEmbedder, "_load", boom)
+        monkeypatch.delenv("TRADINGAGENTS_EMBEDDER", raising=False)
+        assert isinstance(emb.make_default_embedder(), emb.HashingEmbedder)
+
+    def test_env_forces_hashing(self, monkeypatch):
+        from tradingagents.pro.memory import embedding as emb
+
+        monkeypatch.setenv("TRADINGAGENTS_EMBEDDER", "hashing")
+        assert isinstance(emb.make_default_embedder(), emb.HashingEmbedder)
+
+    def test_semantic_vector_shape_and_latency(self):
+        import time
+
+        from tradingagents.pro.memory.embedding import SemanticEmbedder
+
+        embedder = SemanticEmbedder()
+        try:
+            embedder("warmup")  # may download on first ever call
+        except Exception:
+            pytest.skip("model2vec model unavailable (offline CI)")
+        t0 = time.perf_counter()
+        vec = embedder("gold ranging regime, fade the breakout")
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        assert len(vec) == 256
+        assert abs(sum(v * v for v in vec) - 1.0) < 1e-3  # unit norm
+        assert elapsed_ms < 100  # AC latency bound
+
+    def test_semantic_beats_hashing_on_paraphrase(self):
+        from tradingagents.pro.memory.embedding import (
+            HashingEmbedder,
+            SemanticEmbedder,
+        )
+
+        sem = SemanticEmbedder()
+        try:
+            sem("warmup")
+        except Exception:
+            pytest.skip("model2vec model unavailable (offline CI)")
+
+        def cos(a, b):
+            return sum(x * y for x, y in zip(a, b, strict=True))
+
+        query = "central bank buying supports bullion"
+        match = "gold demand from official-sector purchases"
+        distractor = "solana network outage halts transactions"
+        s_match, s_dist = cos(sem(query), sem(match)), cos(sem(query), sem(distractor))
+        assert s_match > s_dist  # semantic model ranks the paraphrase higher
+        h = HashingEmbedder()
+        assert cos(h(query), h(match)) == 0.0  # zero token overlap => hashing blind

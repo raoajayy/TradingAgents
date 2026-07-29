@@ -9,6 +9,7 @@ description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "model2vec>=0.8",  # P2-04 semantic memory embeddings (potion-base-8M)
     "langchain-core>=0.3.81",
     "backtrader>=1.9.78.123",
     "langchain-anthropic>=0.3.15",

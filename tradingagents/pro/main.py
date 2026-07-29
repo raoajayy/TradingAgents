@@ -326,7 +326,10 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
     event_store = EventStore()
     migrate_legacy(event_store, data_path)
-    memory = ProMemory(store=SqliteMemoryStore(event_store))
+    from tradingagents.pro.memory.embedding import make_default_embedder
+
+    memory = ProMemory(store=SqliteMemoryStore(event_store),
+                       embedder=make_default_embedder())
     state = DashboardState(memory=memory)
     state.recorder = PipelineRecorder(store=event_store)
     state.prefs = PrefsStore(store=event_store)
