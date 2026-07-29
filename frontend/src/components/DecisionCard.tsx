@@ -1,7 +1,7 @@
 /** The decision hero: action, confidence, level ladder, size, votes,
  * invalidation, strongest counterarguments, analogs. Rejections render
  * with EQUAL visual weight — honesty is the product. */
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { DirectionBadge } from "./DirectionBadge";
 import { Emphasis } from "./Emphasis";

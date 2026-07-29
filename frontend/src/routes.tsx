@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router";
 
 import { AppShell } from "./app/AppShell";
 import { SkeletonCard } from "./components/ui/skeleton";

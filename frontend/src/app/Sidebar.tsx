@@ -13,7 +13,7 @@ import {
   Trophy,
   Wallet,
 } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 
 import { usePrefs } from "@/lib/api/queries";
 import { cn } from "@/lib/utils";

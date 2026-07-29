@@ -3,7 +3,7 @@
  * feature), memory-driven journal, integrity panel, exports. */
 import { Download } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { EquityCurve } from "@/components/charts/EquityCurve";
 import { DirectionBadge } from "@/components/DirectionBadge";

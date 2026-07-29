@@ -54,8 +54,12 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-      - name: Dependency audit (high+)
-        run: npm audit --audit-level=high
+      - name: Dependency audit (high+, shipped deps)
+        # production deps only: the gate protects the built artifact. Dev
+        # chains (eslint/storybook) get blanket advisories whose "fix" is a
+        # major downgrade — unactionable noise that blocked real deploys
+        # (2026-07-29 advisory storm).
+        run: npm audit --audit-level=high --omit=dev
       - name: Typecheck
         run: npx tsc -b
       - name: Lint

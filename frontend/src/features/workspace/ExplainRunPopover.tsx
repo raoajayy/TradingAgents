@@ -5,7 +5,7 @@
  * numbers; nothing is recomputed here (Constraint 2). */
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { EvidenceChat } from "@/components/EvidenceChat";
 import { SkeletonCard } from "@/components/ui/skeleton";

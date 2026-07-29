@@ -4,7 +4,7 @@
  * leaderboard. Rejections are first-class citizens. */
 import { Play, ShieldAlert } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router";
 
 import { AgentLeaderboard } from "@/components/AgentLeaderboard";
 import { EvidenceChat } from "@/components/EvidenceChat";

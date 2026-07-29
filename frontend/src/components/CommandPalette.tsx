@@ -3,7 +3,7 @@
  * flow — it is findable here but never one keystroke away. */
 import { useQueryClient } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router";
 
 import { Kbd } from "./ui/kbd";
 import { patchPrefs, usePrefs, useRuns } from "@/lib/api/queries";

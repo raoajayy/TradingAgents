@@ -4,7 +4,7 @@
  * Honestly cut: no fake DOM ladder, no manual order ticket. */
 import { Maximize2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 
 import { EmptyState } from "@/components/EmptyState";
 import { IndicatorPicker } from "@/components/IndicatorPicker";

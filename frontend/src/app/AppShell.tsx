@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router";
 
 import { AuthGate } from "./AuthGate";
 import { ErrorBoundary } from "./ErrorBoundary";

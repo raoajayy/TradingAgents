@@ -1,5 +1,5 @@
 import { ShieldAlert } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { EmptyState } from "./EmptyState";
 import type { Alert } from "@/lib/api/types";

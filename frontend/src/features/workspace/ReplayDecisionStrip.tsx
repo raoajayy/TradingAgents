@@ -4,7 +4,7 @@
  * inside one bar, and pretending the debate spans bars would be a lie. */
 import { ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { useRunTimeline } from "@/lib/api/queries";

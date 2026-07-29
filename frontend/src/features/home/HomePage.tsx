@@ -3,7 +3,7 @@
  * what changed, what's next. No charts here: Workspace owns them. */
 import { Eye, EyeOff, Pencil, PencilOff } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { AlertFeedList } from "@/components/AlertFeedList";
 import { DecisionCard } from "@/components/DecisionCard";

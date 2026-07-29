@@ -5,7 +5,7 @@
  * the run advancing live. */
 import { Play } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
