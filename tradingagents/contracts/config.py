@@ -86,6 +86,22 @@ class RiskLimits(ContractModel):
     circuit_breaker_consecutive_losses: int = Field(
         default=3, ge=1, description="Halt new entries after this many consecutive losses."
     )
+    # --- P2-05 portfolio-level caps. None = disabled, so existing configs
+    # and books behave exactly as before until an operator opts in. ---
+    max_portfolio_var_pct: float | None = Field(
+        default=None, gt=0, le=100,
+        description="Cap on parametric 1-day 99% portfolio VaR as a percent "
+        "of equity, checked pre-trade over the book INCLUDING the candidate "
+        "position (weights x daily log-return covariance). None disables.",
+    )
+    max_correlated_gross_pct: float | None = Field(
+        default=None, gt=0,
+        description="Cap on gross exposure (percent of equity) of the "
+        "candidate position plus every open position whose absolute return "
+        "correlation with it exceeds 0.6 — correlated entries are one bet "
+        "wearing several tickers. Only trips when at least one correlated "
+        "peer is open. None disables.",
+    )
 
 
 class LiveRiskLimits(ContractModel):

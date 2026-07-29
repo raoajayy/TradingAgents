@@ -977,7 +977,8 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         max_open = (state.router.limits.max_open_positions
                     if state.router is not None else 3)
         perf["exposure"] = service.portfolio_exposure(
-            positions, state.equity, max_open)
+            positions, state.equity, max_open,
+            marketdata=state.marketdata)
         return perf
 
     @app.get("/api/scanner")

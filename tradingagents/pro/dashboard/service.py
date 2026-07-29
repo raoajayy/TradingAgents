@@ -397,14 +397,18 @@ def journal_performance(memory: ProMemory,
 
 
 def portfolio_exposure(positions: list[dict], equity: float | None,
-                       max_open_positions: int) -> dict:
+                       max_open_positions: int, marketdata=None) -> dict:
     """Aggregate book risk (trader review): net/gross exposure, direction
     split, concentration. Pure arithmetic over open_positions_view rows —
-    unknown marks contribute nothing rather than a fabricated number."""
+    unknown marks contribute nothing rather than a fabricated number.
+    P2-05: with ``marketdata`` attached, also the parametric 1-day 99%
+    book VaR (``portfolio_var_pct``, null whenever any priced position
+    lacks return history — a partial VaR would be a lie)."""
     long_notional = 0.0
     short_notional = 0.0
     largest = 0.0
     priced = 0
+    signed_notionals: dict[str, float] = {}
     for pos in positions:
         mark = pos.get("mark_price")
         qty = pos.get("quantity") or 0.0
@@ -412,6 +416,9 @@ def portfolio_exposure(positions: list[dict], equity: float | None,
             continue
         notional = qty * mark
         priced += 1
+        symbol = pos.get("symbol")
+        if symbol:
+            signed_notionals[symbol] = signed_notionals.get(symbol, 0.0) + notional
         if notional >= 0:
             long_notional += notional
         else:
@@ -430,7 +437,37 @@ def portfolio_exposure(positions: list[dict], equity: float | None,
         "long_exposure_pct": pct(long_notional),
         "short_exposure_pct": pct(short_notional),
         "largest_position_pct": pct(largest),
+        "portfolio_var_pct": _book_var_pct(signed_notionals, equity, marketdata),
     }
+
+
+def _book_var_pct(signed_notionals: dict[str, float], equity: float | None,
+                  marketdata) -> float | None:
+    """Parametric 1-day 99% VaR of the priced book as percent of equity
+    (P2-05). Null — never a fabricated number — when marketdata is not
+    attached, the book is empty, or any priced position lacks enough
+    return history for the covariance."""
+    from tradingagents.contracts import Timeframe
+    from tradingagents.pro.analytics.risk import portfolio_var, returns_covariance
+
+    if marketdata is None or not equity or not signed_notionals:
+        return None
+    bars_by_symbol: dict[str, list] = {}
+    for symbol in signed_notionals:
+        try:
+            bars_by_symbol[symbol] = marketdata.get_bars(
+                symbol, Timeframe.D1, limit=45)
+        except Exception:
+            return None  # one unmeasurable leg makes the whole VaR dishonest
+    result = returns_covariance(bars_by_symbol)
+    if result is None:
+        return None
+    symbols, cov = result
+    if set(symbols) != set(signed_notionals):
+        return None
+    weights = [signed_notionals[s] / equity for s in symbols]
+    var = portfolio_var(weights, cov)
+    return var * 100.0 if var is not None else None
 
 
 def risk_budget(router) -> dict:

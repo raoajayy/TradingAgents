@@ -31,7 +31,11 @@ from tradingagents.pro.execution.orders import (
 )
 from tradingagents.pro.execution.router import ExecutionRouter, ReconciliationReport
 from tradingagents.pro.execution.safety import BreakerState, CircuitBreaker, KillSwitch
-from tradingagents.pro.execution.validation import ValidationResult, validate_recommendation
+from tradingagents.pro.execution.validation import (
+    PortfolioRiskContext,
+    ValidationResult,
+    validate_recommendation,
+)
 from tradingagents.pro.execution.venues import (
     VENUES,
     LiveAdapterStub,
@@ -71,6 +75,7 @@ __all__ = [
     "BreakerState",
     "CircuitBreaker",
     "KillSwitch",
+    "PortfolioRiskContext",
     "ValidationResult",
     "validate_recommendation",
     "VENUES",

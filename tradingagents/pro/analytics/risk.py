@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from statistics import NormalDist
 
 from tradingagents.contracts import PositionSize, TakeProfitLevel
 
@@ -98,6 +99,93 @@ def historical_cvar(returns: Sequence[float], confidence: float = 0.95) -> float
     if not tail:
         return var
     return -math.fsum(tail) / len(tail)
+
+
+def returns_covariance(
+    bars_by_symbol,
+    window: int = 30,
+    min_observations: int = 5,
+):
+    """Covariance of daily log returns from OHLCV bars (P2-05).
+
+    Mirrors the dashboard intel ``correlation_matrix`` plumbing: close
+    series are aligned on shared dates (BTC trades weekends, gold doesn't)
+    and the covariance is computed over the last ``window`` overlapping
+    returns. Symbols without usable bars are dropped rather than
+    zero-filled.
+
+    Returns ``(symbols, cov)`` where ``cov`` is a square numpy array of
+    per-day return covariances aligned to ``symbols`` — or ``None`` when
+    there is not enough overlapping history to be honest about
+    (missing history -> None, never raise).
+    """
+    import numpy as np
+    import pandas as pd
+
+    closes: dict[str, pd.Series] = {}
+    for symbol, bars in (bars_by_symbol or {}).items():
+        try:
+            series = pd.Series(
+                [b.close for b in bars],
+                index=[b.start.date() for b in bars],
+            )
+        except Exception:
+            continue  # malformed bars for one symbol never sink the book
+        if len(series) >= 2:
+            closes[symbol] = series
+    if not closes:
+        return None
+    frame = pd.DataFrame(closes).sort_index().dropna()
+    returns = np.log(frame / frame.shift(1)).dropna().tail(window)
+    if len(returns) < min_observations:
+        return None
+    cov = returns.cov()
+    matrix = cov.to_numpy(dtype=float)
+    if not np.isfinite(matrix).all():
+        return None
+    return list(cov.columns), matrix
+
+
+def portfolio_var(
+    weights,
+    cov,
+    confidence: float = 0.99,
+    horizon_days: float = 1,
+):
+    """Parametric (variance-covariance) portfolio VaR as a loss fraction.
+
+    ``weights`` are signed position notionals as fractions of equity;
+    ``cov`` is the per-day return covariance aligned to the same order
+    (``returns_covariance`` output). VaR = z(confidence) * sqrt(w' C w)
+    * sqrt(horizon_days), so 0.032 means "1 day at this confidence loses
+    at most 3.2% of equity under the normal approximation".
+
+    Degenerate inputs (shape mismatch, empty book, non-finite values,
+    missing covariance) return ``None`` — never raise: a book whose risk
+    cannot be measured is disclosed as unmeasured, not faked as zero.
+    """
+    import numpy as np
+
+    if weights is None or cov is None:
+        return None
+    if not 0.5 <= confidence < 1 or horizon_days <= 0:
+        return None
+    try:
+        w = np.asarray(list(weights), dtype=float)
+        c = np.asarray(cov, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if w.ndim != 1 or w.size == 0 or c.shape != (w.size, w.size):
+        return None
+    if not (np.isfinite(w).all() and np.isfinite(c).all()):
+        return None
+    variance = float(w @ c @ w)
+    if variance < 0:
+        # float noise on a near-singular matrix; a true negative-variance
+        # input is not a covariance matrix and honestly reads as riskless 0
+        variance = 0.0
+    z = NormalDist().inv_cdf(confidence)
+    return z * math.sqrt(variance) * math.sqrt(horizon_days)
 
 
 def atr_stop_loss(entry: float, atr: float, side: str, multiple: float = 2.0) -> float:

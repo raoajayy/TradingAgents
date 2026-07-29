@@ -58,6 +58,12 @@ class ExecutionRouter:
     arming = None
     live_oms = None
     shadow_tracker = None
+    # P2-05: optional zero-arg callable returning a
+    # ``validation.PortfolioRiskContext`` (or None) built from the open
+    # book and return covariance. None = the portfolio VaR / correlated-
+    # gross caps are skipped (they are also disabled by default in
+    # RiskLimits), so existing wiring behaves exactly as before.
+    portfolio_risk_provider = None
 
     def tier_for(self, symbol: str) -> str:
         if self.arming is None:
@@ -121,7 +127,16 @@ class ExecutionRouter:
             if hasattr(self.adapter, "supported_symbols")
             else {getattr(rec, "symbol", "")}
         )
-        check = validate_recommendation(rec, self.limits, equity, supported)
+        portfolio = None
+        if self.portfolio_risk_provider is not None:
+            try:
+                portfolio = self.portfolio_risk_provider()
+            except Exception:
+                logger.exception(
+                    "portfolio risk context unavailable; VaR/correlation "
+                    "caps are skipped for this order")
+        check = validate_recommendation(rec, self.limits, equity, supported,
+                                        portfolio=portfolio)
         if not check.ok:
             return self._refuse(rec, "validation_failed", "; ".join(check.reasons))
 
