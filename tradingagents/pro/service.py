@@ -87,6 +87,9 @@ class PaperTradingService:
         self.config = config
         self.snapshot_source = snapshot_source
         self.router = router
+        # P2-05: give the router the book context so pre-trade caps can
+        # see portfolio VaR / correlated gross. Fail-open by design.
+        router.portfolio_risk_provider = self._portfolio_risk_context
         self.memory = memory
         self.dashboard = dashboard_state or DashboardState(memory=memory)
         self.metrics = metrics or MetricsRegistry()
@@ -101,6 +104,43 @@ class PaperTradingService:
         self._orders_today = 0
         self._orders_day: object = None
         self.rehydrate()
+
+
+    def _portfolio_risk_context(self):
+        """P2-05 provider: signed open notionals + daily-return covariance
+        for the open book. None on any failure — a data gap must fail open
+        at the gate, never block trading on infrastructure."""
+        try:
+            from tradingagents.contracts import Timeframe
+            from tradingagents.pro.analytics.risk import returns_covariance
+            from tradingagents.pro.execution import PortfolioRiskContext
+
+            notionals: dict[str, float] = {}
+            for position in self.router.adapter.positions():
+                mark = getattr(position, "mark_price", None) or getattr(
+                    position, "entry_price", None)
+                if mark is None:
+                    continue
+                notionals[position.symbol] = position.quantity * mark
+            if not notionals:
+                return None
+            marketdata = getattr(self.dashboard, "marketdata", None)
+            if marketdata is None:
+                return None
+            bars = {sym: marketdata.get_bars(sym, Timeframe.D1, limit=45)
+                    for sym in notionals}
+            result = returns_covariance(bars)
+            if result is None:
+                return PortfolioRiskContext(
+                    open_notional_by_symbol=notionals,
+                    cov_symbols=(), covariance=None)
+            symbols, cov = result
+            return PortfolioRiskContext(
+                open_notional_by_symbol=notionals,
+                cov_symbols=tuple(symbols), covariance=cov)
+        except Exception:
+            logger.warning("portfolio risk context unavailable", exc_info=True)
+            return None
 
     def _order_budget_left(self) -> bool:
         today = utc_now().date()

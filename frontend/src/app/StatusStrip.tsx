@@ -12,6 +12,7 @@ import { qk } from "@/lib/api/queries";
 import {
   useNotifications,
   useOverview,
+  usePortfolioStats,
   useRegime,
   useRiskBudget,
   useStatus,
@@ -174,6 +175,7 @@ function EmergencyFlattenButton() {
 export function StatusStrip() {
   const status = useStatus();
   const overview = useOverview();
+  const varPct = usePortfolioStats().data?.exposure?.portfolio_var_pct ?? null;
   const regime = useRegime();
   const budget = useRiskBudget();
   const notifications = useNotifications();
@@ -272,6 +274,11 @@ export function StatusStrip() {
         )}
         {(o?.missing_feeds?.length ?? 0) > 0 && (
           <Badge variant="stale" className="max-[1450px]:hidden">{o!.missing_feeds!.length} feeds degraded</Badge>
+        )}
+        {varPct != null && (
+          <Badge variant="neutral" className="max-[1450px]:hidden tabular" data-testid="var-chip">
+            VaR {varPct.toFixed(1)}%
+          </Badge>
         )}
         <span className="contents max-[980px]:hidden">
           <PriceTicker symbol="BTC-USD" />

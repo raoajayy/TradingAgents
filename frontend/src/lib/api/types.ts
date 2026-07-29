@@ -309,6 +309,9 @@ export const PortfolioStatsSchema = z
         long_exposure_pct: z.number().nullable(),
         short_exposure_pct: z.number().nullable(),
         largest_position_pct: z.number().nullable(),
+        // P2-05: parametric 1-day 99% book VaR as % of equity (null when
+        // any priced leg lacks covariance history)
+        portfolio_var_pct: z.number().nullable().optional(),
       })
       .optional(),
   })
