@@ -27,6 +27,8 @@ import subprocess
 import tempfile
 from typing import Any
 
+from pydantic import ValidationError
+
 from .base_client import BaseLLMClient
 
 # session/relay vars inherited when running INSIDE a Claude Code session —
@@ -65,6 +67,71 @@ def _extract_json(text: str) -> str:
     return text
 
 
+def _repair_json(text: str) -> str:
+    """Fix the two almost-JSON habits observed from CLI models: literal
+    control characters inside strings (raw newlines in a rationale) and
+    trailing commas before a closer. Walks the string tracking in-string
+    state so legal whitespace between tokens is untouched."""
+    out: list[str] = []
+    in_str = False
+    escaped = False
+    for ch in text:
+        if in_str:
+            if escaped:
+                out.append(ch)
+                escaped = False
+            elif ch == "\\":
+                out.append(ch)
+                escaped = True
+            elif ch == '"':
+                out.append(ch)
+                in_str = False
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ord(ch) < 0x20:
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+    # second pass, same in-string tracking: drop commas whose next
+    # non-whitespace char is a closer (never legal JSON outside a string)
+    repaired = "".join(out)
+    out = []
+    in_str = False
+    escaped = False
+    pending_comma = False
+    for ch in repaired:
+        if in_str:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if pending_comma:
+            if ch.isspace():
+                continue
+            if ch not in "}]":
+                out.append(",")
+            pending_comma = False
+        if ch == ",":
+            pending_comma = True
+            continue
+        if ch == '"':
+            in_str = True
+        out.append(ch)
+    return "".join(out)
+
+
 class ClaudeCLIError(RuntimeError):
     """CLI-level failure (auth, spawn, timeout, malformed output)."""
 
@@ -79,10 +146,26 @@ class _StructuredCLIRunnable:
         full = (
             f"{prompt}\n\n"
             "Respond with ONLY a single JSON object (no prose, no markdown "
-            f"fences) that validates against this JSON schema:\n{schema_json}"
+            "fences). String values must be single-line (escape newlines as "
+            "\\n); no trailing commas. The object must validate against "
+            f"this JSON schema:\n{schema_json}"
         )
-        text = self._chat.complete(full)
-        return self._schema.model_validate_json(_extract_json(text))
+        # one in-client retry: a CLI spawn is flakier than an HTTP call
+        # (timeouts, almost-JSON), and several call sites (eval judge arms)
+        # have no retry of their own — a 2-hour series shouldn't die on a
+        # single transient miss. Callers' retry->abstain still applies.
+        last_err: Exception | None = None
+        for _ in range(2):
+            try:
+                text = self._chat.complete(full)
+                blob = _extract_json(text)
+                try:
+                    return self._schema.model_validate_json(blob)
+                except ValidationError:
+                    return self._schema.model_validate_json(_repair_json(blob))
+            except (ClaudeCLIError, ValidationError) as err:
+                last_err = err
+        raise last_err  # type: ignore[misc]
 
 
 class ClaudeCLIChat:
@@ -154,7 +237,10 @@ class ClaudeCLIClient(BaseLLMClient):
             raise ClaudeCLIError(
                 "claude CLI not found — install Claude Code or set CLAUDE_CLI_BIN"
             )
-        timeout = float(self.kwargs.get("timeout", 180.0))
+        # floor the per-call budget: a CLI spawn adds startup + queueing on
+        # top of inference, so the pipeline's 60s quick-tier timeout (sized
+        # for raw HTTP) starves real completions (observed in the P1 evals)
+        timeout = max(float(self.kwargs.get("timeout", 300.0)), 300.0)
         return ClaudeCLIChat(self.model, binary, timeout=timeout)
 
     def validate_model(self) -> bool:

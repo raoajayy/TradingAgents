@@ -79,6 +79,55 @@ def test_extract_json_prose_fallback():
     assert json.loads(_extract_json(text))["verdict"] == "HOLD"
 
 
+def test_repair_trailing_comma(tmp_path):
+    # observed live: haiku emits {..., } — strict JSON parsing rejects it
+    binary = _ok_stub(tmp_path, '{"verdict": "HOLD", "confidence": 40, }')
+    chat = ClaudeCLIChat("haiku", binary, timeout=10)
+    assert chat.with_structured_output(Draft).invoke("x").verdict == "HOLD"
+
+
+def test_repair_control_chars_in_strings(tmp_path):
+    # observed live: raw newline inside a string value
+    binary = _ok_stub(
+        tmp_path, '{"verdict": "BUY\ncontinued", "confidence": 70}'
+    )
+    chat = ClaudeCLIChat("haiku", binary, timeout=10)
+    draft = chat.with_structured_output(Draft).invoke("x")
+    assert draft.verdict == "BUY\ncontinued"
+
+
+def test_repair_leaves_string_contents_alone():
+    from tradingagents.llm_clients.claude_cli_client import _repair_json
+
+    # a comma-before-brace INSIDE a string must survive the repair
+    src = '{"verdict": "watch, }", "confidence": 1, }'
+    fixed = json.loads(_repair_json(src))
+    assert fixed["verdict"] == "watch, }"
+    assert fixed["confidence"] == 1
+
+
+def test_structured_retries_once_then_raises(tmp_path):
+    # stub fails on first call, succeeds on second (state via marker file)
+    marker = tmp_path / "called"
+    body = (
+        f"cat > /dev/null\nif [ -f {marker} ]; then "
+        "printf '%s' '{\"is_error\": false, \"result\": "
+        "\"{\\\"verdict\\\": \\\"BUY\\\", \\\"confidence\\\": 70}\"}'; "
+        f"else touch {marker}; "
+        "printf '%s' '{\"is_error\": true, \"result\": \"overloaded\"}'; fi\n"
+    )
+    binary = _stub(tmp_path, body)
+    chat = ClaudeCLIChat("haiku", binary, timeout=10)
+    draft = chat.with_structured_output(Draft).invoke("x")
+    assert draft.verdict == "BUY"
+
+
+def test_timeout_floor_enforced(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CLI_BIN", _ok_stub(tmp_path, "{}"))
+    llm = ClaudeCLIClient("haiku", timeout=60).get_llm()
+    assert llm.timeout == 300.0
+
+
 def test_clean_env_strips_session_vars(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://relay")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
