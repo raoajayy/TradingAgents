@@ -20,6 +20,7 @@ boundary instead of drifting through the graph.
 
 from tradingagents.contracts.base import SCHEMA_VERSION, ContractModel, utc_now
 from tradingagents.contracts.config import (
+    EventTriggerConfig,
     LiveRiskLimits,
     ModelRouting,
     ProConfig,
@@ -88,6 +89,7 @@ __all__ = [
     "SpotQuote",
     "ModelRouting",
     "ProConfig",
+    "EventTriggerConfig",
     "LiveRiskLimits",
     "RiskLimits",
 ]

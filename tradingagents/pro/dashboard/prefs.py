@@ -88,6 +88,9 @@ class PrefsDocument(_Mutable):
     # P1-06: intel condition-alert crossing state — persisted so container
     # restarts never re-fire alerts that already crossed
     intel_alert_state: dict = Field(default_factory=dict)
+    # P2-06: event-trigger debounce state (per-symbol cooldowns + calendar
+    # events already fired) — persisted so restarts never re-fire a run
+    event_trigger_state: dict = Field(default_factory=dict)
 
 
 PREFS_KV_KEY = "dashboard_prefs"
@@ -186,6 +189,15 @@ class PrefsStore:
     def save_intel_alert_state(self, state: dict) -> None:
         with self._lock:
             self._document.intel_alert_state = dict(state)
+            self._write()
+
+    def event_trigger_state(self) -> dict:
+        with self._lock:
+            return dict(self._document.event_trigger_state)
+
+    def save_event_trigger_state(self, state: dict) -> None:
+        with self._lock:
+            self._document.event_trigger_state = dict(state)
             self._write()
 
     def add_price_alert(self, data: dict) -> dict:

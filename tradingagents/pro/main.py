@@ -15,6 +15,9 @@ Env:
                                 service still builds and on-demand runs
                                 (POST /api/pipeline/run) keep working as
                                 long as an LLM key is present
+    PRO_EVENT_TRIGGERS=1        enable P2-06 event-driven runs (calendar
+                                release T+5min / vol spike / price gap)
+                                beside the hourly rotation; off by default
     TRADINGAGENTS_PRO_DATA      audit/prefs dir (volume in Docker)
     PRO_DASHBOARD_TOKEN         dashboard auth
     PORT                        uvicorn bind port (default 8600; Cloud Run
@@ -299,7 +302,14 @@ def build_service(llm=None, data_dir: str | Path | None = None):
         # no dated aliases. Live arming (go-live Phase 4) revisits this.
         require_pinned_models=os.environ.get("PRO_REQUIRE_PINNED_MODELS") == "1",
     )
-    config = ProConfig(asset=AssetClass.GOLD, max_debate_rounds=1, models=routing)
+    from tradingagents.contracts import EventTriggerConfig
+
+    config = ProConfig(
+        asset=AssetClass.GOLD, max_debate_rounds=1, models=routing,
+        # P2-06: opt-in — nothing changes for existing deployments
+        event_triggers=EventTriggerConfig(
+            enabled=os.environ.get("PRO_EVENT_TRIGGERS") == "1"),
+    )
 
     if llm is None:
         from tradingagents.pro.models import bundle_from_config
@@ -420,6 +430,9 @@ def build_service(llm=None, data_dir: str | Path | None = None):
         on_event=_bell_on_event(state),
         calendar_fn=next_major_event,
     )
+    # P2-06: the event-trigger check scans the same universe the loop
+    # rotates through (bars come from the dashboard's cached market data)
+    service.event_symbols = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD")
     state.metrics = service.metrics  # /metrics scrape target
     service.alerts.metrics = service.metrics  # count deliveries + failures
     state.alerts = service.alerts    # emergency-flatten alerting
@@ -540,6 +553,12 @@ def main() -> None:
                 name="paper-loop", daemon=True,
             )
             thread.start()
+            if service.start_event_trigger_daemon() is not None:
+                logger.info("event-driven triggers enabled "
+                            "(PRO_EVENT_TRIGGERS=1): calendar T+%.0fmin / "
+                            "vol spike / gap checks every 60s",
+                            service.config.event_triggers
+                            .calendar_delay_minutes)
             _start_live_safety_daemons(service, state)
         else:
             logger.warning(

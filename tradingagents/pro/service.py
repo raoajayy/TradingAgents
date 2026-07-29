@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from tradingagents.contracts import (
     MarketSnapshot,
@@ -103,6 +104,12 @@ class PaperTradingService:
         # max_orders_per_day; paper had none — a runaway loop could churn
         self._orders_today = 0
         self._orders_day: object = None
+        # P2-06 event-driven triggers: symbols the 60s check scans, an
+        # injectable bar source (tests / alternate feeds), and lazily loaded
+        # debounce state (persisted via prefs so restarts never re-fire)
+        self.event_symbols: tuple[str, ...] = (config.symbol,)
+        self.event_bars_fn: Callable[[str], list] | None = None
+        self._event_state: dict | None = None
         self.rehydrate()
 
 
@@ -576,6 +583,198 @@ class PaperTradingService:
             iterations += 1
             if max_iterations is None or iterations < max_iterations:
                 sleep(interval_seconds)
+
+    # --- event-driven triggers (P2-06) ---------------------------------------------
+
+    def check_event_triggers(self, now: datetime | None = None) -> list[dict]:
+        """Besides the hourly rotation, fire a pipeline run when (a) a major
+        calendar event just released (T+delay), (b) the last bar's realized
+        range spikes past n×ATR, or (c) price gaps n×ATR between consecutive
+        bars. Every hit routes through run_once — the SAME run_lock-serialized
+        path as the loop — with trigger="event:<reason>" provenance, and the
+        daily order cap still applies inside the run. Debounced per symbol via
+        a persisted cooldown (prefs event_trigger_state) so container restarts
+        never re-fire. Returns the fires: [{symbol, reason, run_id}]."""
+        cfg = getattr(self.config, "event_triggers", None)
+        if cfg is None or not cfg.enabled:
+            return []
+        now = now or utc_now()
+        state = self._event_trigger_state()
+        fired: list[dict] = []
+        for symbol, reason in self._detect_event_triggers(now, cfg, state):
+            cooldowns = state.setdefault("cooldown_until", {})
+            until = cooldowns.get(symbol)
+            if until:
+                try:
+                    if now < datetime.fromisoformat(until):
+                        continue
+                except ValueError:
+                    pass  # corrupt timestamp: treat as expired
+            if not self._order_budget_left():
+                # daily order cap reached: an event run could only be
+                # blocked at submit — don't spend the LLM budget either
+                logger.info("event trigger %s suppressed: daily order cap "
+                            "reached", reason)
+                continue
+            cooldowns[symbol] = (
+                now + timedelta(minutes=cfg.cooldown_minutes)).isoformat()
+            # persist BEFORE the (slow) run: a crash mid-run must not re-fire
+            self._save_event_trigger_state(state)
+            self.alerts.emit("warning", "event_trigger",
+                             f"event-triggered run: {reason}", symbol=symbol)
+            try:
+                summary = self.run_once(trigger=f"event:{reason}")
+            except Exception:
+                logger.exception("event-triggered run failed (%s); cooldown "
+                                 "stands", reason)
+                continue
+            fired.append({"symbol": symbol, "reason": reason,
+                          "run_id": summary.get("run_id")})
+        self._save_event_trigger_state(state)
+        return fired
+
+    def _detect_event_triggers(self, now: datetime, cfg,
+                               state: dict) -> list[tuple[str, str]]:
+        """(symbol, reason) candidates; debounce/cap filtering is the
+        caller's job. At most one bar-based reason per symbol per check."""
+        hits: list[tuple[str, str]] = list(
+            self._detect_calendar_triggers(now, cfg, state))
+        for symbol in self.event_symbols:
+            bars = self._event_bars(symbol)
+            if len(bars) < 2:
+                continue
+            atr = self._atr(bars[:-1])  # spike bar can't inflate its baseline
+            if not atr or atr <= 0:
+                continue
+            last, prev = bars[-1], bars[-2]
+            if (last.high - last.low) > cfg.vol_spike_atr_mult * atr:
+                hits.append((symbol, f"vol_spike:{symbol}"))
+                continue
+            if abs(last.open - prev.close) > cfg.gap_atr_mult * atr:
+                hits.append((symbol, f"gap:{symbol}"))
+        return hits
+
+    def _detect_calendar_triggers(self, now: datetime, cfg,
+                                  state: dict) -> list[tuple[str, str]]:
+        """Remember upcoming majors from the calendar source (the same
+        next_major the event gate uses); once one's scheduled instant is
+        delay minutes past, fire exactly once (fired keys are persisted —
+        next_major itself skips past events, so memory is required)."""
+        pending: dict = state.setdefault("pending_events", {})
+        fired: dict = state.setdefault("fired_events", {})
+        calendar_fn = self.pipeline_kwargs.get("calendar_fn")
+        if calendar_fn is not None:
+            try:
+                nxt = calendar_fn()
+            except Exception:
+                nxt = None
+            if nxt and nxt.get("at"):
+                key = f"{nxt.get('release')}@{nxt.get('at')}"
+                pending.setdefault(key, nxt["at"])
+        hits: list[tuple[str, str]] = []
+        delay = timedelta(minutes=cfg.calendar_delay_minutes)
+        for key, at_iso in list(pending.items()):
+            try:
+                at = datetime.fromisoformat(str(at_iso))
+            except ValueError:
+                pending.pop(key, None)
+                continue
+            if now - at > timedelta(hours=24):  # prune stale entries
+                pending.pop(key, None)
+                fired.pop(key, None)
+                continue
+            if now >= at + delay and key not in fired:
+                fired[key] = now.isoformat()
+                release = key.split("@", 1)[0]
+                hits.append((self.config.symbol, f"calendar:{release}"))
+        return hits
+
+    def _event_bars(self, symbol: str) -> list:
+        """Latest bars for trigger evaluation: the injected source when set,
+        else the dashboard's market-data service (cached; the same bars the
+        charts render). Empty list on any failure — a data gap must never
+        crash the check loop."""
+        if self.event_bars_fn is not None:
+            try:
+                return list(self.event_bars_fn(symbol) or [])
+            except Exception:
+                logger.warning("event bars source failed for %s", symbol,
+                               exc_info=True)
+                return []
+        marketdata = getattr(self.dashboard, "marketdata", None)
+        if marketdata is None:
+            return []
+        from tradingagents.contracts import Timeframe
+
+        try:
+            return list(marketdata.get_bars(symbol, Timeframe.H1, limit=16)
+                        or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _atr(bars, period: int = 14) -> float | None:
+        """Plain Wilder-free ATR (mean true range over the last `period`
+        bars) — deliberately dependency-light for a 60s check loop."""
+        if len(bars) < period + 1:
+            return None
+        window = bars[-(period + 1):]
+        ranges = [
+            max(bar.high - bar.low,
+                abs(bar.high - prev.close),
+                abs(bar.low - prev.close))
+            for prev, bar in zip(window[:-1], window[1:], strict=True)
+        ]
+        return sum(ranges) / len(ranges) if ranges else None
+
+    def _event_trigger_state(self) -> dict:
+        if self._event_state is None:
+            try:
+                self._event_state = self.dashboard.prefs.event_trigger_state()
+            except Exception:
+                self._event_state = {}
+        return self._event_state
+
+    def _save_event_trigger_state(self, state: dict) -> None:
+        try:
+            self.dashboard.prefs.save_event_trigger_state(state)
+        except Exception:
+            logger.warning("event trigger state not persisted; continuing",
+                           exc_info=True)
+
+    def run_event_triggers_forever(
+        self,
+        interval_seconds: float = 60.0,
+        max_iterations: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Light 60s evaluation loop beside the hourly rotation (roadmap
+        P2-06). A failing check never kills the thread."""
+        iterations = 0
+        while max_iterations is None or iterations < max_iterations:
+            try:
+                self.check_event_triggers()
+            except Exception:
+                logger.exception("event-trigger check failed; continuing")
+                self.metrics.inc("event_trigger_errors_total")
+            iterations += 1
+            if max_iterations is None or iterations < max_iterations:
+                sleep(interval_seconds)
+
+    def start_event_trigger_daemon(
+            self, interval_seconds: float = 60.0) -> threading.Thread | None:
+        """Start the 60s check loop when enabled; None (no thread) when the
+        feature is off — existing deployments change nothing."""
+        cfg = getattr(self.config, "event_triggers", None)
+        if cfg is None or not cfg.enabled:
+            return None
+        thread = threading.Thread(
+            target=self.run_event_triggers_forever,
+            kwargs={"interval_seconds": interval_seconds},
+            name="event-triggers", daemon=True,
+        )
+        thread.start()
+        return thread
 
     # --- internals ----------------------------------------------------------------
 

@@ -191,6 +191,41 @@ class ModelRouting(ContractModel):
         )
 
 
+class EventTriggerConfig(ContractModel):
+    """P2-06 event-driven pipeline triggers: besides the hourly rotation,
+    fire a run when a major calendar release just happened, realized vol
+    spikes, or price gaps between consecutive bars. Disabled by default so
+    existing deployments change nothing; per-symbol cooldowns are persisted
+    so container restarts never re-fire."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Master switch; off = the hourly loop is the only "
+        "automatic run source (existing behavior).",
+    )
+    vol_spike_atr_mult: float = Field(
+        default=3.0, gt=0, le=20,
+        description="Fire when the last bar's high-low range exceeds this "
+        "many ATRs (ATR computed over the prior bars, excluding the spike "
+        "bar so it cannot inflate its own baseline).",
+    )
+    gap_atr_mult: float = Field(
+        default=2.0, gt=0, le=20,
+        description="Fire when |last bar open - previous bar close| exceeds "
+        "this many ATRs.",
+    )
+    calendar_delay_minutes: float = Field(
+        default=5.0, ge=0, le=120,
+        description="Fire this many minutes AFTER a major release's "
+        "scheduled instant (T+5min: the print is out and being priced).",
+    )
+    cooldown_minutes: float = Field(
+        default=60.0, ge=1, le=1440,
+        description="Debounce: at most one event-triggered run per symbol "
+        "per this window, persisted across restarts.",
+    )
+
+
 class ProConfig(ContractModel):
     asset: AssetClass
     symbol: str | None = Field(
@@ -224,6 +259,11 @@ class ProConfig(ContractModel):
             "release (FOMC/CPI/NFP...). 0 disables the event gate. Exits are "
             "never blocked."
         ),
+    )
+    event_triggers: EventTriggerConfig = Field(
+        default_factory=EventTriggerConfig,
+        description="P2-06 event-driven runs (calendar release / vol spike "
+        "/ price gap); disabled by default.",
     )
 
     @model_validator(mode="after")
