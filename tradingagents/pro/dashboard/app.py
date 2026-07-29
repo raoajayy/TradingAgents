@@ -280,6 +280,11 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         yield
         for poller in pollers:
             poller.stop()
+        # P2-11: the liquidation stream starts lazily inside IntelService;
+        # stop it here so reloads don't leak websocket threads
+        liq = getattr(state.intel, "_liquidations", None)
+        if liq is not None:
+            liq.stop()
 
     app = FastAPI(title="TradingAgents Pro Dashboard", lifespan=lifespan)
     app.state.dashboard = state

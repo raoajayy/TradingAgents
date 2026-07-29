@@ -859,6 +859,22 @@ export const IntelSchema = z.object({
       }),
     )
     .optional(),
+  // P2-11: symbol → price buckets over SAMPLED forceOrder events (Binance
+  // pushes max one liquidation/second — a floor, never total volume);
+  // null while the stream is inactive or warming up
+  liquidation_heatmap: z
+    .record(
+      z.array(
+        z.object({
+          low: z.number(),
+          high: z.number(),
+          notional: z.number(),
+          count: z.number(),
+        }),
+      ),
+    )
+    .nullable()
+    .optional(),
   missing_feeds: z.array(z.string()),
   unsubscribed_feeds: z.array(z.object({ name: z.string(), provider: z.string() })),
 });

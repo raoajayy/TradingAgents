@@ -166,6 +166,25 @@ METRIC_INFO: dict[str, dict[str, str]] = {
              "note": "Deribit 30-day annualized implied-volatility index."},
     "DVOL_CHANGE_1D": {"label": "DVOL 1d change",
                        "note": "~24h change in the Deribit DVOL index."},
+    # P2-11 liquidation reconstruction — every entry repeats the sampling
+    # disclaimer: Binance pushes AT MOST one forceOrder per second per
+    # symbol, so these are intensity signals / floors, NEVER total volume.
+    "LIQ_INTENSITY_1H": {
+        "label": "Liquidation intensity (1h)",
+        "note": "Sampled Binance forceOrder events in the trailing hour — "
+                "sampled (max one order/second), NOT total liquidation count."},
+    "LIQ_NOTIONAL_1H": {
+        "label": "Liquidation notional (1h)",
+        "note": "Summed notional of SAMPLED liquidations, trailing hour — a "
+                "floor, not total volume (Binance samples one forceOrder/s)."},
+    "LIQ_BUY_SELL_RATIO_1H": {
+        "label": "Liq buy/sell ratio (1h)",
+        "note": "Sampled short-liq (BUY) vs long-liq (SELL) notional — "
+                ">1 means shorts squeezed. Sampled, not total volume."},
+    "OI_DELTA_1H": {
+        "label": "Open interest Δ (1h)",
+        "note": "Binance futures open-interest % change over ~1h "
+                "(polled per minute)."},
     "GOLD_ETF_FLOWS_TONNES": {
         "label": "Gold ETF flows (monthly)",
         "note": "Global gold-ETF net flows, tonnes (WGC Goldhub, monthly CSV)."},
@@ -198,8 +217,10 @@ class IntelService:
         calendar_ttl: float = 6 * 3600.0,
         deadline: float = 10.0,
         now: Callable[[], float] = time.monotonic,
+        liquidations=None,  # LiquidationStream | None (P2-11; injectable)
     ):
         self._feeds = feeds
+        self._liquidations = liquidations
         self._calendar_source = calendar_source
         self._news_fns = news_fns
         self.ttl = ttl
@@ -235,6 +256,9 @@ class IntelService:
                 GOLDHUB_CSV_NAME,
                 GoldhubCsvFeed,
             )
+            from tradingagents.pro.ingestion.liquidations import (
+                LiquidationStream,
+            )
             from tradingagents.pro.ingestion.onchain import (
                 CoinMetricsFeed,
                 FearGreedFeed,
@@ -251,6 +275,11 @@ class IntelService:
             spot = BinanceSpotFeed()
             delta = DeltaExchangeFeed()
             yf_daily = YFinanceDailyBarsFeed()
+            if self._liquidations is None:
+                # autostart: constructing here opens NO sockets — the WS +
+                # OI threads start on the first get_metrics call (i.e. the
+                # first real snapshot), so imports/tests stay hermetic
+                self._liquidations = LiquidationStream(autostart=True)
             self._feeds = {
                 "delta_derivatives": lambda: delta.get_metrics("BTCUSD"),
                 "binance_derivatives": derivatives.get_metrics,
@@ -270,6 +299,9 @@ class IntelService:
                     default_data_dir() / GOLDHUB_CSV_NAME
                 ).get_metrics,
                 "token_terminal": TokenTerminalFeed().get_metrics,
+                # P2-11 sampled liquidations + OI deltas; NoMarketDataError
+                # while warming up becomes a missing_feeds line
+                "binance_liquidations": self._liquidations.get_metrics,
             }
         return self._feeds
 
@@ -364,6 +396,19 @@ class IntelService:
                 missing.append(f"news:{sym}: {_friendly_error(exc)}")
         headlines.sort(key=lambda h: h["published_at"] or "", reverse=True)
 
+        # P2-11 heat strip: symbol → price buckets over the sampled-event
+        # ring; null while the stream is inactive or empty. Magnitudes are
+        # sampled floors — the UI repeats the disclaimer under the strip.
+        liquidation_heatmap = None
+        liq = self._liquidations
+        if liq is not None and liq.active:
+            try:
+                buckets = liq.price_buckets()
+                if buckets:
+                    liquidation_heatmap = {liq.symbol: buckets}
+            except Exception:
+                logger.warning("liquidation heatmap failed", exc_info=True)
+
         view = {
             "as_of": utc_now().isoformat(),
             "session": current_session(utc_now()).value,
@@ -372,10 +417,13 @@ class IntelService:
             # metric vocabulary users can build condition alerts over
             "metric_keys": sorted(METRIC_INFO),
             "headlines": headlines,
+            "liquidation_heatmap": liquidation_heatmap,
             "missing_feeds": missing,
             # honest map of what money hasn't bought yet (UX: trust signal)
             "unsubscribed_feeds": [
-                {"name": "liquidations", "provider": "Coinglass"},
+                # P2-11 serves SAMPLED liquidations free; full aggregated
+                # liquidation volume remains a paid feed
+                {"name": "liquidations_full", "provider": "Coinglass"},
                 {"name": "whale_flows", "provider": "Glassnode"},
                 {"name": "etf_flows", "provider": "Farside/SoSoValue"},
                 {"name": "gold_microstructure", "provider": "Databento/Polygon"},

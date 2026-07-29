@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { useCalendar, useCorrelations, useIntel, useOverview } from "@/lib/api/queries";
+import type { Intel } from "@/lib/api/types";
 import { fmtCountdown, fmtDateTime, fmtMetricValue, relativeAge } from "@/lib/format";
 import { countdownExpired, useCountdown } from "@/lib/useCountdown";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,64 @@ const GROUPS: { title: string; names: string[] }[] = [
     names: ["GOLD_COT_NET", "GOLD_VOL_INDEX"],
   },
 ];
+
+/** P2-11 liquidation heat strip: price buckets over SAMPLED Binance
+ * forceOrder events. Magnitudes are floors by construction (Binance pushes
+ * at most one liquidation order per second) — the disclaimer renders under
+ * the strip, always. */
+function LiquidationHeatStrip({ heatmap }: { heatmap: Intel["liquidation_heatmap"] }) {
+  const entries = Object.entries(heatmap ?? {});
+  if (entries.length === 0)
+    return (
+      <EmptyState
+        kind="waiting"
+        title="No sampled liquidations yet"
+        detail="stream inactive or warming up — buckets appear once forceOrder events arrive"
+      />
+    );
+  return (
+    <div data-testid="liq-heatmap" className="space-y-3">
+      {entries.map(([symbol, buckets]) => {
+        if (buckets.length === 0) return null;
+        const max = Math.max(...buckets.map((b) => b.notional), 1);
+        const first = buckets[0]!;
+        const last = buckets[buckets.length - 1]!;
+        return (
+          <div key={symbol}>
+            <div className="mb-1 font-mono text-xs font-semibold">{symbol}</div>
+            <div className="flex h-6 w-full overflow-hidden rounded border border-border/60">
+              {buckets.map((bucket, i) => (
+                <div
+                  key={i}
+                  className="grow border-r border-border/30 last:border-r-0"
+                  title={`${bucket.low.toFixed(0)}–${bucket.high.toFixed(0)}: $${Math.round(
+                    bucket.notional,
+                  ).toLocaleString()} across ${bucket.count} sampled event${
+                    bucket.count === 1 ? "" : "s"
+                  }`}
+                  style={{
+                    background: `color-mix(in srgb, var(--bear) ${Math.round(
+                      (bucket.notional / max) * 100,
+                    )}%, transparent)`,
+                  }}
+                />
+              ))}
+            </div>
+            <div className="mt-0.5 flex justify-between font-mono text-[10px] tabular text-fg-subtle">
+              <span>{first.low.toFixed(0)}</span>
+              <span>{last.high.toFixed(0)}</span>
+            </div>
+          </div>
+        );
+      })}
+      <p className="text-xs text-fg-subtle">
+        Sampled — not total volume: Binance streams at most one forceOrder per
+        second per symbol, so notionals are a floor and counts an intensity
+        signal (last 2h).
+      </p>
+    </div>
+  );
+}
 
 function CorrelationMatrix() {
   const correlations = useCorrelations(30);
@@ -185,6 +244,16 @@ export default function IntelPage() {
           );
         })}
       </div>
+
+      {/* P2-11: sampled liquidation heat strip (signal-grade, disclaimed) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Liquidation heatmap (sampled)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LiquidationHeatStrip heatmap={intel.data.liquidation_heatmap} />
+        </CardContent>
+      </Card>
 
       {/* mockup pairs Cross-asset correlations beside Feed coverage */}
       <div className="grid gap-4 md:grid-cols-2">
