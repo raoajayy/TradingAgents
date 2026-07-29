@@ -54,8 +54,12 @@ class ProMemory:
         index: VectorIndex | None = None,
         embedder: EmbeddingFn | None = None,
         graph: KnowledgeGraph | None = None,
+        store=None,
     ):
-        self._store = JsonlStore(store_path) if store_path else None
+        """``store`` (P2-01): any append(record)/load() store — e.g.
+        SqliteMemoryStore — takes precedence over ``store_path``."""
+        self._store = store if store is not None else (
+            JsonlStore(store_path) if store_path else None)
         self._index = index if index is not None else InMemoryVectorIndex()
         self._embed = embedder if embedder is not None else HashingEmbedder()
         self._graph = graph

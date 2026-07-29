@@ -149,13 +149,23 @@ class PipelineRecorder:
     to hundreds of MB across a 30-day paper run. Oldest runs are dropped
     (and their files pruned when persisting)."""
 
-    def __init__(self, max_runs: int = 500, store_dir: str | Path | None = None):
+    def __init__(self, max_runs: int = 500, store_dir: str | Path | None = None,
+                 store=None):
+        """``store`` (P2-01): an EventStore — the SQLite source of truth.
+        ``store_dir`` keeps the legacy one-file-per-run layout (tests,
+        JSONL-era deployments); passing both is an error. With neither,
+        runs are memory-only (some unit tests)."""
         if max_runs < 1:
             raise ValueError("max_runs must be >= 1")
+        if store is not None and store_dir is not None:
+            raise ValueError("pass either store or store_dir, not both")
         self.max_runs = max_runs
         self.store_dir = Path(store_dir) if store_dir else None
+        self.store = store
         self.runs: list[RunRecord] = []
-        if self.store_dir is not None:
+        if self.store is not None:
+            self._load_store()
+        elif self.store_dir is not None:
             self._load()
 
     # --- disk ----------------------------------------------------------------------
@@ -183,12 +193,8 @@ class PipelineRecorder:
         loaded.sort(key=lambda r: r.started_at)
         self.runs = loaded[-self.max_runs:]
 
-    def _persist(self, run: RunRecord) -> None:
-        assert self.store_dir is not None
-        self.store_dir.mkdir(parents=True, exist_ok=True)
-        from tradingagents.pro.persistence import atomic_write_text
-
-        payload = json.dumps({
+    def _run_payload(self, run: RunRecord) -> dict:
+        return {
             "run_id": run.run_id,
             "started_at": run.started_at.isoformat(),
             "symbol": run.symbol,
@@ -197,7 +203,43 @@ class PipelineRecorder:
             "node_times": run.node_times,
             "trigger": run.trigger,
             "state": _state_to_json(run.state),
-        })
+        }
+
+    def _record_from_raw(self, raw: dict) -> RunRecord:
+        return RunRecord(
+            run_id=raw["run_id"],
+            started_at=datetime.fromisoformat(raw["started_at"]),
+            symbol=raw["symbol"],
+            asset=raw["asset"],
+            node_sequence=list(raw.get("node_sequence", [])),
+            node_times=list(raw.get("node_times", [])),
+            trigger=raw.get("trigger", "loop"),
+            state=_state_from_json(raw.get("state", {})),
+        )
+
+    def _load_store(self) -> None:
+        loaded: list[RunRecord] = []
+        for record_json in self.store.load_runs(limit=self.max_runs):
+            try:
+                loaded.append(self._record_from_raw(json.loads(record_json)))
+            except Exception:
+                logger.warning("skipping corrupt run row", exc_info=True)
+        loaded.sort(key=lambda r: r.started_at)
+        self.runs = loaded[-self.max_runs:]
+
+    def _persist(self, run: RunRecord) -> None:
+        payload_dict = self._run_payload(run)
+        if self.store is not None:
+            self.store.upsert_run(run.run_id, payload_dict["started_at"],
+                                  run.symbol, run.trigger,
+                                  json.dumps(payload_dict))
+            self.store.prune_runs(self.max_runs)
+            return
+        assert self.store_dir is not None
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        from tradingagents.pro.persistence import atomic_write_text
+
+        payload = json.dumps(payload_dict)
         atomic_write_text(self.store_dir / f"{run.run_id}.json", payload)
         # prune files beyond the cap, oldest first (mtime order suffices)
         files = sorted(self.store_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
@@ -247,7 +289,7 @@ class PipelineRecorder:
             run.state.setdefault("timeframe", snapshot.bars[-1].timeframe.value)
         self.runs.append(run)
         del self.runs[:-self.max_runs]
-        if self.store_dir is not None:
+        if self.store is not None or self.store_dir is not None:
             try:
                 self._persist(run)
             except Exception:
@@ -258,7 +300,7 @@ class PipelineRecorder:
         """Re-write a run whose state changed after recording — e.g. the
         venue's order verdict landing after the pipeline already stamped
         execution_status (the phantom-SELL truth gap)."""
-        if self.store_dir is not None:
+        if self.store is not None or self.store_dir is not None:
             try:
                 self._persist(run)
             except Exception:

@@ -314,10 +314,22 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     limits = RiskLimits()
     # persistent memory + venue book: without both, service.rehydrate()
     # has nothing to read after a container restart (go-live Phase 0)
-    memory = ProMemory(store_path=data_path / "memory.jsonl")
+    # P2-01: SQLite event store is the source of truth; legacy JSON/JSONL
+    # is imported once (idempotent) and kept as backup. The DB must live on
+    # LOCAL disk in prod (TRADINGAGENTS_PRO_DB=/tmp/pro.db + Litestream);
+    # the GCS FUSE mount cannot hold SQLite locks.
+    from tradingagents.pro.store import (
+        EventStore,
+        SqliteMemoryStore,
+        migrate_legacy,
+    )
+
+    event_store = EventStore()
+    migrate_legacy(event_store, data_path)
+    memory = ProMemory(store=SqliteMemoryStore(event_store))
     state = DashboardState(memory=memory)
-    state.recorder = PipelineRecorder(store_dir=data_path / "runs")
-    state.prefs = PrefsStore(data_path / "dashboard_prefs.json")
+    state.recorder = PipelineRecorder(store=event_store)
+    state.prefs = PrefsStore(store=event_store)
     from tradingagents.pro.dashboard.backtest_firestore import build_run_store
     from tradingagents.pro.dashboard.backtest_job import recover_interrupted
     from tradingagents.pro.dashboard.backtest_store import BacktestRunStore

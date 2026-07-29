@@ -172,3 +172,61 @@ class TestDbPathEnv:
 
         monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "custom.db"))
         assert default_db_path() == tmp_path / "custom.db"
+
+
+class TestBackendIntegration:
+    """The three writers on the sqlite backend, incl. reload parity."""
+
+    def test_prefs_kv_round_trip_and_reload(self, store):
+        from tradingagents.pro.dashboard.prefs import PrefsStore
+
+        p1 = PrefsStore(store=store)
+        p1.put_prefs({"theme": "dark"})
+        p1.upsert_watchlist({"name": "core", "symbols": ["XAUUSD"]})
+        p2 = PrefsStore(store=store)  # fresh instance = restart
+        assert p2.get_prefs()["theme"] == "dark"
+        assert p2.watchlists()[0]["name"] == "core"
+
+    def test_prefs_corrupt_row_recovers_to_defaults(self, store):
+        from tradingagents.pro.dashboard.prefs import PREFS_KV_KEY, PrefsStore
+
+        store.put_kv(PREFS_KV_KEY, "{nope")
+        assert PrefsStore(store=store).get_prefs()["theme"]  # defaults, no raise
+
+    def test_memory_facade_reload_via_sqlite(self, store):
+        from tradingagents.pro.memory.memory import ProMemory
+
+        m1 = ProMemory(store=SqliteMemoryStore(store))
+        m1.record_strategy("XAUUSD", "fade the breakout",
+                           payload={"regime": "ranging"})
+        m2 = ProMemory(store=SqliteMemoryStore(store))
+        assert [r.text for r in m2.records()] == ["fade the breakout"]
+
+    def test_recorder_sqlite_reload_parity_with_file_mode(self, store, tmp_path):
+        import json as _json
+
+        from tradingagents.pro.dashboard.recorder import PipelineRecorder
+
+        raw = _run("r1", "2026-07-01T00:00:00Z")
+        raw["asset"] = "gold"
+        raw["node_sequence"] = ["prepare"]
+        raw["node_times"] = [{"node": "prepare", "elapsed_s": 0.1}]
+        raw["state"] = {"timeframe": "1d"}
+        # seed both backends with the identical raw payload
+        store.upsert_run("r1", raw["started_at"], raw["symbol"], "loop",
+                         _json.dumps(raw))
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        (runs_dir / "r1.json").write_text(_json.dumps(raw))
+        via_store = PipelineRecorder(store=store).runs
+        via_files = PipelineRecorder(store_dir=runs_dir).runs
+        assert len(via_store) == len(via_files) == 1
+        a, b = via_store[0], via_files[0]
+        assert (a.run_id, a.started_at, a.symbol, a.trigger, a.state) == (
+            b.run_id, b.started_at, b.symbol, b.trigger, b.state)
+
+    def test_recorder_rejects_both_backends(self, store, tmp_path):
+        from tradingagents.pro.dashboard.recorder import PipelineRecorder
+
+        with pytest.raises(ValueError):
+            PipelineRecorder(store=store, store_dir=tmp_path)

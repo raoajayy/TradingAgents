@@ -90,15 +90,31 @@ class PrefsDocument(_Mutable):
     intel_alert_state: dict = Field(default_factory=dict)
 
 
+PREFS_KV_KEY = "dashboard_prefs"
+
+
 class PrefsStore:
-    def __init__(self, path: str | Path | None = None):
-        self.path = Path(path) if path else default_data_dir() / "dashboard_prefs.json"
+    def __init__(self, path: str | Path | None = None, store=None):
+        """``store`` (P2-01): an EventStore — prefs live in its kv table.
+        Otherwise the legacy whole-document JSON file at ``path``."""
+        self.store = store
+        self.path = (Path(path) if path
+                     else default_data_dir() / "dashboard_prefs.json")
         self._lock = threading.Lock()
         self._document = self._load()
 
     # --- persistence -------------------------------------------------------------
 
     def _load(self) -> PrefsDocument:
+        if self.store is not None:
+            raw = self.store.get_kv(PREFS_KV_KEY)
+            if raw is None:
+                return PrefsDocument()
+            try:
+                return PrefsDocument.model_validate_json(raw)
+            except Exception:
+                logger.warning("corrupt prefs row; starting from defaults")
+                return PrefsDocument()
         try:
             raw = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -110,6 +126,9 @@ class PrefsStore:
             return PrefsDocument()
 
     def _write(self) -> None:
+        if self.store is not None:
+            self.store.put_kv(PREFS_KV_KEY, self._document.model_dump_json())
+            return
         from tradingagents.pro.persistence import atomic_write_text
 
         atomic_write_text(self.path, self._document.model_dump_json(indent=1))
