@@ -99,6 +99,8 @@ PROVIDER_PRICES: dict[str, ModelPrice] = {
     "anthropic": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "deepseek": ModelPrice(input_per_mtok=0.28, output_per_mtok=1.10),
     "google": ModelPrice(input_per_mtok=1.25, output_per_mtok=10.0),
+    # subscription-billed via the local claude CLI: no marginal $ per token
+    "claude-cli": ModelPrice(input_per_mtok=0.0, output_per_mtok=0.0),
 }
 
 
