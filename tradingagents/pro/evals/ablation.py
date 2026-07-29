@@ -196,12 +196,38 @@ def run_ablation_series(llm, config: ProConfig, symbol: str = "BTC-USD",
     rows: list[dict] = []
     for cut in cuts:
         as_of = bars[cut].start
-        snapshot = builder.build(symbol, config.asset,
-                                 timeframes=(tf,), bar_limit=250, as_of=as_of)
-        # strictly after: the cut bar is IN the snapshot; grading on it
-        # would let the ticket resolve on data the decision already saw
-        future = [b for b in bars if b.start > as_of][:horizon]
-        arms = run_ablation(llm, config, snapshot, future, **kwargs)
+        # a multi-hour series must not die on one transient miss (observed:
+        # a single Delta read-timeout killed a 40-minute run and lost every
+        # finished point) — retry the flaky part, then skip the point with
+        # an error row so the rest of the series still lands
+        try:
+            snapshot = _retrying(
+                lambda cut_ts=as_of: builder.build(
+                    symbol, config.asset, timeframes=(tf,),
+                    bar_limit=250, as_of=cut_ts))
+            # strictly after: the cut bar is IN the snapshot; grading on it
+            # would let the ticket resolve on data the decision already saw
+            future = [b for b in bars if b.start > as_of][:horizon]
+            arms = run_ablation(llm, config, snapshot, future, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — record and continue
+            rows.append({"as_of": as_of.isoformat(),
+                         "error": f"{type(exc).__name__}: {exc}"})
+            continue
         rows.append({"as_of": as_of.isoformat(),
                      "arms": [a.as_dict() for a in arms]})
     return rows
+
+
+def _retrying(fn, attempts: int = 3, base_delay: float = 5.0):
+    """Retry transient I/O (feed fetch) with growing backoff."""
+    import time
+
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — caller decides fatality
+            last = exc
+            if i < attempts - 1:
+                time.sleep(base_delay * (3 ** i))
+    raise last  # type: ignore[misc]
