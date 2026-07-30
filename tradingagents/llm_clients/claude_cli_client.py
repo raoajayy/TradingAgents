@@ -51,6 +51,13 @@ _STRIP_ENV = {
 }
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+# credential shapes that must never reach logs: the CLI echoes header
+# values into its error text (observed: a bad token logged verbatim)
+_REDACT = re.compile(r"sk-ant-[A-Za-z0-9_-]+|Bearer\s+\S+")
+
+
+def _redact(text: str) -> str:
+    return _REDACT.sub("[REDACTED]", text)
 
 
 def _clean_env() -> dict[str, str]:
@@ -207,7 +214,8 @@ class ClaudeCLIChat:
             ) from exc
         if proc.returncode != 0 and not proc.stdout.strip():
             raise ClaudeCLIError(
-                f"claude CLI exited {proc.returncode}: {proc.stderr.strip()[:300]}"
+                f"claude CLI exited {proc.returncode}: "
+                f"{_redact(proc.stderr.strip())[:300]}"
             )
         try:
             payload = json.loads(proc.stdout)
@@ -217,7 +225,7 @@ class ClaudeCLIChat:
             ) from exc
         if payload.get("is_error"):
             raise ClaudeCLIError(
-                f"claude CLI error: {str(payload.get('result'))[:300]}"
+                f"claude CLI error: {_redact(str(payload.get('result')))[:300]}"
             )
         result = payload.get("result")
         if not isinstance(result, str):

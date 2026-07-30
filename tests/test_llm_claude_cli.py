@@ -180,3 +180,19 @@ def test_prompt_reaches_cli_via_stdin(tmp_path):
     binary = _stub(tmp_path, body)
     chat = ClaudeCLIChat("haiku", binary, timeout=10)
     assert chat.complete("hello world prompt xx").startswith("hello world")
+
+
+def test_error_messages_redact_credentials(tmp_path):
+    # observed live: the CLI echoed the Authorization header (token
+    # included) into its error text, which then reached Cloud Logging
+    payload = json.dumps({
+        "is_error": True,
+        "result": "API Error: Header 'Authorization' has invalid value: "
+                  "'Bearer sk-ant-oat01-SECRETSECRET'",
+    })
+    binary = _stub(tmp_path, f"cat > /dev/null\nprintf '%s' '{payload}'\n")
+    chat = ClaudeCLIChat("haiku", binary, timeout=10)
+    with pytest.raises(ClaudeCLIError) as err:
+        chat.complete("hi")
+    assert "SECRETSECRET" not in str(err.value)
+    assert "[REDACTED]" in str(err.value)
