@@ -65,6 +65,8 @@ const TRADE_SYMBOL_LABELS: Record<string, string> = {
   XAUUSD: "XAUUSD · Gold",
   "ETH-USD": "ETH-USD · Ethereum",
   "SOL-USD": "SOL-USD · Solana",
+  EURUSD: "EURUSD · Euro / US Dollar",
+  USDJPY: "USDJPY · US Dollar / Yen",
 };
 const FALLBACK_TRADE_SYMBOLS = ["BTC-USD", "XAUUSD"];
 

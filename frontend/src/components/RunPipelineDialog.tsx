@@ -23,6 +23,8 @@ const SYMBOL_LABELS: Record<string, string> = {
   "BTC-USD": "Bitcoin (BTC-USD)",
   "ETH-USD": "Ethereum (ETH-USD)",
   "SOL-USD": "Solana (SOL-USD)",
+  EURUSD: "Euro / Dollar (EURUSD)",
+  USDJPY: "Dollar / Yen (USDJPY)",
 };
 const FALLBACK_SYMBOLS = ["XAUUSD", "BTC-USD"];
 const TIMEFRAMES = ["1h", "4h", "1d"] as const;

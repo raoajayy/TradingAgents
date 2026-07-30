@@ -121,6 +121,40 @@ test.describe("terminal", () => {
     await expect(page).toHaveURL(/\/trade\/BTC-USD/);
   });
 
+  // P2-10: FX majors surface wherever tradeable symbols are enumerated —
+  // the dropdown is server-driven via /api/symbols, so EURUSD/USDJPY
+  // appearing here proves the whole chain (registry → API → UI)
+  test("FX pairs are tradeable: EURUSD in the dropdown and charted", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    await page.goto("/trade");
+    const select = page.getByTestId("symbol-select");
+    // wait for the server-driven list (the pre-fetch fallback has no FX)
+    await expect(select.locator('option[value="EURUSD"]')).toHaveCount(1, {
+      timeout: 15_000,
+    });
+    const values = await select
+      .locator("option")
+      .evaluateAll((opts) => opts.map((o) => o.getAttribute("value")));
+    expect(values.length).toBeGreaterThanOrEqual(4);
+    expect(values).toContain("EURUSD");
+    expect(values).toContain("USDJPY");
+
+    await select.selectOption("EURUSD");
+    await expect(page).toHaveURL(/\/trade\/EURUSD/);
+    // demo serves synthetic D1 bars for any registry symbol, so the chart
+    // itself renders; the yfinance-fallback spec (live=false, D1-only) is
+    // what the honest "EOD data" badge asserts
+    await expect(
+      page.getByTestId("price-chart").locator("canvas").first(),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("EOD data")).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
   // regression: unmounting a page disposed the lightweight-charts instance
   // before dependent effect cleanups ran; unguarded removeSeries/unsubscribe
   // calls threw ("Object is disposed" / "Value is undefined") and the
