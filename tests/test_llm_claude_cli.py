@@ -140,6 +140,22 @@ def test_clean_env_strips_session_vars(monkeypatch):
     assert env["SOME_OTHER_VAR"] == "keep"
 
 
+def test_clean_env_preserves_oauth_token(monkeypatch):
+    # headless auth (Cloud Run): the operator-issued token must reach the
+    # nested CLI even though every other CLAUDE_CODE_* session var is stripped
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oat-headless-token")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    monkeypatch.setenv("CLAUDE_AGENT_RELAY", "http://relay")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-host-session")
+    env = _clean_env()
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oat-headless-token"
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert "CLAUDE_CODE_ENTRYPOINT" not in env
+    assert "CLAUDE_AGENT_RELAY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+
+
 def test_factory_and_get_llm(tmp_path, monkeypatch):
     client = create_llm_client("claude-cli", "haiku")
     assert isinstance(client, ClaudeCLIClient)

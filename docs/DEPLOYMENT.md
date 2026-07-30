@@ -126,6 +126,52 @@ one on-demand run and confirm it survives a
 redeploy (proves the GCS-backed `/data` volume actually persists across
 instance churn, not just within one warm instance).
 
+### claude-cli in production
+
+The `claude-cli` provider routes pipeline calls through a Claude
+subscription via the `claude` binary (baked into `deploy/Dockerfile.pro`
+with Node 22) instead of a metered API key. Headless auth is a long-lived
+OAuth token:
+
+1. On your own machine, run `claude setup-token` and copy the token it
+   prints.
+2. Create the secret by typing/pasting the value **yourself** — the token
+   is operator-entered, never scripted, committed, or pasted into chat:
+
+   ```bash
+   printf '%s' '<token from claude setup-token>' | \
+     gcloud secrets create claude-cli-api-key --data-file=-
+   ```
+
+3. Deploy with the provider and Claude model IDs (the defaults are OpenAI
+   models the CLI does not serve):
+
+   ```bash
+   PROJECT_ID=<id> BUCKET=<bucket> LLM_PROVIDER=claude-cli \
+   TRADINGAGENTS_QUICK_THINK_LLM=claude-haiku-4-5-20251001 \
+   TRADINGAGENTS_DEEP_THINK_LLM=claude-sonnet-5 \
+   ./scripts/deploy_cloud_run.sh
+   ```
+
+   The script wires the secret to the `CLAUDE_CODE_OAUTH_TOKEN` env var
+   (the one exception to the `<PROVIDER>_API_KEY` convention — see
+   `tradingagents/llm_clients/api_key_env.py`).
+
+**Caveats — know these before pointing the 24/7 loop at it:**
+
+- **Rate limits:** subscription plans have session/weekly usage caps, not
+  metered throughput. A continuous hourly loop plus on-demand runs can
+  exhaust them mid-cycle, starving the pipeline until the window resets.
+- **Revocation/expiry:** if the token is revoked (or the subscription
+  lapses), calls fail and the pipeline degrades to evidence-starved
+  rejections — the dashboard health banner will show it. Rotate by
+  re-running `claude setup-token` and
+  `gcloud secrets versions add claude-cli-api-key --data-file=-`
+  (operator-typed, as above), then redeploying or restarting the service.
+- **Recommendation:** a metered API key (e.g. `anthropic` or `deepseek`)
+  remains the recommended primary for continuous loops; treat `claude-cli`
+  as a cost-controlled option for evals, backtests, and supervised runs.
+
 ## The service loop
 
 `PaperTradingService` (see `tradingagents/pro/service.py`) is the

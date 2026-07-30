@@ -615,6 +615,12 @@ def ensure_api_key(provider: str) -> str | None:
     if env_var is None:
         return None  # ollama / unknown — no key check possible
 
+    # claude-cli authenticates via the CLI's own login locally; the mapped
+    # CLAUDE_CODE_OAUTH_TOKEN exists for headless deploys. Read it if set,
+    # but never force an interactive prompt for it.
+    if provider.lower() == "claude-cli":
+        return os.environ.get(env_var)
+
     # Key-optional providers (generic OpenAI-compatible / local servers) read the
     # key when present but must never force an interactive prompt.
     from tradingagents.llm_clients.openai_client import OPENAI_COMPATIBLE_PROVIDERS

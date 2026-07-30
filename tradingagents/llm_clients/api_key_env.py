@@ -37,8 +37,13 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "nvidia":     "NVIDIA_API_KEY",
     # Local runtimes do not authenticate.
     "ollama":     None,
-    # The claude CLI authenticates via its own login (subscription), not a key.
-    "claude-cli": None,
+    # The claude CLI authenticates via its own login (subscription) locally;
+    # headless deploys pass a long-lived OAuth token (`claude setup-token`)
+    # in this env var instead. Mapping it here lets the eval CLI's key
+    # preflight and the deploy script's secret wiring treat claude-cli like
+    # any other provider. The interactive CLI never prompts for it (login
+    # suffices there — see cli/utils.ensure_api_key).
+    "claude-cli": "CLAUDE_CODE_OAUTH_TOKEN",
     # Generic OpenAI-compatible endpoint: the client reads this when set (keyed
     # relays), but it is marked key-optional in the provider registry so the CLI
     # never forces a prompt and keyless local servers still work.

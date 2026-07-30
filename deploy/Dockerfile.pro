@@ -46,6 +46,22 @@ COPY --from=litestream/litestream:0.3 /usr/local/bin/litestream /usr/local/bin/l
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# claude-cli provider: the pipeline shells out to the `claude` binary
+# (Claude Code print mode, tradingagents/llm_clients/claude_cli_client.py).
+# Node comes from the SAME node:22-slim image the frontend stage already
+# builds with — copying the runtime binary + npm avoids apt (bookworm's
+# nodejs is v18, and NodeSource would drag in curl/gnupg) and adds no new
+# base image. Added weight: ~110MB node binary + ~15MB npm +
+# ~60MB @anthropic-ai/claude-code (installed to /usr/local, so `claude`
+# is on PATH for the `trader` user). Headless auth is the
+# CLAUDE_CODE_OAUTH_TOKEN env/secret (see scripts/deploy_cloud_run.sh).
+COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
+
 RUN useradd --create-home trader && mkdir -p /data && chown trader /data
 USER trader
 # P2-04: bake the embedding model into the image so cold boots never

@@ -35,9 +35,33 @@
 #                         # fix while the staging service/bucket is itself
 #                         # broken or being re-provisioned. Every routine
 #                         # deploy must go through staging.
+#   TRADINGAGENTS_QUICK_THINK_LLM / TRADINGAGENTS_DEEP_THINK_LLM
+#                         # optional model overrides; when set they are passed
+#                         # through to the service via --update-env-vars
+#                         # (otherwise the service keeps its current values /
+#                         # the code defaults).
 #
 # Usage:
 #   PROJECT_ID=my-project BUCKET=my-project-pro-data ./scripts/deploy_cloud_run.sh
+#
+# claude-cli provider (subscription-billed via a headless OAuth token):
+#   The LLM-key convention maps claude-cli -> secret "claude-cli-api-key"
+#   wired to the CLAUDE_CODE_OAUTH_TOKEN env var (see api_key_env.py).
+#   1. Mint a long-lived token on your own machine with `claude setup-token`,
+#      then create the secret by pasting it YOURSELF — the token is operator-
+#      typed, never scripted or committed:
+#        printf '%s' '<token from claude setup-token>' | \
+#          gcloud secrets create claude-cli-api-key --data-file=-
+#   2. Deploy with the provider + model overrides (the defaults are OpenAI
+#      model IDs, which the claude CLI does not serve):
+#        PROJECT_ID=my-project BUCKET=my-project-pro-data \
+#        LLM_PROVIDER=claude-cli \
+#        TRADINGAGENTS_QUICK_THINK_LLM=claude-haiku-4-5-20251001 \
+#        TRADINGAGENTS_DEEP_THINK_LLM=claude-sonnet-5 \
+#        ./scripts/deploy_cloud_run.sh
+#   Caveats (rate limits, token revocation, why a metered API key stays the
+#   recommended primary for 24/7 loops): docs/DEPLOYMENT.md,
+#   section "claude-cli in production".
 set -euo pipefail
 
 : "${PROJECT_ID:?Set PROJECT_ID to your GCP project id}"
@@ -62,7 +86,16 @@ TAG="$(git rev-parse --short HEAD)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${SERVICE}:${TAG}"
 # portable uppercase (macOS ships bash 3.2 — no ${VAR^^} support there)
 LLM_PROVIDER_UPPER="$(printf '%s' "$LLM_PROVIDER" | tr '[:lower:]' '[:upper:]')"
-LLM_KEY_ENV="${LLM_PROVIDER_UPPER}_API_KEY"
+if [ "$LLM_PROVIDER" = "claude-cli" ]; then
+  # the <PROVIDER>_API_KEY convention would yield "CLAUDE-CLI_API_KEY" —
+  # not a legal env-var name. claude-cli's key env is the headless OAuth
+  # token (single source of truth: tradingagents/llm_clients/api_key_env.py).
+  # The SECRET name stays on the convention: "claude-cli-api-key" (gcloud
+  # secret names allow hyphens).
+  LLM_KEY_ENV="CLAUDE_CODE_OAUTH_TOKEN"
+else
+  LLM_KEY_ENV="${LLM_PROVIDER_UPPER}_API_KEY"
+fi
 
 echo "==> Building + pushing ${IMAGE} via Cloud Build"
 # `gcloud builds submit --tag` always runs `docker build -t $TAG .` with the
@@ -100,7 +133,16 @@ gcloud builds submit \
 # add prod alerting secrets to staging: a staging boot must not page
 # anyone or message the prod Telegram channel.
 deploy_service() {
-  local service="$1" bucket="$2" loop_disabled="$3"
+  local service="$1" bucket="$2" loop_disabled="$3" env_vars
+  env_vars="TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream"
+  # optional model overrides: forwarded only when set, so redeploys without
+  # them keep whatever is already on the service (--update-env-vars merges)
+  if [ -n "${TRADINGAGENTS_QUICK_THINK_LLM:-}" ]; then
+    env_vars="${env_vars},TRADINGAGENTS_QUICK_THINK_LLM=${TRADINGAGENTS_QUICK_THINK_LLM}"
+  fi
+  if [ -n "${TRADINGAGENTS_DEEP_THINK_LLM:-}" ]; then
+    env_vars="${env_vars},TRADINGAGENTS_DEEP_THINK_LLM=${TRADINGAGENTS_DEEP_THINK_LLM}"
+  fi
   echo "==> Deploying ${service} to Cloud Run (${REGION}) [bucket=${bucket}, loop_disabled=${loop_disabled}]"
   gcloud run deploy "$service" \
     --project "$PROJECT_ID" \
@@ -114,7 +156,7 @@ deploy_service() {
     --concurrency 250 \
     --add-volume "name=data,type=cloud-storage,bucket=${bucket}" \
     --add-volume-mount "volume=data,mount-path=/data" \
-    --update-env-vars "TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream" \
+    --update-env-vars "$env_vars" \
     --update-secrets "PRO_DASHBOARD_TOKEN=pro-dashboard-token:latest,${LLM_KEY_ENV}=${LLM_PROVIDER}-api-key:latest" \
     --allow-unauthenticated
 }

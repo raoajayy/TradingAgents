@@ -3,8 +3,9 @@
 Routes pipeline calls through the operator's Claude subscription instead of
 a metered API key: each call shells out to `claude -p --output-format json`
 with tools and project settings disabled, so it behaves as a pure model
-call. No API key env is required — auth is the CLI's own login (run
-`claude /login` in a terminal if calls fail with an auth error).
+call. Auth is the CLI's own login (run `claude /login` in a terminal if
+calls fail with an auth error) or, headless (Cloud Run), a long-lived
+`CLAUDE_CODE_OAUTH_TOKEN` minted via `claude setup-token`.
 
 The pipeline's whole LLM contract is `with_structured_output(schema)` →
 `.invoke(prompt)` → a Pydantic instance (see FakePipelineLLM), so this
@@ -35,6 +36,10 @@ from .base_client import BaseLLMClient
 # they point the nested CLI at the host session's auth relay (whose token
 # is not valid for standalone use) instead of the user's own login
 _STRIP_ENV_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_")
+# ...but the operator-issued long-lived OAuth token (`claude setup-token`)
+# is exactly how the nested CLI authenticates HEADLESSLY (Cloud Run has no
+# interactive `claude /login`), so it must survive the prefix strip
+_KEEP_ENV = {"CLAUDE_CODE_OAUTH_TOKEN"}
 _STRIP_ENV = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_API_KEY",
@@ -52,7 +57,8 @@ def _clean_env() -> dict[str, str]:
     return {
         k: v
         for k, v in os.environ.items()
-        if k not in _STRIP_ENV and not k.startswith(_STRIP_ENV_PREFIXES)
+        if k in _KEEP_ENV
+        or (k not in _STRIP_ENV and not k.startswith(_STRIP_ENV_PREFIXES))
     }
 
 
