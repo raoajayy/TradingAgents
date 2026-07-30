@@ -74,8 +74,15 @@ def main() -> int:
 
     key_env = get_api_key_env(routing.llm_provider)
     if key_env and not os.environ.get(key_env):
-        print(f"{key_env} not set (env or .env); aborting", file=sys.stderr)
-        return 2
+        # claude-cli authenticates via its own login locally; the env token
+        # is only required headless (Cloud Run). Warn and proceed — a real
+        # auth failure surfaces on the first call.
+        if routing.llm_provider == "claude-cli":
+            print(f"{key_env} not set; relying on the CLI's own login",
+                  file=sys.stderr)
+        else:
+            print(f"{key_env} not set (env or .env); aborting", file=sys.stderr)
+            return 2
 
     from tradingagents.pro.evals.stability import DEFAULT_CASE_NAMES
 
