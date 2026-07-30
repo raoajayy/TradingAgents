@@ -71,6 +71,18 @@ Derived from `docs/COMPETITIVE_TEARDOWN.md` (§21 roadmap, §22 backlog, top-25 
 
 ## Phase 2 — Professional-grade (2 months) · goal: kill the infrastructure/quant ceilings
 
+> **STATUS: CODE COMPLETE 2026-07-29** (one-day push; agent-implemented,
+> reviewed+gated per task). P2-01 event store deployed rev 00111 + restore
+> drill PASSED (322 runs from the bucket alone); P2-02 DSR/PBO gate + "not
+> deployable" badge; P2-03 anonymizer/harness/EVAL_PROTOCOL.md (audit RUN
+> pending); P2-04 semantic embeddings (model2vec); P2-05 portfolio VaR +
+> correlated-gross caps (incl. dead-provider fix); P2-06 event triggers
+> (opt-in); P2-07 condition-alert builder; P2-08 staging→smoke→prod deploy
+> + /metrics Prometheus; P2-09 evidence level chips→chart; P2-10 FX majors
+> (EURUSD/USDJPY end-to-end, served symbol chain); P2-11 sampled
+> liquidation reconstruction. Pending ops: batched prod deploy (staging
+> bucket one-time create), P2-03 memorization-audit run.
+
 ### P2-01 Event-store migration — 2w
 - **What**: SQLite (WAL) + litestream→GCS as the single source of truth for runs/memory/outcomes/orders; JSONL becomes export format. Append-only tables + views; recorder/memory/prefs write through one store module.
 - **Files**: new `pro/store.py`; refactor `dashboard/recorder.py`, `memory/memory.py` (JsonlStore swap), `dashboard/prefs.py`; migration script reading existing JSONL.
