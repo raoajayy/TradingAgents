@@ -847,6 +847,50 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             alerts=getattr(state, "alerts", None))
         return JSONResponse({"status": "flattened", **summary})
 
+    @app.post("/api/reconcile/resolve")
+    async def reconcile_resolve(request: Request) -> JSONResponse:
+        """Operator remediation for reconciliation drift: flatten venue
+        positions the local book does not know (no surviving stop/TP plan
+        — adopting them would leave unmanaged risk). Typed confirmation,
+        same contract as /api/flatten; audited per symbol."""
+        if state.router is None:
+            raise HTTPException(status_code=503,
+                                detail="no execution router attached")
+        body = await request.json()
+        if body.get("confirm") != "RESOLVE":
+            raise HTTPException(
+                status_code=422,
+                detail="type RESOLVE to confirm flattening unknown positions")
+        marks: dict[str, float] = {}
+        if state.marketdata is not None:
+            for position in state.router.adapter.positions():
+                if position.symbol in state.router.local_book:
+                    continue
+                try:
+                    from tradingagents.contracts import Timeframe
+
+                    bars = state.marketdata.get_bars(
+                        position.symbol, Timeframe.D1, limit=1)
+                    if bars:
+                        marks[position.symbol] = bars[-1].close
+                except Exception:  # noqa: BLE001 — fall back to avg price
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "no mark for %s during drift resolve",
+                        position.symbol, exc_info=True)
+        summary = state.router.resolve_unknown_positions(
+            marks, operator="dashboard")
+        report = state.router.reconcile()
+        if getattr(state, "alerts", None) is not None:
+            state.alerts.emit(
+                "warning", "reconciliation_resolved",
+                f"operator flattened {len(summary['flattened'])} unknown "
+                "position(s); drift resolution audited",
+            )
+        return JSONResponse({"status": "resolved", **summary,
+                             "in_sync": report.in_sync})
+
     @app.get("/api/alerts")
     def alerts() -> dict:
         return service.alert_feed(state.runs)

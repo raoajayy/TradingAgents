@@ -210,3 +210,96 @@ class TestReconciliation:
         router.record_close("XAUUSD", pnl=250.0)
         assert "XAUUSD" not in router.local_book
         assert router.breaker.consecutive_losses == 0
+
+
+class TestDriftResolution:
+    """Operator remediation: flatten venue positions the book doesn't know."""
+
+    def test_flattens_only_unknown_positions(self):
+        from tradingagents.pro.execution import BrokerPosition
+
+        router = make_router()
+        # unknown-position symbols must be closable on the venue; the
+        # mt5 fixture venue is gold-only, so widen its universe
+        router.adapter.venue.symbol_map.update(
+            {"ETH-USD": "ETH-USD", "SOL-USD": "SOL-USD"})
+        router.submit_recommendation(sized_rec(), equity=100_000)  # known
+        router.adapter._positions["ETH-USD"] = BrokerPosition(
+            symbol="ETH-USD", side="BUY", quantity=2.0, avg_price=2500.0)
+        router.adapter._positions["SOL-USD"] = BrokerPosition(
+            symbol="SOL-USD", side="SELL", quantity=10.0, avg_price=150.0)
+        assert not router.reconcile().in_sync
+
+        summary = router.resolve_unknown_positions(
+            marks={"ETH-USD": 2600.0}, operator="test")
+        assert sorted(summary["flattened"]) == ["ETH-USD", "SOL-USD"]
+        assert summary["errors"] == []
+        # the known position survives; drift is gone; audit chain intact
+        assert router.reconcile().in_sync
+        assert "XAUUSD" in {p.symbol for p in router.adapter.positions()}
+        assert router.audit.verify()
+
+    def test_per_symbol_errors_do_not_abort(self, monkeypatch):
+        from tradingagents.pro.execution import BrokerPosition
+
+        router = make_router()
+        router.adapter.venue.symbol_map.update(
+            {"ETH-USD": "ETH-USD", "SOL-USD": "SOL-USD"})
+        router.adapter._positions["ETH-USD"] = BrokerPosition(
+            symbol="ETH-USD", side="BUY", quantity=2.0, avg_price=2500.0)
+        router.adapter._positions["SOL-USD"] = BrokerPosition(
+            symbol="SOL-USD", side="BUY", quantity=1.0, avg_price=150.0)
+        real = router.adapter.close_position
+
+        def flaky(symbol, reference_price):
+            if symbol == "ETH-USD":
+                raise RuntimeError("venue hiccup")
+            return real(symbol, reference_price)
+
+        monkeypatch.setattr(router.adapter, "close_position", flaky)
+        summary = router.resolve_unknown_positions()
+        assert summary["flattened"] == ["SOL-USD"]
+        assert len(summary["errors"]) == 1 and "ETH-USD" in summary["errors"][0]
+
+
+class TestReconcileResolveEndpoint:
+    def _client_with_router(self):
+        from fastapi.testclient import TestClient
+
+        from tradingagents.pro.dashboard.app import DashboardState, create_app
+        from tradingagents.pro.execution import BrokerPosition
+        from tradingagents.pro.memory import ProMemory
+
+        router = make_router()
+        router.adapter.venue.symbol_map.update(
+            {"ETH-USD": "ETH-USD", "SOL-USD": "SOL-USD"})
+        router.adapter._positions["ETH-USD"] = BrokerPosition(
+            symbol="ETH-USD", side="BUY", quantity=2.0, avg_price=2500.0)
+        state = DashboardState(memory=ProMemory())
+        state.router = router  # class-level attr, not a dataclass field
+        return TestClient(create_app(state)), router
+
+    def test_requires_typed_confirmation(self):
+        client, _ = self._client_with_router()
+        assert client.post("/api/reconcile/resolve",
+                           json={}).status_code == 422
+
+    def test_resolves_drift_and_reports_in_sync(self):
+        client, router = self._client_with_router()
+        assert not router.reconcile().in_sync
+        response = client.post("/api/reconcile/resolve",
+                               json={"confirm": "RESOLVE"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["flattened"] == ["ETH-USD"]
+        assert body["in_sync"] is True
+
+    def test_503_without_router(self):
+        from fastapi.testclient import TestClient
+
+        from tradingagents.pro.dashboard.app import DashboardState, create_app
+        from tradingagents.pro.memory import ProMemory
+
+        bare = TestClient(create_app(DashboardState(memory=ProMemory())))
+        assert bare.post("/api/reconcile/resolve",
+                         json={"confirm": "RESOLVE"}).status_code == 503

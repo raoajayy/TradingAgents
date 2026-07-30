@@ -231,6 +231,35 @@ class ExecutionRouter:
         if state.tripped:
             self.audit.append("circuit_breaker_tripped", {"reason": state.reason})
 
+    def resolve_unknown_positions(self, marks: dict[str, float] | None = None,
+                                  operator: str = "dashboard") -> dict:
+        """Operator remediation for reconciliation drift: close every venue
+        position the local book does not know (they have no surviving
+        stop/TP plan, so adopting them would leave unmanaged risk on the
+        book). Closes at the provided mark (falls back to the venue's own
+        avg price), audited per symbol; never raises past a symbol.
+        """
+        marks = marks or {}
+        flattened, errors = [], []
+        for position in self.adapter.positions():
+            if position.symbol in self.local_book:
+                continue
+            reference = marks.get(position.symbol, position.avg_price)
+            try:
+                result = self.adapter.close_position(position.symbol, reference)
+                flattened.append(position.symbol)
+                self.audit.append("drift_resolved_flatten", {
+                    "symbol": position.symbol,
+                    "operator": operator,
+                    "reference_price": reference,
+                    "filled": getattr(result, "filled_quantity", None),
+                })
+            except Exception as exc:  # noqa: BLE001 — per-symbol tolerance
+                logger.warning("drift flatten failed for %s", position.symbol,
+                               exc_info=True)
+                errors.append(f"{position.symbol}: {exc}")
+        return {"flattened": flattened, "errors": errors}
+
     def reconcile(self) -> ReconciliationReport:
         # Phase 6: a symbol holds risk on exactly one venue at a time
         # (its tier decides), so the truth set is the union of venues
