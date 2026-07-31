@@ -7,6 +7,8 @@ switch backends without changing their public APIs:
 - ``runs``     — one row per pipeline run (recorder's RunRecord JSON)
 - ``memory``   — append-only MemoryRecord rows (JsonlStore protocol)
 - ``kv``       — whole-document values (prefs, small state blobs)
+- ``users``    — P3-05 multi-tenant identities: (email PK, role, created_at)
+  with role ∈ {viewer, operator}; additive CREATE TABLE IF NOT EXISTS
 - ``vintages`` — P3-02 point-in-time metric observations
   (name, value, observed_at, as_of, source); additive CREATE TABLE IF NOT
   EXISTS, so existing P2-01 databases upgrade in place on open
@@ -61,6 +63,11 @@ CREATE TABLE IF NOT EXISTS kv (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS users (
+    email      TEXT PRIMARY KEY,
+    role       TEXT NOT NULL CHECK (role IN ('viewer','operator')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS vintages (
     name        TEXT NOT NULL,
@@ -195,6 +202,53 @@ class EventStore:
                 "SELECT value FROM kv WHERE key=?", (key,)
             ).fetchone()
         return row[0] if row else None
+
+    # --- users (P3-05 multi-tenant roles) ---------------------------------
+    USER_ROLES = ("viewer", "operator")
+
+    def put_user(self, email: str, role: str) -> dict:
+        """Upsert one user. Emails are folded to lowercase (the same
+        canonicalization the allowlist and Google claims use); role must
+        be one of USER_ROLES (mirrors the table's CHECK constraint so the
+        caller gets a ValueError, not an sqlite3.IntegrityError)."""
+        email = email.strip().lower()
+        if not email or "@" not in email:
+            raise ValueError(f"invalid email {email!r}")
+        if role not in self.USER_ROLES:
+            raise ValueError(
+                f"invalid role {role!r}; use one of {list(self.USER_ROLES)}")
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO users (email, role) VALUES (?,?) "
+                "ON CONFLICT(email) DO UPDATE SET role=excluded.role",
+                (email, role),
+            )
+            row = self._conn.execute(
+                "SELECT email, role, created_at FROM users WHERE email=?",
+                (email,),
+            ).fetchone()
+        return {"email": row[0], "role": row[1], "created_at": row[2]}
+
+    def get_user_role(self, email: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT role FROM users WHERE email=?",
+                (email.strip().lower(),),
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_users(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT email, role, created_at FROM users ORDER BY email"
+            ).fetchall()
+        return [{"email": r[0], "role": r[1], "created_at": r[2]}
+                for r in rows]
+
+    def count_users(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM users").fetchone()[0]
 
     # --- vintages (P3-02 point-in-time metric history) --------------------
     # Every metric observation is appended as (name, value, observed_at,
@@ -341,6 +395,27 @@ def migrate_legacy(store: EventStore, data_dir: Path) -> dict[str, int]:
     if any(imported.values()):
         logger.info("event-store migration imported %s", imported)
     return imported
+
+
+def seed_users(store: EventStore, emails: list[str] | set[str]) -> int:
+    """P3-05 boot seed, mirroring migrate_legacy's guard: ONLY when the
+    users table is empty, every PRO_ALLOWED_EMAILS entry becomes an
+    operator (the pre-roles world was single-operator, so existing
+    allowlisted accounts must not lose capabilities on upgrade).
+    Idempotent: once any user row exists the table is the source of
+    truth and re-running is a no-op. Returns rows inserted."""
+    if store.count_users() != 0:
+        return 0
+    seeded = 0
+    for email in sorted({e.strip().lower() for e in emails if e.strip()}):
+        try:
+            store.put_user(email, "operator")
+            seeded += 1
+        except ValueError:  # malformed allowlist entry — skip, don't boot-fail
+            logger.warning("seed_users: skipping invalid email %r", email)
+    if seeded:
+        logger.info("seeded %d allowlisted user(s) as operator", seeded)
+    return seeded
 
 
 def export_jsonl(store: EventStore, out_dir: Path) -> dict[str, int]:

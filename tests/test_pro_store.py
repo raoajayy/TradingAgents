@@ -230,3 +230,54 @@ class TestBackendIntegration:
 
         with pytest.raises(ValueError):
             PipelineRecorder(store=store, store_dir=tmp_path)
+
+
+class TestUsers:
+    """P3-05 users table: email PK, role viewer|operator, seeded from the
+    allowlist exactly once."""
+
+    def test_put_get_list_upsert(self, store):
+        created = store.put_user("Trader@Example.com", "operator")
+        assert created["email"] == "trader@example.com"  # folded
+        assert created["role"] == "operator"
+        assert created["created_at"]
+        assert store.get_user_role("TRADER@example.com") == "operator"
+        # upsert changes the role in place — still one row
+        store.put_user("trader@example.com", "viewer")
+        assert store.count_users() == 1
+        assert store.get_user_role("trader@example.com") == "viewer"
+        assert store.list_users() and store.list_users()[0]["role"] == "viewer"
+
+    def test_validation(self, store):
+        with pytest.raises(ValueError):
+            store.put_user("trader@example.com", "admin")
+        with pytest.raises(ValueError):
+            store.put_user("not-an-email", "viewer")
+        assert store.count_users() == 0
+        assert store.get_user_role("missing@example.com") is None
+
+    def test_seed_only_when_empty(self, store):
+        from tradingagents.pro.store import seed_users
+
+        assert seed_users(store, ["A@x.com", " b@x.com ", "", "a@x.com"]) == 2
+        assert {u["email"]: u["role"] for u in store.list_users()} == {
+            "a@x.com": "operator", "b@x.com": "operator"}
+        # non-empty table = source of truth; reseeding is a no-op
+        store.put_user("a@x.com", "viewer")
+        assert seed_users(store, ["a@x.com", "c@x.com"]) == 0
+        assert store.get_user_role("a@x.com") == "viewer"
+        assert store.get_user_role("c@x.com") is None
+
+    def test_users_table_added_to_existing_db_in_place(self, tmp_path):
+        # additive schema: an existing P2-01 database upgrades on open
+        path = tmp_path / "pro.db"
+        old = EventStore(path)
+        old.put_kv("k", "v")
+        old.close()
+        upgraded = EventStore(path)
+        try:
+            assert upgraded.count_users() == 0
+            upgraded.put_user("a@x.com", "operator")
+            assert upgraded.get_kv("k") == "v"
+        finally:
+            upgraded.close()

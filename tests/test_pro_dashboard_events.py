@@ -203,7 +203,7 @@ class TestAuthMatrix:
         assert client.get("/api/overview").status_code == 200
         session = client.post("/api/session").json()
         assert session == {"authenticated": True, "auth_required": False,
-                           "identity": None}
+                           "identity": None, "role": "operator"}
 
 
 GOOGLE_ENV = {

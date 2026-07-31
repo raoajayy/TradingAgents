@@ -559,3 +559,191 @@ class TestMetricsEndpoint:
         assert "# TYPE runs_total counter\nruns_total 1.0" in resp.text
         assert "# TYPE iteration_errors_total counter" in resp.text
         assert "# TYPE last_run_ts gauge\nlast_run_ts 1700000000.0" in resp.text
+
+
+class TestRolesAndEntitlements:
+    """P3-05 multi-tenant auth: users table, roles, operator-only mutation
+    endpoints, per-user prefs isolation. Sessions are minted the same way
+    TestGoogleSession does — a monkeypatched Firebase verifier — so these
+    tests never hit Google; the fake verifier treats the bearer token
+    itself as the signed-in email."""
+
+    ENV = {
+        "PRO_FIREBASE_PROJECT_ID": "demo-project",
+        "PRO_ALLOWED_EMAILS": "op@example.com,eve@example.com",
+        "PRO_FIREBASE_WEB_CONFIG": '{"apiKey": "public"}',
+    }
+
+    def _setup(self, tmp_path, monkeypatch):
+        import tradingagents.pro.dashboard.app as app_module
+        from tradingagents.pro.dashboard.prefs import PrefsStore
+        from tradingagents.pro.store import EventStore
+
+        for key, value in self.ENV.items():
+            monkeypatch.setenv(key, value)
+
+        def fake_verify(id_token, audience):
+            assert audience == "demo-project"
+            return {"email": id_token, "email_verified": True}
+
+        monkeypatch.setattr(app_module, "_verify_firebase_token", fake_verify)
+        store = EventStore(tmp_path / "pro.db")
+        state = DashboardState(memory=ProMemory())
+        state.prefs = PrefsStore(store=store)
+        app = create_app(state, api_token="secret-token")
+        return app, state, store
+
+    def _login(self, app, email):
+        client = TestClient(app)
+        resp = client.post("/api/session",
+                           headers={"Authorization": f"Bearer {email}"})
+        assert resp.status_code == 200
+        return client, resp.json()
+
+    def test_allowlist_seeded_as_operators_once(self, tmp_path, monkeypatch):
+        from tradingagents.pro.store import seed_users
+
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        users = {u["email"]: u["role"] for u in store.list_users()}
+        assert users == {"op@example.com": "operator",
+                         "eve@example.com": "operator"}
+        # idempotent: a non-empty table is the source of truth — reseeding
+        # (another boot, or after an explicit demotion) changes nothing
+        store.put_user("eve@example.com", "viewer")
+        assert seed_users(store, ["op@example.com", "eve@example.com"]) == 0
+        assert store.get_user_role("eve@example.com") == "viewer"
+
+    def test_session_carries_role_claim(self, tmp_path, monkeypatch):
+        import base64
+        import json
+
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        store.put_user("eve@example.com", "viewer")
+        client, body = self._login(app, "eve@example.com")
+        assert body["identity"] == "eve@example.com"
+        assert body["role"] == "viewer"
+        payload_b64 = client.cookies.get("__session").split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(
+            payload_b64 + "=" * (-len(payload_b64) % 4)))
+        assert payload["sub"] == "eve@example.com"
+        assert payload["role"] == "viewer"
+
+    def test_viewer_reads_but_cannot_mutate(self, tmp_path, monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        store.put_user("eve@example.com", "viewer")
+        viewer, _ = self._login(app, "eve@example.com")
+
+        # read-only GETs stay viewer-accessible
+        assert viewer.get("/api/overview").status_code == 200
+        assert viewer.get("/api/watchlists").status_code == 200
+        assert viewer.get("/api/notifications").status_code == 200
+
+        # the operator-only mutation set 403s with a clear detail
+        denied = viewer.post("/api/pipeline/run",
+                             json={"symbol": "XAUUSD", "timeframe": "1h"})
+        assert denied.status_code == 403
+        assert "viewer" in denied.json()["detail"]
+        assert viewer.post("/api/flatten",
+                           json={"confirm": "FLATTEN"}).status_code == 403
+        assert viewer.post("/api/watchlists",
+                           json={"name": "w", "symbols": []}).status_code == 403
+        assert viewer.delete("/api/watchlists/w").status_code == 403
+        assert viewer.put("/api/prefs", json={}).status_code == 403
+        assert viewer.post("/api/backtest/run", json={}).status_code == 403
+        assert viewer.post("/api/notifications/read").status_code == 403
+
+    def test_operator_passes_the_mutation_gate(self, tmp_path, monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        operator, body = self._login(app, "op@example.com")
+        assert body["role"] == "operator"
+        created = operator.post("/api/watchlists",
+                                json={"name": "majors", "symbols": ["XAUUSD"]})
+        assert created.status_code == 200
+        # authz passed; these fail later for wiring reasons, not role
+        assert operator.post("/api/flatten",
+                             json={"confirm": "FLATTEN"}).status_code == 503
+        assert operator.post(
+            "/api/pipeline/run",
+            json={"symbol": "XAUUSD", "timeframe": "1h"}).status_code == 503
+
+    def test_prefs_isolated_per_identity(self, tmp_path, monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        op, _ = self._login(app, "op@example.com")
+        eve, _ = self._login(app, "eve@example.com")
+
+        op.post("/api/watchlists", json={"name": "ops", "symbols": ["XAUUSD"]})
+        eve.post("/api/watchlists", json={"name": "eves", "symbols": ["BTC-USD"]})
+
+        assert [w["name"] for w in op.get("/api/watchlists").json()] == ["ops"]
+        assert [w["name"] for w in eve.get("/api/watchlists").json()] == ["eves"]
+
+        # each identity gets its own kv document; the legacy shared one
+        # (token auth + the service's system-state writes) is untouched
+        assert store.get_kv("dashboard_prefs:op@example.com") is not None
+        assert store.get_kv("dashboard_prefs:eve@example.com") is not None
+        assert store.get_kv("dashboard_prefs") is None
+
+        # token auth reads/writes the legacy shared document
+        token_client = TestClient(app,
+                                  headers={"X-API-Key": "secret-token"})
+        token_client.post("/api/watchlists",
+                          json={"name": "shared", "symbols": []})
+        assert [w["name"] for w in
+                token_client.get("/api/watchlists").json()] == ["shared"]
+        assert [w["name"] for w in op.get("/api/watchlists").json()] == ["ops"]
+
+    def test_token_auth_unchanged_full_operator(self, tmp_path, monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        client = TestClient(app, headers={"X-API-Key": "secret-token"})
+        minted = client.post("/api/session")
+        assert minted.status_code == 200
+        assert minted.json()["identity"] is None
+        assert minted.json()["role"] == "operator"
+        assert client.put("/api/prefs", json={}).status_code == 200
+        assert client.post("/api/notifications/read").status_code == 200
+
+    def test_users_admin_endpoint(self, tmp_path, monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        store.put_user("eve@example.com", "viewer")
+        op, _ = self._login(app, "op@example.com")
+        eve, _ = self._login(app, "eve@example.com")
+
+        listed = op.get("/api/users").json()["users"]
+        assert {u["email"]: u["role"] for u in listed} == {
+            "op@example.com": "operator", "eve@example.com": "viewer"}
+        assert all(u["created_at"] for u in listed)
+
+        # operator-only in BOTH directions: the roster GET and the upsert
+        assert eve.get("/api/users").status_code == 403
+        assert eve.post("/api/users", json={
+            "email": "eve@example.com", "role": "operator"}).status_code == 403
+
+        promoted = op.post("/api/users", json={
+            "email": "eve@example.com", "role": "operator"})
+        assert promoted.status_code == 200
+        assert promoted.json()["role"] == "operator"
+        assert store.get_user_role("eve@example.com") == "operator"
+
+        # validation: bad role / malformed email / non-string body
+        assert op.post("/api/users", json={
+            "email": "x@example.com", "role": "admin"}).status_code == 422
+        assert op.post("/api/users", json={
+            "email": "not-an-email", "role": "viewer"}).status_code == 422
+        assert op.post("/api/users", json={
+            "email": None, "role": "viewer"}).status_code == 422
+
+    def test_role_change_lands_on_session_reestablish(self, tmp_path,
+                                                      monkeypatch):
+        app, state, store = self._setup(tmp_path, monkeypatch)
+        op, _ = self._login(app, "op@example.com")
+        assert op.post("/api/watchlists",
+                       json={"name": "w", "symbols": []}).status_code == 200
+        store.put_user("op@example.com", "viewer")  # demotion
+        # the outstanding cookie still says operator (stateless JWT)…
+        assert op.post("/api/watchlists",
+                       json={"name": "w2", "symbols": []}).status_code == 200
+        # …but the next page load re-establishes and picks up the new role
+        again = op.post("/api/session")
+        assert again.json()["role"] == "viewer"
+        assert op.post("/api/watchlists",
+                       json={"name": "w3", "symbols": []}).status_code == 403

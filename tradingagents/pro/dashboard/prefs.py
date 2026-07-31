@@ -118,10 +118,17 @@ PREFS_KV_KEY = "dashboard_prefs"
 
 
 class PrefsStore:
-    def __init__(self, path: str | Path | None = None, store=None):
+    def __init__(self, path: str | Path | None = None, store=None,
+                 kv_key: str = PREFS_KV_KEY):
         """``store`` (P2-01): an EventStore — prefs live in its kv table.
-        Otherwise the legacy whole-document JSON file at ``path``."""
+        Otherwise the legacy whole-document JSON file at ``path``.
+
+        ``kv_key`` (P3-05): the kv row this document lives under. The
+        default is the legacy shared key (token-auth operator + the
+        service's own system-state writes); per-user stores pass
+        ``dashboard_prefs:<email>`` so Google identities are isolated."""
         self.store = store
+        self.kv_key = kv_key
         self.path = (Path(path) if path
                      else default_data_dir() / "dashboard_prefs.json")
         self._lock = threading.Lock()
@@ -131,7 +138,7 @@ class PrefsStore:
 
     def _load(self) -> PrefsDocument:
         if self.store is not None:
-            raw = self.store.get_kv(PREFS_KV_KEY)
+            raw = self.store.get_kv(self.kv_key)
             if raw is None:
                 return PrefsDocument()
             try:
@@ -151,7 +158,7 @@ class PrefsStore:
 
     def _write(self) -> None:
         if self.store is not None:
-            self.store.put_kv(PREFS_KV_KEY, self._document.model_dump_json())
+            self.store.put_kv(self.kv_key, self._document.model_dump_json())
             return
         from tradingagents.pro.persistence import atomic_write_text
 

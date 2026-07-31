@@ -19,6 +19,19 @@ Fail closed: a project id without an allowlist keeps Google sign-in
 disabled. ``GET /api/auth/config`` (open) tells the SPA which login UI to
 render; ``PRO_FIREBASE_WEB_CONFIG`` carries the public Firebase web config.
 
+Roles + entitlements (P3-05): every session JWT carries a ``role`` claim,
+``viewer`` or ``operator``. Google identities resolve their role from the
+event store's ``users`` table (boot-seeded from PRO_ALLOWED_EMAILS as
+operators when the table is empty — the pre-roles world was
+single-operator). ``X-API-Key`` remains full operator by design: it is the
+single deployment-level operator token (one secret, one holder — there is
+no second identity to demote), and demoting it would brick the CLI/curl
+admin path that predates Google sign-in. Mutating verbs (POST/PUT/DELETE)
+under ``/api`` require the operator role — viewers get a 403 with a clear
+detail; every GET stays viewer-readable. Per-user preference isolation:
+Google identities read/write ``dashboard_prefs:<email>`` kv documents;
+token auth keeps the legacy shared ``dashboard_prefs`` document.
+
 Run locally:
     uvicorn --factory tradingagents.pro.dashboard.app:create_default_app
 """
@@ -140,16 +153,20 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
 
         return _base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
-    def _mint_session(identity: "str | None" = None) -> str:
+    def _mint_session(identity: "str | None" = None,
+                      role: str = "operator") -> str:
         import json as _json
         import time as _time
 
         now = int(_time.time())
         header = _b64url(_json.dumps(
             {"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+        # P3-05: the role rides in the signed payload so the authorization
+        # middleware stays stateless (no per-request users-table read).
+        # Role changes take effect on the next session re-establish.
         payload = _b64url(_json.dumps(
             {"iss": "tradingagents-pro", "sub": identity or "api-token",
-             "iat": now, "exp": now + SESSION_TTL_SECONDS},
+             "role": role, "iat": now, "exp": now + SESSION_TTL_SECONDS},
             separators=(",", ":")).encode())
         signing_input = f"{header}.{payload}"
         signature = _b64url(hmac.new(_jwt_key, signing_input.encode(),
@@ -190,6 +207,64 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         if email.strip()
     }
     google_enabled = bool(firebase_project and allowed_emails)
+
+    # P3-05 users + roles. The users table lives in the P2-01 event store;
+    # the dashboard reaches it through the PrefsStore the service wired
+    # (state.prefs.store is the EventStore, or None for the legacy
+    # file-backed prefs used by tests/dev). Seeding mirrors migrate_legacy:
+    # guarded on an empty table, idempotent, allowlist entries = operators.
+    users_store = getattr(state.prefs, "store", None)
+    if users_store is not None and allowed_emails:
+        from tradingagents.pro.store import seed_users
+
+        seed_users(users_store, allowed_emails)
+
+    def _role_for(email: str) -> str:
+        """Users-table role for a signed-in (already allowlisted) email.
+        An allowlisted email absent from the table (added to
+        PRO_ALLOWED_EMAILS after the seed, or no event store attached)
+        defaults to operator — the allowlist remains the single-operator
+        admission source until the table says otherwise."""
+        if users_store is not None:
+            role = users_store.get_user_role(email)
+            if role is not None:
+                return role
+        return "operator"
+
+    def _request_identity(request: Request) -> "str | None":
+        """The verified per-user identity of a request, or None for the
+        deployment-level paths (API key, no-auth dev mode, legacy
+        pre-role cookies minted for the token)."""
+        if not token:
+            return None
+        if hmac.compare_digest(request.headers.get("x-api-key", ""), token):
+            return None
+        claims = _session_claims(request.cookies.get(SESSION_COOKIE, ""))
+        if claims is None:
+            return None
+        sub = claims.get("sub")
+        return None if sub in (None, "api-token") else str(sub)
+
+    def _request_role(request: Request) -> str:
+        """Role of an already-authenticated request. X-API-Key is full
+        operator by design (see module docstring: it is the single
+        deployment-level operator secret). Cookies carry the signed role
+        claim; pre-P3-05 cookies (no role claim) re-resolve from the
+        users table so an upgrade never silently promotes anyone."""
+        if not token:
+            return "operator"  # open dev mode: no identities exist
+        if hmac.compare_digest(request.headers.get("x-api-key", ""), token):
+            return "operator"
+        claims = _session_claims(request.cookies.get(SESSION_COOKIE, ""))
+        if claims is None:
+            return "viewer"  # unauthenticated: fail closed (middleware 401s first)
+        role = claims.get("role")
+        if role in ("viewer", "operator"):
+            return str(role)
+        sub = claims.get("sub")
+        if sub in (None, "api-token"):
+            return "operator"
+        return _role_for(str(sub))
 
     # Direct SSE (optional): Firebase Hosting's proxy buffers responses and
     # cannot carry Server-Sent Events (observed live: /api/stream → 503
@@ -322,6 +397,30 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             "dashboard auth DISABLED (no PRO_DASHBOARD_TOKEN) — dev/testing "
             "only; set the token before any non-loopback exposure"
         )
+    # P3-05 authorization: every mutating verb under /api requires the
+    # operator role — /api/session excepted (it MINTS the session; a
+    # viewer must be able to sign in). /api/auth/* and /api/stream/ticket
+    # are GET-only, so the mutation gate never applies to them. The
+    # operator-only surface this blanket rule covers, explicitly:
+    #   POST   /api/pipeline/run            trigger an LLM run (costs money)
+    #   POST   /api/flatten                 emergency flatten (execution!)
+    #   POST   /api/reconcile/resolve       flatten unknown venue positions
+    #   POST   /api/runs/{id}/ask[/stream]  grounded Q&A (real LLM spend)
+    #   POST   /api/calibration/backfill    retro-score stored runs
+    #   PUT    /api/prefs                   write prefs
+    #   POST/DELETE /api/watchlists…        watchlist mutation
+    #   POST/DELETE /api/price-alerts…      price-alert mutation
+    #   POST/DELETE /api/condition-alerts…  condition-alert mutation
+    #   POST   /api/notifications/read      notification read-state
+    #   POST   /api/backtest/run|cancel|optimize|portfolio|bakeoff
+    #   DELETE /api/backtest/runs/{id}      delete a saved backtest
+    #   POST   /api/users                   role administration
+    # Read-only GETs stay viewer-accessible. A viewer's own prefs writes
+    # (prefs/watchlists/alerts/notifications) are still operator-gated:
+    # P3-05's contract is "viewers cannot mutate", full stop.
+    _MUTATION_EXEMPT = {"/api/session"}
+    _MUTATING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
     if token:
         @app.middleware("http")
         async def require_api_key(request: Request, call_next):
@@ -332,10 +431,17 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             if (not path.startswith("/api")
                     or path in ("/api/session", "/api/auth/config")):
                 return await call_next(request)
-            if _authenticated(request):
-                return await call_next(request)
-            return JSONResponse({"detail": "missing or invalid X-API-Key"},
-                                status_code=401)
+            if not _authenticated(request):
+                return JSONResponse({"detail": "missing or invalid X-API-Key"},
+                                    status_code=401)
+            if (request.method in _MUTATING_METHODS
+                    and path not in _MUTATION_EXEMPT
+                    and _request_role(request) != "operator"):
+                return JSONResponse(
+                    {"detail": "your role (viewer) cannot perform this "
+                               "action; ask an operator"},
+                    status_code=403)
+            return await call_next(request)
 
     if os.environ.get("PRO_DASHBOARD_DEV") == "1":
         # added after the auth middleware => wraps it, so 401s carry CORS
@@ -424,6 +530,7 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
     @app.post("/api/session")
     def create_session(request: Request, response: Response) -> dict:
         identity = None
+        role = "operator"
         if token:
             supplied = request.headers.get("x-api-key", "")
             authed = hmac.compare_digest(supplied, token)
@@ -444,14 +551,20 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                     raise HTTPException(status_code=401,
                                         detail="missing or invalid X-API-Key")
                 identity = _google_identity(request)  # raises 401/403
+            # P3-05: re-resolve the role from the users table on every
+            # (re-)establish — a downgrade lands at the next page load,
+            # not only when the 7-day cookie finally expires. API-key
+            # sessions (identity None) stay full operator by design.
+            if identity is not None:
+                role = _role_for(identity)
             # max_age: without it the browser drops the cookie on quit —
             # combined with the stateless JWT, sign-in survives browser
             # restarts, server redeploys, and scale-to-zero for the TTL
-            response.set_cookie(SESSION_COOKIE, _mint_session(identity),
+            response.set_cookie(SESSION_COOKIE, _mint_session(identity, role),
                                 httponly=True, samesite="strict", path="/",
                                 max_age=SESSION_TTL_SECONDS)
         return {"authenticated": True, "auth_required": bool(token),
-                "identity": identity}
+                "identity": identity, "role": role}
 
     @app.get("/api/stream")
     async def stream(request: Request) -> StreamingResponse:
@@ -958,9 +1071,44 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         return JSONResponse({"status": "started", "symbol": symbol,
                              "timeframe": timeframe}, status_code=202)
 
+    # P3-05 per-user preference isolation. Google identities get their own
+    # PrefsStore over the kv key "dashboard_prefs:<email>"; token auth (and
+    # open dev mode) keeps the legacy shared "dashboard_prefs" document —
+    # backward compatible byte-for-byte. The cache is a plain dict with a
+    # hard cap: identities are bounded by the allowlist, so real LRU
+    # machinery would be ceremony (on overflow we drop everything and
+    # rebuild — PrefsStore re-reads its kv row, losing nothing).
+    #
+    # state.prefs itself deliberately remains the SERVICE's store: the
+    # alert sink (NotificationSink), the price-alert engine, intel alert
+    # state, event-trigger state, and last_bar_state all write through it.
+    # Those are SYSTEM state — properties of the one trading loop, not of
+    # whoever is looking at the dashboard — so keying them by viewer
+    # identity would fork the loop's memory per login.
+    from tradingagents.pro.dashboard.prefs import PREFS_KV_KEY
+
+    _user_prefs: dict[str, PrefsStore] = {}
+    _USER_PREFS_CACHE_MAX = 256
+
+    def _prefs_for(request: Request) -> PrefsStore:
+        email = _request_identity(request)
+        store = getattr(state.prefs, "store", None)
+        if email is None or store is None:
+            # token auth / dev mode — or file-backed prefs (no kv table to
+            # key by identity): the legacy shared document
+            return state.prefs
+        cached = _user_prefs.get(email)
+        if cached is None:
+            if len(_user_prefs) >= _USER_PREFS_CACHE_MAX:
+                _user_prefs.clear()
+            cached = PrefsStore(store=store,
+                                kv_key=f"{PREFS_KV_KEY}:{email}")
+            _user_prefs[email] = cached
+        return cached
+
     @app.get("/api/prefs")
-    def get_prefs() -> dict:
-        return state.prefs.get_prefs()
+    def get_prefs(request: Request) -> dict:
+        return _prefs_for(request).get_prefs()
 
     @app.put("/api/prefs")
     async def put_prefs(request: Request) -> dict:
@@ -972,34 +1120,34 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         from pydantic import ValidationError
 
         try:
-            return state.prefs.put_prefs(_json.loads(body))
+            return _prefs_for(request).put_prefs(_json.loads(body))
         except _json.JSONDecodeError as exc:
             raise HTTPException(status_code=422, detail=f"invalid JSON: {exc}") from None
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from None
 
     @app.get("/api/watchlists")
-    def watchlists() -> list[dict]:
-        return state.prefs.watchlists()
+    def watchlists(request: Request) -> list[dict]:
+        return _prefs_for(request).watchlists()
 
     @app.post("/api/watchlists")
     async def upsert_watchlist(request: Request) -> dict:
         from pydantic import ValidationError
 
         try:
-            return state.prefs.upsert_watchlist(await request.json())
+            return _prefs_for(request).upsert_watchlist(await request.json())
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from None
 
     @app.delete("/api/watchlists/{name}")
-    def delete_watchlist(name: str) -> dict:
-        if not state.prefs.delete_watchlist(name):
+    def delete_watchlist(name: str, request: Request) -> dict:
+        if not _prefs_for(request).delete_watchlist(name):
             raise HTTPException(status_code=404, detail=f"no watchlist {name!r}")
         return {"deleted": name}
 
     @app.get("/api/price-alerts")
-    def price_alerts() -> list[dict]:
-        return state.prefs.price_alerts()
+    def price_alerts(request: Request) -> list[dict]:
+        return _prefs_for(request).price_alerts()
 
     @app.post("/api/price-alerts")
     async def create_price_alert(request: Request) -> dict:
@@ -1011,21 +1159,21 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                 detail=f"unknown symbol {symbol!r}; "
                        f"supported: {sorted(state.marketdata.registry)}")
         try:
-            return state.prefs.add_price_alert(data)
+            return _prefs_for(request).add_price_alert(data)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except Exception as exc:  # pydantic validation
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @app.delete("/api/price-alerts/{alert_id}")
-    def delete_price_alert(alert_id: str) -> dict:
-        if not state.prefs.delete_price_alert(alert_id):
+    def delete_price_alert(alert_id: str, request: Request) -> dict:
+        if not _prefs_for(request).delete_price_alert(alert_id):
             raise HTTPException(status_code=404, detail=f"no alert {alert_id}")
         return {"deleted": alert_id}
 
     @app.get("/api/condition-alerts")
-    def condition_alerts() -> list[dict]:
-        return state.prefs.condition_alerts()
+    def condition_alerts(request: Request) -> list[dict]:
+        return _prefs_for(request).condition_alerts()
 
     @app.post("/api/condition-alerts")
     async def create_condition_alert(request: Request) -> dict:
@@ -1039,28 +1187,61 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                 detail=f"unknown metric {metric!r}; "
                        f"supported: {sorted(METRIC_INFO)}")
         try:
-            return state.prefs.add_condition_alert(data)
+            return _prefs_for(request).add_condition_alert(data)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except Exception as exc:  # pydantic validation
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @app.delete("/api/condition-alerts/{alert_id}")
-    def delete_condition_alert(alert_id: str) -> dict:
-        if not state.prefs.delete_condition_alert(alert_id):
+    def delete_condition_alert(alert_id: str, request: Request) -> dict:
+        if not _prefs_for(request).delete_condition_alert(alert_id):
             raise HTTPException(status_code=404, detail=f"no alert {alert_id}")
         return {"deleted": alert_id}
 
     @app.get("/api/notifications")
-    def notifications(unread: int = 0) -> dict:
-        notes = state.prefs.notifications(unread_only=bool(unread))
+    def notifications(request: Request, unread: int = 0) -> dict:
+        notes = _prefs_for(request).notifications(unread_only=bool(unread))
         return {"notifications": notes,
                 "unread": sum(1 for n in notes if not n["read"])}
 
     @app.post("/api/notifications/read")
     async def mark_notifications_read(request: Request) -> dict:
         body = await request.json() if int(request.headers.get("content-length") or 0) else {}
-        return {"marked": state.prefs.mark_read(body.get("ids"))}
+        return {"marked": _prefs_for(request).mark_read(body.get("ids"))}
+
+    # --- P3-05 user administration (operator-only) -------------------------
+
+    def _users_store_or_503():
+        if users_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="user administration requires the SQLite event store "
+                       "(monitor/dev mode runs without one)")
+        return users_store
+
+    @app.get("/api/users")
+    def list_users(request: Request) -> dict:
+        # GETs are viewer-readable by the blanket middleware rule, but the
+        # user roster is administration data — explicitly operator-only
+        if _request_role(request) != "operator":
+            raise HTTPException(
+                status_code=403,
+                detail="your role (viewer) cannot list users; ask an operator")
+        return {"users": _users_store_or_503().list_users()}
+
+    @app.post("/api/users")
+    async def upsert_user(request: Request) -> dict:
+        # POST => the middleware already enforced role=operator
+        body = await request.json()
+        email, role = body.get("email"), body.get("role")
+        if not isinstance(email, str) or not isinstance(role, str):
+            raise HTTPException(status_code=422,
+                                detail="body must be {email, role}")
+        try:
+            return _users_store_or_503().put_user(email, role)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @app.get("/api/journal")
     def journal() -> dict:

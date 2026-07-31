@@ -83,12 +83,19 @@ async function fetchWithTimeout(
   }
 }
 
-/** Exchange the API key for the HttpOnly session cookie. Returns whether
- * the backend requires auth at all (open localhost dev = false). */
-export async function establishSession(): Promise<{
+/** POST /api/session response (P3-05): `identity` is the Google email
+ * (null for API-token sessions); `role` gates mutations server-side —
+ * viewer sessions receive 403s on POST/PUT/DELETE endpoints. */
+export interface SessionInfo {
   authenticated: boolean;
   auth_required: boolean;
-}> {
+  identity?: string | null;
+  role?: "viewer" | "operator";
+}
+
+/** Exchange the API key for the HttpOnly session cookie. Returns whether
+ * the backend requires auth at all (open localhost dev = false). */
+export async function establishSession(): Promise<SessionInfo> {
   const response = await fetchWithTimeout("/api/session", {
     method: "POST",
     headers: apiHeaders(),
@@ -96,7 +103,7 @@ export async function establishSession(): Promise<{
   if (response.status === 401) throw new ApiError(401, "unauthorized", "/api/session");
   if (!response.ok)
     throw new ApiError(response.status, response.statusText, "/api/session");
-  return (await response.json()) as { authenticated: boolean; auth_required: boolean };
+  return (await response.json()) as SessionInfo;
 }
 
 /** Which login UI to render (open endpoint, no data). `firebase` is the
