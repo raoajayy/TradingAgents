@@ -18,6 +18,14 @@ Env:
     PRO_EVENT_TRIGGERS=1        enable P2-06 event-driven runs (calendar
                                 release T+5min / vol spike / price gap)
                                 beside the hourly rotation; off by default
+    PRO_MAX_PORTFOLIO_VAR_PCT / PRO_MAX_CORRELATED_GROSS_PCT
+                                P2-05 portfolio caps (float, percent of
+                                equity); unset = disabled
+    PRO_MAX_RUNS                recorder retention / boot-RAM knob
+                                (int, default 500)
+    PRO_RERUN_UNCHANGED_BARS=1  loop re-runs a symbol even when its driving
+                                bar is unchanged (restores the pre-skip
+                                behavior; see service._skip_unchanged_bar)
     TRADINGAGENTS_PRO_DATA      audit/prefs dir (volume in Docker)
     PRO_DASHBOARD_TOKEN         dashboard auth
     PORT                        uvicorn bind port (default 8600; Cloud Run
@@ -104,6 +112,17 @@ def _crypto_snapshot_builder(symbol: str):
         onchain.append(DeribitVolFeed(currency=cm_asset.upper()))
     if os.environ.get(TT_KEY_ENV):  # optional keyed feed (P1-05d)
         onchain.append(TokenTerminalFeed(asset=cm_asset))
+    if symbol == "BTC-USD":
+        # P2-11 sampled liquidations + OI deltas reach the agents: the
+        # process-wide shared stream — the SAME singleton the Intel panel
+        # reads, so exactly one websocket per process. BTC only:
+        # LiquidationStream is BTCUSDT-hardcoded, so ETH/SOL snapshots
+        # deliberately go without rather than fake coverage. No socket
+        # opens here — autostart defers to the first get_metrics call
+        # inside a real snapshot build.
+        from tradingagents.pro.ingestion.liquidations import shared_stream
+
+        onchain.append(shared_stream("BTCUSDT"))
     return SnapshotBuilder(
         bars_feed=_MappedBars(delta, {symbol: vendor}),
         macro_feeds=(FredMacroFeed(),),
@@ -151,6 +170,12 @@ class TriggerBusy(RuntimeError):
     pass
 
 
+class TriggerUnsupported(ValueError):
+    """Requested pair × timeframe cannot be served by the configured feeds.
+    Typed so the API maps it to a 422 (mirrors TriggerBusy → 409) instead
+    of the run crashing with a 500 in the builder."""
+
+
 class PipelineTrigger:
     """On-demand full pipeline run for a chosen pair × timeframe, through
     the SAME service (router, memory, recorder, gates) as the hourly loop.
@@ -168,6 +193,20 @@ class PipelineTrigger:
     def busy(self) -> bool:
         return self._busy.locked()
 
+    def validate_supported(self, symbol: str, timeframe: str) -> None:
+        """Raise TriggerUnsupported when the run would only crash later in
+        the builder: without an OANDA token the FX pairs fall back to
+        yfinance, whose feed serves DAILY bars only (YFinanceDailyBarsFeed
+        raises on any intraday timeframe, and SnapshotBuilder.build treats
+        bar failures as fatal by contract)."""
+        from tradingagents.pro.ingestion.oanda_gold import OandaFeed
+
+        if (symbol in FX_WIRING and timeframe != "1d"
+                and not OandaFeed.configured()):
+            raise TriggerUnsupported(
+                f"{symbol} intraday requires OANDA_API_TOKEN; "
+                "only 1d available")
+
     def run(self, symbol: str, timeframe: str) -> dict:
         from tradingagents.contracts import (
             ASSET_BY_SYMBOL,
@@ -179,6 +218,7 @@ class PipelineTrigger:
             raise ValueError(f"symbol must be one of {self.SYMBOLS}")
         if timeframe not in self.TIMEFRAMES:
             raise ValueError(f"timeframe must be one of {self.TIMEFRAMES}")
+        self.validate_supported(symbol, timeframe)
         if not self._busy.acquire(blocking=False):
             raise TriggerBusy("a pipeline run is already in progress")
         try:
@@ -358,17 +398,51 @@ def build_service(llm=None, data_dir: str | Path | None = None):
             enabled=os.environ.get("PRO_EVENT_TRIGGERS") == "1"),
     )
 
+    from tradingagents.pro.observability import (
+        CostTrackingLLM,
+        MetricsRegistry,
+        price_for,
+    )
+
+    # one registry, constructed BEFORE the bundle: build_service builds the
+    # LLM bundle before PaperTradingService (which owns metrics) exists, so
+    # the cost wrapper and the service must share this instance — the
+    # service adopts it via metrics=, and state.metrics (the /metrics
+    # scrape target) ends up pointing at the same object.
+    metrics = MetricsRegistry()
+
     if llm is None:
         from tradingagents.pro.models import bundle_from_config
 
-        llm = bundle_from_config(config, temperature=0.2)
+        bundle = bundle_from_config(config, temperature=0.2)
+        # prod LLM observability: every quick/deep call emits
+        # llm_calls_total / llm_est_cost_usd (same wrapper the backtest
+        # cost meter uses; token counts are estimates — see observability)
+        price = price_for(routing.llm_provider)
+        quick = CostTrackingLLM(bundle.quick, price=price, metrics=metrics)
+        # dedupe check BEFORE mutating: a single-model bundle keeps one
+        # wrapper (one report) serving both tiers
+        deep = (quick if bundle.deep is bundle.quick
+                else CostTrackingLLM(bundle.deep, price=price,
+                                     metrics=metrics))
+        bundle.quick, bundle.deep = quick, deep
+        llm = bundle
 
     data_path = Path(data_dir) if data_dir else default_data_dir()
     data_path.mkdir(parents=True, exist_ok=True)
 
     from tradingagents.pro.dashboard.recorder import PipelineRecorder
 
-    limits = RiskLimits()
+    def _env_float(name: str) -> float | None:
+        raw = os.environ.get(name)
+        return float(raw) if raw else None
+
+    # P2-05 portfolio caps, env-plumbed so an operator can arm them without
+    # a code change; unset keeps the contract default (None = disabled)
+    limits = RiskLimits(
+        max_portfolio_var_pct=_env_float("PRO_MAX_PORTFOLIO_VAR_PCT"),
+        max_correlated_gross_pct=_env_float("PRO_MAX_CORRELATED_GROSS_PCT"),
+    )
     # persistent memory + venue book: without both, service.rehydrate()
     # has nothing to read after a container restart (go-live Phase 0)
     # P2-01: SQLite event store is the source of truth; legacy JSON/JSONL
@@ -388,7 +462,13 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     memory = ProMemory(store=SqliteMemoryStore(event_store),
                        embedder=make_default_embedder())
     state = DashboardState(memory=memory)
-    state.recorder = PipelineRecorder(store=event_store)
+    # PRO_MAX_RUNS: boot-RAM knob — every retained run holds a full snapshot
+    # (bars, news, debate transcript), so this bounds resident memory after
+    # a restart reloads the store (default 500, the recorder's own default)
+    state.recorder = PipelineRecorder(
+        store=event_store,
+        max_runs=int(os.environ.get("PRO_MAX_RUNS") or 500),
+    )
     state.prefs = PrefsStore(store=event_store)
     from tradingagents.pro.dashboard.backtest_firestore import build_run_store
     from tradingagents.pro.dashboard.backtest_job import recover_interrupted
@@ -475,6 +555,9 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     service = PaperTradingService(
         llm, config, snapshot_source,
         router=router, memory=memory, dashboard_state=state,
+        # the SAME registry the CostTrackingLLM wrappers above emit into —
+        # llm_calls_total / llm_est_cost_usd land on the /metrics scrape
+        metrics=metrics,
         alerts=AlertManager(
             sinks=_build_alert_sinks(state.broadcaster, state.prefs)),
         on_event=_bell_on_event(state),

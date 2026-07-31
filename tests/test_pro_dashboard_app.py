@@ -336,6 +336,23 @@ class TestPipelineTriggerEndpoint:
         assert client.post("/api/pipeline/run",
                            json={"symbol": "XAUUSD", "timeframe": "5m"}).status_code == 422
 
+    def test_fx_intraday_without_oanda_is_422_not_500(self, triggered_client,
+                                                      monkeypatch):
+        # yfinance FX fallback is daily-only: the endpoint must refuse the
+        # run up front (typed TriggerUnsupported → 422) instead of 202-ing
+        # a worker thread that crashes in the builder
+        client, trigger = triggered_client
+        monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
+        response = client.post("/api/pipeline/run",
+                               json={"symbol": "EURUSD", "timeframe": "1h"})
+        assert response.status_code == 422
+        assert "OANDA_API_TOKEN" in response.json()["detail"]
+        assert trigger.calls == []  # never reached the run thread
+        # daily FX stays runnable on the fallback
+        assert client.post("/api/pipeline/run",
+                           json={"symbol": "EURUSD",
+                                 "timeframe": "1d"}).status_code == 202
+
     def test_busy_and_untriggered(self, triggered_client):
         client, trigger = triggered_client
         trigger._busy.acquire()

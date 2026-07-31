@@ -44,6 +44,28 @@ OI_POLL_INTERVAL_S = 60.0
 OI_MIN_SPAN_S = 45 * 60.0        # honest 1h delta needs >= 45min of history
 OI_RETENTION_S = RING_WINDOW_S
 
+# process-wide shared streams (one websocket + one OI poller per symbol,
+# no matter how many consumers): Intel and the snapshot builders must read
+# the SAME ring, and a second stream would double the vendor connections.
+_SHARED_STREAMS: dict[str, LiquidationStream] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_stream(symbol: str = "BTCUSDT") -> LiquidationStream:
+    """Process-wide singleton LiquidationStream per symbol.
+
+    Construction (here) never opens a socket — the returned stream carries
+    ``autostart=True``, so its websocket/OI threads start on the first
+    ``get_metrics`` call (i.e. the first real snapshot or intel read),
+    keeping imports and hermetic tests socket-free."""
+    key = symbol.upper()
+    with _SHARED_LOCK:
+        stream = _SHARED_STREAMS.get(key)
+        if stream is None:
+            stream = LiquidationStream(key, autostart=True)
+            _SHARED_STREAMS[key] = stream
+        return stream
+
 
 class LiquidationStream:
     """Sampled forceOrder events + polled open interest for ONE symbol.

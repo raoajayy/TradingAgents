@@ -595,7 +595,7 @@ class _CostConfirmationRequired(Exception):
         super().__init__("run requires confirmation")
 
 
-def _build_llm(use_llm: bool, config: ProConfig, cache_dir):
+def _build_llm(use_llm: bool, config: ProConfig, cache_dir, metrics=None):
     if not use_llm:
         # indicator-driven rules engine (long/short/HOLD), not the canned
         # always-BUY scripted model — same geometry/gates as the LLM path
@@ -608,9 +608,11 @@ def _build_llm(use_llm: bool, config: ProConfig, cache_dir):
 
     bundle = bundle_from_config(config, temperature=0.2)
     price = price_for(config.models.llm_provider)
-    quick_ct = CostTrackingLLM(bundle.quick, price=price)
+    # metrics: the service's shared registry (when attached), so backtest
+    # LLM calls also land on llm_calls_total / llm_est_cost_usd at /metrics
+    quick_ct = CostTrackingLLM(bundle.quick, price=price, metrics=metrics)
     deep_ct = (quick_ct if bundle.deep is bundle.quick
-               else CostTrackingLLM(bundle.deep, price=price))
+               else CostTrackingLLM(bundle.deep, price=price, metrics=metrics))
     bundle.quick = CachingLLM(quick_ct, mode="auto", path=cache_dir / "quick.jsonl")
     bundle.deep = (bundle.quick if deep_ct is quick_ct
                    else CachingLLM(deep_ct, mode="auto", path=cache_dir / "deep.jsonl"))
@@ -724,7 +726,9 @@ def run_job(state: Any, job: BacktestJob, params: dict) -> None:
         from tradingagents.pro.backtest.strategies import apply_rules_v1_params
 
         if resolved["strategy_id"] == "pipeline_llm":
-            bundle, trackers, provider = _build_llm(True, config, cache_dir)
+            bundle, trackers, provider = _build_llm(
+                True, config, cache_dir,
+                metrics=getattr(state, "metrics", None))
             strategy = PipelineStrategy(
                 "pipeline_llm", resolved["strategy_params"],
                 llm_factory=lambda: bundle, config_patch=apply_rules_v1_params)

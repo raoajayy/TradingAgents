@@ -52,6 +52,10 @@ class TestBuildService:
                             lambda *a, **k: FakeBuilder())
         monkeypatch.setattr(main_module, "build_service",
                             main_module.build_service)  # keep reference
+        # hermetic event store: the default path persists across test runs,
+        # and the unchanged-bar loop skip would remember the fake snapshot's
+        # fixed bar from a previous run and skip this one
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
 
         service, state = main_module.build_service(
             llm=FakePipelineLLM(), data_dir=tmp_path
@@ -66,6 +70,55 @@ class TestBuildService:
         assert state.latest_run() is not None
         assert (tmp_path / "audit.jsonl").exists()
         assert service.router.audit.verify()
+
+    def test_env_knobs_var_caps_and_recorder_retention(self, tmp_path, monkeypatch):
+        # PRO_MAX_PORTFOLIO_VAR_PCT / PRO_MAX_CORRELATED_GROSS_PCT plumb the
+        # P2-05 portfolio caps; PRO_MAX_RUNS bounds recorder boot RAM
+        from tradingagents.pro.main import build_service
+
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
+        monkeypatch.setenv("PRO_MAX_PORTFOLIO_VAR_PCT", "2.5")
+        monkeypatch.setenv("PRO_MAX_CORRELATED_GROSS_PCT", "40")
+        monkeypatch.setenv("PRO_MAX_RUNS", "7")
+        service, state = build_service(llm=FakePipelineLLM(),
+                                       data_dir=tmp_path)
+        assert service.router.limits.max_portfolio_var_pct == 2.5
+        assert service.router.limits.max_correlated_gross_pct == 40.0
+        assert state.recorder.max_runs == 7
+
+    def test_env_knobs_unset_keep_contract_defaults(self, tmp_path, monkeypatch):
+        from tradingagents.pro.main import build_service
+
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
+        for var in ("PRO_MAX_PORTFOLIO_VAR_PCT", "PRO_MAX_CORRELATED_GROSS_PCT",
+                    "PRO_MAX_RUNS"):
+            monkeypatch.delenv(var, raising=False)
+        service, state = build_service(llm=FakePipelineLLM(),
+                                       data_dir=tmp_path)
+        assert service.router.limits.max_portfolio_var_pct is None
+        assert service.router.limits.max_correlated_gross_pct is None
+        assert state.recorder.max_runs == 500
+
+    def test_prod_bundle_wrapped_with_cost_tracking(self, tmp_path, monkeypatch):
+        # P2 observability: the env-configured bundle must emit
+        # llm_calls_total / llm_est_cost_usd into the SAME registry the
+        # service exposes at /metrics (state.metrics is service.metrics)
+        import tradingagents.pro.models as models_module
+        from tradingagents.pro.main import build_service
+        from tradingagents.pro.models import ModelBundle
+        from tradingagents.pro.observability import CostTrackingLLM
+
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
+        fake = FakePipelineLLM()
+        monkeypatch.setattr(models_module, "bundle_from_config",
+                            lambda config, **kwargs: ModelBundle.single(fake))
+        service, state = build_service(data_dir=tmp_path)
+        assert isinstance(service.llm.quick, CostTrackingLLM)
+        assert service.llm.quick.inner is fake
+        # single-model bundle stays deduped: one wrapper serves both tiers
+        assert service.llm.deep is service.llm.quick
+        assert service.llm.quick.metrics is service.metrics
+        assert state.metrics is service.metrics
 
 
 class TestPipelineTrigger:
@@ -110,11 +163,13 @@ class TestPipelineTrigger:
         assert calls["build"] == ("BTC-USD", AssetClass.BITCOIN, Timeframe("1h"))
         assert calls["config"].asset is AssetClass.BITCOIN
 
-    def test_fx_routing_carries_the_pair_symbol(self):
+    def test_fx_routing_carries_the_pair_symbol(self, monkeypatch):
         # AssetClass.FX spans EURUSD and USDJPY: the config must carry the
-        # actual pair, never the class default (P2-10)
+        # actual pair, never the class default (P2-10). Token set: intraday
+        # FX is only supported when OANDA is configured.
         from tradingagents.contracts import AssetClass, Timeframe
 
+        monkeypatch.setenv("OANDA_API_TOKEN", "practice-token")
         trigger, calls = self._trigger()
         trigger.run("EURUSD", "1d")
         assert calls["build"] == ("EURUSD", AssetClass.FX, Timeframe("1d"))
@@ -125,6 +180,26 @@ class TestPipelineTrigger:
         assert calls["build"] == ("USDJPY", AssetClass.FX, Timeframe("1h"))
         assert calls["config"].asset is AssetClass.FX
         assert calls["config"].symbol == "USDJPY"
+
+    def test_fx_intraday_unsupported_without_oanda(self, monkeypatch):
+        # yfinance fallback serves daily bars only: FX intraday without an
+        # OANDA token must be a typed refusal (422 at the API), not a crash
+        from tradingagents.pro.main import TriggerUnsupported
+
+        trigger, calls = self._trigger()
+        monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
+        with pytest.raises(TriggerUnsupported, match="OANDA_API_TOKEN"):
+            trigger.run("EURUSD", "4h")
+        assert trigger.busy() is False  # refusal never leaves the lock held
+        assert "build" not in calls  # rejected before any snapshot work
+        trigger.run("EURUSD", "1d")  # daily stays runnable on the fallback
+        assert calls["build"][0] == "EURUSD"
+
+    def test_fx_intraday_supported_with_oanda(self, monkeypatch):
+        trigger, calls = self._trigger()
+        monkeypatch.setenv("OANDA_API_TOKEN", "practice-token")
+        trigger.run("USDJPY", "1h")
+        assert calls["build"][0] == "USDJPY"
 
     def test_rejects_unknown_symbol_and_timeframe(self):
         trigger, _ = self._trigger()

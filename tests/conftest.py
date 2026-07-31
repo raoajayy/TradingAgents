@@ -38,7 +38,7 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_operator_env(monkeypatch):
+def _hermetic_operator_env(monkeypatch, tmp_path_factory):
     """tradingagents/__init__.py auto-loads the repo .env on import, so the
     operator's deployment settings leak into every test process. Neutralize
     the ones that change behavior: the dashboard must not silently gain
@@ -47,6 +47,14 @@ def _hermetic_operator_env(monkeypatch):
     monkeypatch.delenv("PRO_DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
     monkeypatch.setenv("PRO_DISABLE_LIVE_VENDORS", "1")
+    # default_data_dir()/default_db_path() must never point at the
+    # developer's real ~/.tradingagents/pro: DashboardState's default
+    # PrefsStore persists there, so cross-run state (e.g. the loop's
+    # unchanged-bar skip memory, intel alert crossings) would leak into —
+    # and out of — the test suite.
+    monkeypatch.setenv("TRADINGAGENTS_PRO_DATA",
+                       str(tmp_path_factory.mktemp("pro-data")))
+    monkeypatch.delenv("TRADINGAGENTS_PRO_DB", raising=False)
 
 
 @pytest.fixture(autouse=True)

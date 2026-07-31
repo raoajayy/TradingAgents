@@ -41,6 +41,31 @@
 #                         # (otherwise the service keeps its current values /
 #                         # the code defaults).
 #
+# Service-side tuning env vars (NOT set by this script — apply out-of-band
+# with `gcloud run services update --update-env-vars`; --update-env-vars
+# MERGES, so redeploys keep them):
+#   PRO_MAX_PORTFOLIO_VAR_PCT     P2-05 cap on parametric 1-day 99% portfolio
+#                                 VaR as a percent of equity, checked
+#                                 pre-trade. Unset = disabled (contract
+#                                 default).
+#   PRO_MAX_CORRELATED_GROSS_PCT  P2-05 cap on gross exposure (percent of
+#                                 equity) of the candidate plus correlated
+#                                 (|corr| > 0.6) open positions. Unset =
+#                                 disabled.
+#   PRO_MAX_RUNS                  recorder boot-RAM knob: how many recorded
+#                                 runs (each holds a full snapshot) are kept
+#                                 in memory / reloaded at boot. Default 500 —
+#                                 this script deliberately does not set it.
+#
+# Optional operator-supplied secrets (create + wire out-of-band, exactly like
+# the Telegram alerting secrets — this script does NOT manage them):
+#   OANDA_API_TOKEN               enables OANDA intraday FX bars (EURUSD /
+#                                 USDJPY at 1h/4h); without it FX falls back
+#                                 to yfinance DAILY bars and intraday FX
+#                                 pipeline runs are refused with a 422.
+#   TOKENTERMINAL_API_KEY         enables the Token Terminal fundamentals
+#                                 feed on crypto snapshots (P1-05d).
+#
 # Usage:
 #   PROJECT_ID=my-project BUCKET=my-project-pro-data ./scripts/deploy_cloud_run.sh
 #
@@ -134,7 +159,11 @@ gcloud builds submit \
 # anyone or message the prod Telegram channel.
 deploy_service() {
   local service="$1" bucket="$2" loop_disabled="$3" env_vars
-  env_vars="TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream"
+  # PRO_EVENT_TRIGGERS=1 turns on P2-06 event-driven runs (calendar T+5min /
+  # vol spike / price gap). It only takes effect when the hourly loop is
+  # enabled (main.py starts the trigger daemon inside the loop branch), so
+  # staging — always deployed loop-disabled — stays inert with it set.
+  env_vars="TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_EVENT_TRIGGERS=1,PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream"
   # optional model overrides: forwarded only when set, so redeploys without
   # them keep whatever is already on the service (--update-env-vars merges)
   if [ -n "${TRADINGAGENTS_QUICK_THINK_LLM:-}" ]; then

@@ -108,6 +108,10 @@ class PrefsDocument(_Mutable):
     # P2-06: event-trigger debounce state (per-symbol cooldowns + calendar
     # events already fired) — persisted so restarts never re-fire a run
     event_trigger_state: dict = Field(default_factory=dict)
+    # loop-cadence hygiene: per-symbol start of the last driving bar the
+    # loop actually ran on — persisted so a restart keeps skipping
+    # unchanged bars instead of re-spending an LLM run per symbol
+    last_bar_state: dict = Field(default_factory=dict)
 
 
 PREFS_KV_KEY = "dashboard_prefs"
@@ -215,6 +219,15 @@ class PrefsStore:
     def save_event_trigger_state(self, state: dict) -> None:
         with self._lock:
             self._document.event_trigger_state = dict(state)
+            self._write()
+
+    def last_bar_state(self) -> dict:
+        with self._lock:
+            return dict(self._document.last_bar_state)
+
+    def save_last_bar_state(self, state: dict) -> None:
+        with self._lock:
+            self._document.last_bar_state = dict(state)
             self._write()
 
     def add_price_alert(self, data: dict) -> dict:

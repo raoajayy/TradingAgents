@@ -4,9 +4,13 @@ The differentiator identified in the framework survey (docs/research/
 05_gap_analysis.md): no surveyed backtester ships these guards, and our KB's
 central lesson (docs/research/03_institutional_best_practices.md) is that
 every blow-up was a validation/risk failure. These are pure functions —
-deterministic, dependency-light (stdlib ``statistics.NormalDist`` only) — so
-the optimizer (optimize.py) can report, for any selected result, the
-probability it is spurious.
+deterministic and dependency-light — so the optimizer (optimize.py) can
+report, for any selected result, the probability it is spurious.
+
+Single source of truth: the PSR and E[max SR] cores live in
+``tradingagents.pro.analytics.validation`` (``psr`` /
+``expected_max_sharpe``); this module keeps its trial-Sharpe-list public
+API and stdlib-friendly signatures and delegates the math there.
 
 References (paraphrased, cited in docs/research/12_validation_methodology.md):
 - Bailey & López de Prado, "The Deflated Sharpe Ratio" (2014) — PSR / DSR.
@@ -20,8 +24,10 @@ import math
 import statistics
 from itertools import combinations
 
-_NORMAL = statistics.NormalDist()
-_EULER_MASCHERONI = 0.5772156649015329
+from tradingagents.pro.analytics.validation import (
+    expected_max_sharpe as _expected_max_sharpe_from_std,
+    psr as _psr,
+)
 
 
 def _moments(returns: list[float]) -> tuple[float, float, float]:
@@ -49,26 +55,20 @@ def probabilistic_sharpe_ratio(
     periods, correcting for non-normal returns (Bailey & López de Prado). All
     Sharpes are in the SAME period units (don't mix annualized with per-bar).
     Returns a probability in [0, 1]; 0.5 means the observed equals the
-    benchmark."""
-    if n_obs < 2:
-        return 0.5
-    denom = math.sqrt(max(1e-12, 1.0 - skew * sharpe
-                          + ((kurtosis - 1.0) / 4.0) * sharpe**2))
-    z = (sharpe - benchmark) * math.sqrt(n_obs - 1) / denom
-    return _NORMAL.cdf(z)
+    benchmark. Delegates to the shared core in analytics.validation."""
+    return _psr(sharpe, benchmark, n_obs, skew=skew, kurtosis=kurtosis)
 
 
 def expected_max_sharpe(sharpe_variance: float, n_trials: int) -> float:
     """Expected maximum Sharpe from ``n_trials`` independent trials under the
     null of zero true Sharpe — the benchmark a selected best must beat. Grows
     with both the spread of trial Sharpes and the number of trials (more
-    searching → a higher bar). Zero for a single trial (no selection)."""
+    searching → a higher bar). Zero for a single trial (no selection).
+    Delegates to the shared core in analytics.validation (which takes the
+    trial-Sharpe std; this public API keeps the variance signature)."""
     if n_trials <= 1 or sharpe_variance <= 0:
         return 0.0
-    std = math.sqrt(sharpe_variance)
-    g = _EULER_MASCHERONI
-    return std * ((1 - g) * _NORMAL.inv_cdf(1 - 1.0 / n_trials)
-                  + g * _NORMAL.inv_cdf(1 - 1.0 / (n_trials * math.e)))
+    return _expected_max_sharpe_from_std(math.sqrt(sharpe_variance), n_trials)
 
 
 def deflated_sharpe_ratio(

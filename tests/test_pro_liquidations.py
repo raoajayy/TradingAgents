@@ -235,3 +235,46 @@ class TestIntelIntegration:
         assert view["liquidation_heatmap"] is None
         assert any(m.startswith("binance_liquidations:")
                    for m in view["missing_feeds"])
+
+
+class TestSharedStream:
+    """Process-wide singleton accessor: intel and the crypto snapshot
+    builder must read the SAME ring (one websocket per process), and
+    neither construction nor accessor calls may open a socket."""
+
+    def test_singleton_per_symbol_and_no_sockets(self, monkeypatch):
+        from tradingagents.pro.ingestion import liquidations as liq
+
+        monkeypatch.setattr(liq, "_SHARED_STREAMS", {})
+        a = liq.shared_stream("BTCUSDT")
+        assert liq.shared_stream("btcusdt") is a  # case-normalized
+        assert liq.shared_stream("ETHUSDT") is not a
+        # accessor construction opens NO sockets (autostart defers to the
+        # first get_metrics call)
+        assert a.active is False
+        assert a._ws_thread is None and a._oi_thread is None
+        assert a._autostart is True  # first real read starts the threads
+
+    def test_snapshot_builder_gets_the_shared_stream_btc_only(self, monkeypatch):
+        from tradingagents.pro.ingestion import liquidations as liq
+        from tradingagents.pro.main import _crypto_snapshot_builder
+
+        monkeypatch.setattr(liq, "_SHARED_STREAMS", {})
+        btc = _crypto_snapshot_builder("BTC-USD")
+        eth = _crypto_snapshot_builder("ETH-USD")
+        shared = liq.shared_stream("BTCUSDT")
+        # BTC snapshots carry the singleton; the stream is BTCUSDT-hardcoded
+        # so ETH/SOL deliberately go without (no faked coverage)
+        assert any(f is shared for f in btc._onchain_feeds)
+        assert all(f is not shared for f in eth._onchain_feeds)
+        assert shared._ws_thread is None  # still no socket
+
+    def test_intel_lazy_feeds_use_the_shared_stream(self, monkeypatch):
+        from tradingagents.pro.dashboard.intel import IntelService
+        from tradingagents.pro.ingestion import liquidations as liq
+
+        monkeypatch.setattr(liq, "_SHARED_STREAMS", {})
+        service = IntelService()
+        assert service.feeds  # trigger the lazy default wiring
+        assert service._liquidations is liq.shared_stream("BTCUSDT")
+        assert service._liquidations._ws_thread is None  # still no socket

@@ -915,6 +915,16 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                 detail=f"symbol must be one of {list(trigger.SYMBOLS)} and "
                        f"timeframe one of {list(trigger.TIMEFRAMES)}",
             )
+        # feed-support validation BEFORE the worker thread spawns: an
+        # unsupported pair × timeframe (e.g. FX intraday without an OANDA
+        # token) must surface as a 422 here, not crash the run to a 500
+        # in the background (mirrors the TriggerBusy → 409 mapping below)
+        from tradingagents.pro.main import TriggerUnsupported
+
+        try:
+            trigger.validate_supported(symbol, timeframe)
+        except TriggerUnsupported as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         if trigger.busy():
             raise HTTPException(status_code=409,
                                 detail="a pipeline run is already in progress")

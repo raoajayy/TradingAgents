@@ -2,10 +2,11 @@
 
 Purged/embargoed K-fold splits, the Deflated Sharpe Ratio and the
 Probability of Backtest Overfitting, as vectorized building blocks for the
-backtest API and the P3 conformal/splitter consumers. The stdlib sibling
-(`tradingagents.pro.backtest.validation`) keeps the optimizer's
-trial-Sharpe-based DSR; this module works directly on return series and
-index arrays.
+backtest API and the P3 conformal/splitter consumers. This module also owns
+the shared PSR / E[max SR] math (``psr``, ``expected_max_sharpe``); the
+sibling `tradingagents.pro.backtest.validation` keeps the optimizer's
+trial-Sharpe-list interface and delegates the core formulas here, while
+this module works directly on return series and index arrays.
 
 References (formulas paraphrased, not reproduced verbatim):
 - Bailey & López de Prado, "The Deflated Sharpe Ratio: Correcting for
@@ -71,14 +72,40 @@ def purged_kfold_splits(
     return splits
 
 
-def _expected_max_sharpe(sr_std: float, n_trials: int) -> float:
+def psr(
+    sharpe: float, benchmark: float, n_obs: int,
+    skew: float = 0.0, kurtosis: float = 3.0,
+) -> float:
+    """Probabilistic Sharpe Ratio — THE shared PSR core (single source for
+    this module and ``tradingagents.pro.backtest.validation``).
+
+    P(true Sharpe > ``benchmark``) given an observed ``sharpe`` over
+    ``n_obs`` periods, corrected for non-normal returns (Bailey & López de
+    Prado, 2014)::
+
+        PSR = Φ( (sr − sr*) · √(n−1) / √(1 − γ₃·sr + (γ₄−1)/4·sr²) )
+
+    where γ₃ is skewness and γ₄ raw (non-excess) kurtosis. All Sharpes are
+    in the SAME period units (don't mix annualized with per-bar). Returns a
+    probability in [0, 1]; 0.5 means the observed equals the benchmark."""
+    if n_obs < 2:
+        return 0.5
+    denom = np.sqrt(max(1e-12, 1.0 - skew * sharpe
+                        + ((kurtosis - 1.0) / 4.0) * sharpe**2))
+    z = (sharpe - benchmark) * np.sqrt(n_obs - 1) / denom
+    return float(_NORMAL.cdf(float(z)))
+
+
+def expected_max_sharpe(sr_std: float, n_trials: int) -> float:
     """E[max SR] of ``n_trials`` independent zero-skill trials whose Sharpe
     estimates have standard deviation ``sr_std`` — Bailey & López de Prado's
     (2014) approximation using the Euler–Mascheroni constant γ:
 
         E[max] ≈ sr_std · ((1−γ)·Z⁻¹(1−1/N) + γ·Z⁻¹(1−1/(N·e)))
 
-    Zero for a single trial: no selection happened, nothing to deflate."""
+    Zero for a single trial: no selection happened, nothing to deflate.
+    Shared E[max SR] core — ``backtest.validation`` delegates here (its
+    public API takes the trial-Sharpe VARIANCE; this takes the std)."""
     if n_trials <= 1 or sr_std <= 0:
         return 0.0
     g = _EULER_MASCHERONI
@@ -140,8 +167,10 @@ def deflated_sharpe_ratio(
     # returns; also reused as the trial-SR dispersion for the deflation term.
     var_term = max(1e-12, 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr**2)
     sr_std = float(np.sqrt(var_term / (n - 1)))
-    hurdle = sr_benchmark + _expected_max_sharpe(sr_std, n_trials)
-    dsr = float(_NORMAL.cdf((sr - hurdle) / sr_std))
+    hurdle = sr_benchmark + expected_max_sharpe(sr_std, n_trials)
+    # Φ((sr − hurdle)/sr_std) == psr(sr, hurdle, n, skew, kurt): the PSR
+    # core is the single shared implementation of that formula
+    dsr = psr(sr, hurdle, n, skew=skew, kurtosis=kurt)
     out.update({"sr": sr, "dsr": dsr, "skew": skew, "kurt": kurt})
     return out
 
@@ -210,6 +239,8 @@ def probability_of_backtest_overfitting(
 
 __all__ = [
     "deflated_sharpe_ratio",
+    "expected_max_sharpe",
     "probability_of_backtest_overfitting",
+    "psr",
     "purged_kfold_splits",
 ]

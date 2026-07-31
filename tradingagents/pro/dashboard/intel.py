@@ -257,7 +257,7 @@ class IntelService:
                 GoldhubCsvFeed,
             )
             from tradingagents.pro.ingestion.liquidations import (
-                LiquidationStream,
+                shared_stream,
             )
             from tradingagents.pro.ingestion.onchain import (
                 CoinMetricsFeed,
@@ -276,10 +276,12 @@ class IntelService:
             delta = DeltaExchangeFeed()
             yf_daily = YFinanceDailyBarsFeed()
             if self._liquidations is None:
-                # autostart: constructing here opens NO sockets — the WS +
-                # OI threads start on the first get_metrics call (i.e. the
-                # first real snapshot), so imports/tests stay hermetic
-                self._liquidations = LiquidationStream(autostart=True)
+                # process-wide shared stream (same singleton the crypto
+                # snapshot builder reads — one websocket per process).
+                # Still no socket here: autostart defers the WS + OI
+                # threads to the first get_metrics call (i.e. the first
+                # real snapshot), so imports/tests stay hermetic
+                self._liquidations = shared_stream("BTCUSDT")
             self._feeds = {
                 "delta_derivatives": lambda: delta.get_metrics("BTCUSD"),
                 "binance_derivatives": derivatives.get_metrics,

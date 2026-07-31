@@ -14,6 +14,7 @@ stop/take-profit orders once a real transport is signed off (ADR-0029).
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -110,6 +111,9 @@ class PaperTradingService:
         self.event_symbols: tuple[str, ...] = (config.symbol,)
         self.event_bars_fn: Callable[[str], list] | None = None
         self._event_state: dict | None = None
+        # loop-cadence hygiene: per-symbol last driving-bar start, lazily
+        # loaded from prefs (persisted so restarts keep skipping correctly)
+        self._last_bar_state: dict | None = None
         self.rehydrate()
 
 
@@ -215,6 +219,10 @@ class PaperTradingService:
         with self.run_lock:
             summary = self._run_once(snapshot=snapshot, config=config,
                                      trigger=trigger)
+        if summary.get("skipped"):
+            # unchanged-bar loop skip: no pipeline ran, so no run/position/
+            # status events either — the dashboard state didn't change
+            return summary
         self._emit("run", summary)
         for closed in summary.get("closed_positions", []):
             self._emit("position", {"state": "closed", **closed})
@@ -256,6 +264,25 @@ class PaperTradingService:
             else:
                 snapshot = produced
         config = config or self.config
+        if trigger == "loop" and self._skip_unchanged_bar(snapshot):
+            # D1-cadence hygiene: the rotation revisits a symbol several
+            # times per driving bar; identical inputs would spend an LLM
+            # run to reach the same verdict. Loop path only — operator and
+            # event triggers always run.
+            self.metrics.inc("runs_skipped_unchanged_total")
+            # the skip IS a healthy loop iteration: keep the /health/live +
+            # dead-man heartbeat fresh, or an all-skipped stretch would
+            # masquerade as a stalled loop
+            self.metrics.set_gauge("last_run_ts", utc_now().timestamp())
+            logger.info(
+                "loop run for %s skipped: driving bar unchanged (%s) — no "
+                "LLM spend (PRO_RERUN_UNCHANGED_BARS=1 restores re-runs)",
+                snapshot.symbol, snapshot.bars[-1].start.isoformat())
+            return {"run_id": None, "symbol": snapshot.symbol,
+                    "action": None, "rejected_at": None,
+                    "closed_positions": [],
+                    "order_status": "skipped:unchanged_bar",
+                    "in_sync": True, "skipped": True}
         self.metrics.inc("runs_total")
         # heartbeat for /health/live + the dead-man switch (go-live Phase 5)
         self.metrics.set_gauge("last_run_ts", utc_now().timestamp())
@@ -355,7 +382,7 @@ class PaperTradingService:
                 summary["order_status"] = "blocked:data_health"
                 return summary
             # P1-06 stale-data gate: never open a position on bars older
-            # than 2x the driving timeframe — a vendor incident must fail
+            # than 3x the driving timeframe — a vendor incident must fail
             # closed, not trade on yesterday's close
             if snapshot.bars:
                 from tradingagents.pro.dashboard.marketdata import (
@@ -778,6 +805,42 @@ class PaperTradingService:
             for prev, bar in zip(window[:-1], window[1:], strict=True)
         ]
         return sum(ranges) / len(ranges) if ranges else None
+
+    # --- unchanged-bar loop skip ----------------------------------------------------
+
+    def _skip_unchanged_bar(self, snapshot: MarketSnapshot) -> bool:
+        """True when the loop already ran this symbol on this driving bar.
+
+        Remembers each symbol's last bar start (persisted via prefs, the
+        same pattern as event_trigger_state, so restarts don't re-spend);
+        a new bar updates the memory and runs. PRO_RERUN_UNCHANGED_BARS=1
+        opts out (old behavior: every rotation tick runs the pipeline)."""
+        if os.environ.get("PRO_RERUN_UNCHANGED_BARS") == "1":
+            return False
+        if not snapshot.bars:
+            return False
+        last = snapshot.bars[-1].start.isoformat()
+        state = self._last_bar_seen()
+        if state.get(snapshot.symbol) == last:
+            return True
+        state[snapshot.symbol] = last
+        self._save_last_bar_seen(state)
+        return False
+
+    def _last_bar_seen(self) -> dict:
+        if self._last_bar_state is None:
+            try:
+                self._last_bar_state = self.dashboard.prefs.last_bar_state()
+            except Exception:
+                self._last_bar_state = {}
+        return self._last_bar_state
+
+    def _save_last_bar_seen(self, state: dict) -> None:
+        try:
+            self.dashboard.prefs.save_last_bar_state(state)
+        except Exception:
+            logger.warning("last-bar state not persisted; continuing",
+                           exc_info=True)
 
     def _event_trigger_state(self) -> dict:
         if self._event_state is None:
