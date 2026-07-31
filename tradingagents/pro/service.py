@@ -92,6 +92,15 @@ class PaperTradingService:
         # P2-05: give the router the book context so pre-trade caps can
         # see portfolio VaR / correlated gross. Fail-open by design.
         router.portfolio_risk_provider = self._portfolio_risk_context
+        # P3-07: every order audit line carries the same provenance stamp
+        # as the runs that produce orders. Fail-open: a stamping failure
+        # must never block trading infrastructure.
+        try:
+            from tradingagents.pro.versioning import build_version_stamp
+
+            router.versions = build_version_stamp(config)
+        except Exception:
+            logger.exception("order audit will not carry a version stamp")
         self.memory = memory
         self.dashboard = dashboard_state or DashboardState(memory=memory)
         self.metrics = metrics or MetricsRegistry()
@@ -264,6 +273,15 @@ class PaperTradingService:
             else:
                 snapshot = produced
         config = config or self.config
+        # P3-07: keep the order audit stamp consistent with the config that
+        # drives THIS run (multi-symbol rotation swaps per-asset configs).
+        # run_lock serializes runs, so no order can race the update.
+        try:
+            from tradingagents.pro.versioning import build_version_stamp
+
+            self.router.versions = build_version_stamp(config)
+        except Exception:
+            logger.exception("per-run version stamp update failed")
         if trigger == "loop" and self._skip_unchanged_bar(snapshot):
             # D1-cadence hygiene: the rotation revisits a symbol several
             # times per driving bar; identical inputs would spend an LLM

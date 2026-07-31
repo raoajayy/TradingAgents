@@ -64,6 +64,11 @@ class ExecutionRouter:
     # gross caps are skipped (they are also disabled by default in
     # RiskLimits), so existing wiring behaves exactly as before.
     portfolio_risk_provider = None
+    # P3-07 algo/version tagging: provenance stamp {git_sha, prompt_hash,
+    # model_ids, config_hash} attached to every order audit entry. The
+    # service sets it from versioning.build_version_stamp(config); None
+    # (bare routers, old wiring) simply omits the field.
+    versions = None
 
     def tier_for(self, symbol: str) -> str:
         if self.arming is None:
@@ -76,19 +81,25 @@ class ExecutionRouter:
     def omses(self) -> list:
         return [o for o in (self.oms, self.live_oms) if o is not None]
 
+    def _stamped(self, payload: dict) -> dict:
+        """Attach the P3-07 version stamp to an order audit payload."""
+        if self.versions is not None:
+            return {**payload, "versions": self.versions}
+        return payload
+
     def submit_recommendation(
         self, rec: TradeRecommendation | None, equity: float,
         spread_bps: float | None = None,
     ) -> OrderResult:
         tier = self.tier_for(getattr(rec, "symbol", ""))
         route_live = tier in ("canary", "live") and self.live_oms is not None
-        self.audit.append("order_received", {
+        self.audit.append("order_received", self._stamped({
             "recommendation_id": getattr(rec, "id", None),
             "symbol": getattr(rec, "symbol", None),
             "action": getattr(rec, "action", None) and rec.action.value,
             "tier": tier,
             "route": "live" if route_live else "paper",
-        })
+        }))
 
         # a pair armed at a live tier with no live venue wired is REFUSED,
         # never silently paper-filled — the operator believes real capital
@@ -171,14 +182,14 @@ class ExecutionRouter:
             take_profits=tuple(tp.price for tp in rec.take_profits),
         )
         result = self._submit_with_retries(order)
-        self.audit.append("order_result", {
+        self.audit.append("order_result", self._stamped({
             "recommendation_id": rec.id,
             "status": result.status,
             "fill_price": result.fill_price,
             "filled_quantity": result.filled_quantity,
             "venue": result.venue,
             "reason": result.reason,
-        })
+        }))
         if result.status == "filled":
             sign = 1 if order.side == "BUY" else -1
             self.local_book[order.symbol] = (
@@ -390,14 +401,14 @@ class ExecutionRouter:
             commission=order.commission,
             reason=order.reason,
         )
-        self.audit.append("order_result", {
+        self.audit.append("order_result", self._stamped({
             "recommendation_id": rec.id,
             "status": result.status,
             "fill_price": result.fill_price,
             "filled_quantity": result.filled_quantity,
             "venue": result.venue,
             "reason": result.reason,
-        })
+        }))
         if result.status == "filled":
             sign = 1 if rec.action.value == "BUY" else -1
             self.local_book[rec.symbol] = (
@@ -417,9 +428,9 @@ class ExecutionRouter:
         return closed
 
     def _refuse(self, rec, stage: str, reason: str) -> OrderResult:
-        self.audit.append(stage, {
+        self.audit.append(stage, self._stamped({
             "recommendation_id": getattr(rec, "id", None), "reason": reason,
-        })
+        }))
         return OrderResult(
             status="rejected",
             idempotency_key=getattr(rec, "id", "n/a"),

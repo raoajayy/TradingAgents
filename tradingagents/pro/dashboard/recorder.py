@@ -68,6 +68,12 @@ class RunRecord:
     def timeframe(self) -> str | None:
         return self.state.get("timeframe")
 
+    @property
+    def versions(self) -> dict | None:
+        """P3-07 provenance stamp {git_sha, prompt_hash, model_ids,
+        config_hash}; None on runs recorded before the field existed."""
+        return self.state.get("versions")
+
     def snapshot_summary(self) -> dict:
         snapshot: MarketSnapshot = self.state["snapshot"]
         return {
@@ -287,6 +293,14 @@ class PipelineRecorder:
         # timeframe of the driving bars, for history display
         if snapshot.bars:
             run.state.setdefault("timeframe", snapshot.bars[-1].timeframe.value)
+        # P3-07: stamp the run with what produced it (code / prompts /
+        # models / config); a stamping failure never loses the run itself
+        try:
+            from tradingagents.pro.versioning import build_version_stamp
+
+            run.state["versions"] = build_version_stamp(config)
+        except Exception:
+            logger.exception("run %s recorded without version stamp", run.run_id)
         self.runs.append(run)
         del self.runs[:-self.max_runs]
         if self.store is not None or self.store_dir is not None:

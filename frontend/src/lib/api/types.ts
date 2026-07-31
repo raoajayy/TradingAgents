@@ -31,6 +31,16 @@ export const RunListItemSchema = z.object({
   timeframe: z.string().nullable().optional(),
   // run provenance (R3.2): "loop" (schedule) or "operator" (run dialog)
   trigger: z.string().optional(),
+  // P3-07 algo/version tagging; null/absent on runs recorded pre-stamp
+  versions: z
+    .object({
+      git_sha: z.string(),
+      prompt_hash: z.string(),
+      model_ids: z.array(z.string()),
+      config_hash: z.string(),
+    })
+    .nullable()
+    .optional(),
 });
 export type RunListItem = z.infer<typeof RunListItemSchema>;
 export const RunListSchema = z.array(RunListItemSchema);

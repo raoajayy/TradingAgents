@@ -674,6 +674,8 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                 "rejected_at": run.rejection and run.rejection.get("stage"),
                 "timeframe": run.timeframe,
                 "trigger": run.trigger,
+                # P3-07 provenance stamp; None on pre-stamp runs
+                "versions": run.versions,
             }
             for run in state.runs
         ]
