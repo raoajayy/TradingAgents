@@ -97,6 +97,9 @@ STAGING_SERVICE="${STAGING_SERVICE:-${SERVICE}-staging}"
 STAGING_BUCKET="${STAGING_BUCKET:-${BUCKET}-staging}"
 ARTIFACT_REPO="${ARTIFACT_REPO:-pro-dashboard}"
 LLM_PROVIDER="${LLM_PROVIDER:-deepseek}"
+# P3-07 provenance: stamp the deployed revision with the deploying commit
+# so prod version stamps carry a real git_sha, not "unknown" (P3-12 gap)
+GIT_SHA_VALUE="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 SKIP_STAGING="${SKIP_STAGING:-0}"
 
 # curl + python3 drive the smoke check between the staging and prod deploys
@@ -163,7 +166,7 @@ deploy_service() {
   # vol spike / price gap). It only takes effect when the hourly loop is
   # enabled (main.py starts the trigger daemon inside the loop branch), so
   # staging — always deployed loop-disabled — stays inert with it set.
-  env_vars="TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_EVENT_TRIGGERS=1,PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream"
+  env_vars="TRADINGAGENTS_LLM_PROVIDER=${LLM_PROVIDER},PRO_LOOP_DISABLED=${loop_disabled},PRO_EVENT_TRIGGERS=1,PRO_BACKTEST_STORE=firestore,LITESTREAM_REPLICA_URL=gcs://${bucket}/litestream,GIT_SHA=${GIT_SHA_VALUE}"
   # optional model overrides: forwarded only when set, so redeploys without
   # them keep whatever is already on the service (--update-env-vars merges)
   if [ -n "${TRADINGAGENTS_QUICK_THINK_LLM:-}" ]; then
