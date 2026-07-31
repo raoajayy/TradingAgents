@@ -9,6 +9,10 @@ switch backends without changing their public APIs:
 - ``kv``       — whole-document values (prefs, small state blobs)
 - ``users``    — P3-05 multi-tenant identities: (email PK, role, created_at)
   with role ∈ {viewer, operator}; additive CREATE TABLE IF NOT EXISTS
+- ``api_tokens`` — P3-11 public read-only API tokens: (token_hash PK
+  sha256-hex, label, scopes csv, created_at, revoked_at nullable). Only
+  the hash is ever stored — the raw token is returned ONCE at creation;
+  additive CREATE TABLE IF NOT EXISTS
 - ``vintages`` — P3-02 point-in-time metric observations
   (name, value, observed_at, as_of, source); additive CREATE TABLE IF NOT
   EXISTS, so existing P2-01 databases upgrade in place on open
@@ -68,6 +72,13 @@ CREATE TABLE IF NOT EXISTS users (
     email      TEXT PRIMARY KEY,
     role       TEXT NOT NULL CHECK (role IN ('viewer','operator')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+    token_hash TEXT PRIMARY KEY,
+    label      TEXT NOT NULL,
+    scopes     TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    revoked_at TEXT
 );
 CREATE TABLE IF NOT EXISTS vintages (
     name        TEXT NOT NULL,
@@ -249,6 +260,92 @@ class EventStore:
         with self._lock:
             return self._conn.execute(
                 "SELECT COUNT(*) FROM users").fetchone()[0]
+
+    # --- api tokens (P3-11 public read-only API) ---------------------------
+    # Scopes are a comma-separated allowlist; the raw token is generated
+    # here, hashed with sha256, and returned exactly once — the table never
+    # sees it again (a leaked DB leaks no usable credentials).
+    PUBLIC_API_SCOPES = ("read:decisions", "read:calibration")
+
+    @staticmethod
+    def _hash_token(raw_token: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(raw_token.encode()).hexdigest()
+
+    def create_api_token(self, label: str, scopes) -> dict:
+        """Mint one public-API token. ``scopes`` is an iterable (or csv
+        string) drawn from PUBLIC_API_SCOPES; returns the record INCLUDING
+        the raw ``token`` — the only time it is ever visible."""
+        import secrets as _secrets
+
+        label = (label or "").strip()
+        if not label:
+            raise ValueError("label is required")
+        if isinstance(scopes, str):
+            scopes = [s for s in scopes.split(",") if s.strip()]
+        cleaned = sorted({s.strip() for s in scopes if s.strip()})
+        invalid = [s for s in cleaned if s not in self.PUBLIC_API_SCOPES]
+        if not cleaned or invalid:
+            raise ValueError(
+                f"scopes must be a non-empty subset of "
+                f"{list(self.PUBLIC_API_SCOPES)}; got {invalid or cleaned}")
+        raw = _secrets.token_urlsafe(32)
+        token_hash = self._hash_token(raw)
+        scopes_csv = ",".join(cleaned)
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO api_tokens (token_hash, label, scopes) "
+                "VALUES (?,?,?)",
+                (token_hash, label, scopes_csv),
+            )
+            row = self._conn.execute(
+                "SELECT created_at FROM api_tokens WHERE token_hash=?",
+                (token_hash,),
+            ).fetchone()
+        return {"token": raw, "token_hash": token_hash, "label": label,
+                "scopes": cleaned, "created_at": row[0]}
+
+    def list_api_tokens(self) -> list[dict]:
+        """Every token's metadata (hash, never the raw token)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token_hash, label, scopes, created_at, revoked_at "
+                "FROM api_tokens ORDER BY created_at, token_hash"
+            ).fetchall()
+        return [{"token_hash": r[0], "label": r[1],
+                 "scopes": [s for s in r[2].split(",") if s],
+                 "created_at": r[3], "revoked_at": r[4]} for r in rows]
+
+    def revoke_api_token(self, token_hash: str) -> bool:
+        """Revoke by hash (idempotent once revoked). False = unknown hash."""
+        with self._lock, self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM api_tokens WHERE token_hash=?", (token_hash,)
+            ).fetchone()
+            if exists is None:
+                return False
+            self._conn.execute(
+                "UPDATE api_tokens SET "
+                "revoked_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE token_hash=? AND revoked_at IS NULL",
+                (token_hash,),
+            )
+        return True
+
+    def resolve_api_token(self, raw_token: str) -> dict | None:
+        """The live (non-revoked) token record matching a presented raw
+        token, or None — the public API's auth check."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT token_hash, label, scopes FROM api_tokens "
+                "WHERE token_hash=? AND revoked_at IS NULL",
+                (self._hash_token(raw_token),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"token_hash": row[0], "label": row[1],
+                "scopes": [s for s in row[2].split(",") if s]}
 
     # --- vintages (P3-02 point-in-time metric history) --------------------
     # Every metric observation is appended as (name, value, observed_at,

@@ -629,6 +629,31 @@ def brier_summary(memory: ProMemory) -> dict:
     }
 
 
+def calibration_report(memory: ProMemory) -> dict:
+    """P3-11 public calibration view: the brier summary plus empirical
+    p(win) per stated-confidence bucket (fixed 20-point buckets). Same
+    source of truth as brier_summary — trade records paired with scored
+    outcomes; nothing invented (empty buckets report p_win None)."""
+    edges = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]
+    tallies = [[0, 0] for _ in edges]  # [n, wins] per bucket
+    trades = {r.id: r for r in memory.records(MemoryKind.TRADE)}
+    for outcome in memory.records(MemoryKind.OUTCOME):
+        trade = trades.get(outcome.ref_id)
+        conf = trade.payload.get("confidence") if trade else None
+        won = outcome.payload.get("won")
+        if conf is None or won is None:
+            continue
+        index = min(int(conf) // 20, len(edges) - 1)
+        tallies[index][0] += 1
+        tallies[index][1] += 1 if won else 0
+    buckets = [
+        {"confidence_lo": lo, "confidence_hi": hi, "n": n,
+         "p_win": wins / n if n else None}
+        for (lo, hi), (n, wins) in zip(edges, tallies, strict=True)
+    ]
+    return {**brier_summary(memory), "buckets": buckets}
+
+
 def agent_performance(runs: Sequence[RunRecord], memory: ProMemory) -> dict:
     """Per-agent activity plus outcome-scored accuracy.
 

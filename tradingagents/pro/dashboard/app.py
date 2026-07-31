@@ -32,6 +32,18 @@ detail; every GET stays viewer-readable. Per-user preference isolation:
 Google identities read/write ``dashboard_prefs:<email>`` kv documents;
 token auth keeps the legacy shared ``dashboard_prefs`` document.
 
+Public API (P3-11): ``/public/v1/*`` sits OUTSIDE the ``/api`` session
+middleware but always requires ``Authorization: Bearer <api-token>`` —
+tokens live hashed (sha256) in the event store's ``api_tokens`` table
+with csv scopes (``read:decisions``, ``read:calibration``) and are
+operator-managed via POST/GET/DELETE ``/api/tokens`` (the raw token is
+returned once, at creation). Requests are rate-limited per token by an
+in-process token bucket (``PRO_PUBLIC_RATE_LIMIT`` req/min, default 60;
+honest under the deployment's max-instances=1 invariant). Webhook
+registrations (``/api/webhooks``, operator-only) fire signed
+``run_complete`` POSTs from the service loop — see
+``tradingagents.pro.webhooks``.
+
 Run locally:
     uvicorn --factory tradingagents.pro.dashboard.app:create_default_app
 """
@@ -1243,6 +1255,201 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
+    # --- P3-11 API tokens (operator-only management) ------------------------
+    # The tokens gate the /public/v1 read-only API below. Storage is the
+    # event store's api_tokens table (hash only); the raw token appears in
+    # exactly one response — the creation's.
+
+    def _event_store_or_503(feature: str):
+        if users_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"{feature} requires the SQLite event store "
+                       "(monitor/dev mode runs without one)")
+        return users_store
+
+    def _require_operator(request: Request, what: str) -> None:
+        # GETs are viewer-readable by the blanket middleware rule, but
+        # token/webhook administration is operator data (like /api/users)
+        if _request_role(request) != "operator":
+            raise HTTPException(
+                status_code=403,
+                detail=f"your role (viewer) cannot {what}; ask an operator")
+
+    @app.get("/api/tokens")
+    def list_api_tokens(request: Request) -> dict:
+        _require_operator(request, "list API tokens")
+        return {"tokens": _event_store_or_503("token management")
+                .list_api_tokens()}
+
+    @app.post("/api/tokens")
+    async def create_api_token(request: Request) -> dict:
+        # POST => the middleware already enforced role=operator
+        body = await request.json()
+        label, scopes = body.get("label"), body.get("scopes")
+        try:
+            created = _event_store_or_503("token management") \
+                .create_api_token(label or "", scopes or [])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        # the ONE response that carries the raw token — store only the hash
+        created["note"] = ("store this token now; it is shown once and "
+                           "only its hash is kept")
+        return created
+
+    @app.delete("/api/tokens/{token_hash}")
+    def revoke_api_token(token_hash: str, request: Request) -> dict:
+        if not _event_store_or_503("token management") \
+                .revoke_api_token(token_hash):
+            raise HTTPException(status_code=404,
+                                detail=f"no token {token_hash}")
+        return {"revoked": token_hash}
+
+    # --- P3-11 webhooks (operator-only management) ---------------------------
+
+    def _webhook_registry():
+        from tradingagents.pro.webhooks import WebhookRegistry
+
+        return WebhookRegistry(_event_store_or_503("webhook management"),
+                               alerts=state.alerts)
+
+    @app.get("/api/webhooks")
+    def list_webhooks(request: Request) -> dict:
+        _require_operator(request, "list webhooks")
+        return {"webhooks": _webhook_registry().list()}
+
+    @app.post("/api/webhooks")
+    async def create_webhook(request: Request) -> dict:
+        body = await request.json()
+        try:
+            return _webhook_registry().add(
+                str(body.get("url") or ""),
+                str(body.get("event") or "run_complete"),
+                str(body.get("secret") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.delete("/api/webhooks/{hook_id}")
+    def delete_webhook(hook_id: str, request: Request) -> dict:
+        if not _webhook_registry().delete(hook_id):
+            raise HTTPException(status_code=404,
+                                detail=f"no webhook {hook_id}")
+        return {"deleted": hook_id}
+
+    # --- P3-11 public read-only API (/public/v1, Bearer-token gated) --------
+    # Mounted OUTSIDE /api on purpose: the session middleware matches
+    # request paths on startswith("/api"), so /public/v1 never sees the
+    # cookie/X-API-Key gate — but every endpoint here requires a Bearer
+    # token from the api_tokens table, scope-checked per route, ALWAYS
+    # (dev mode included). Read-only by construction: recent decisions
+    # (no transcripts/evidence — the audit surfaces stay operator-only)
+    # and the calibration record.
+    #
+    # Rate limiting is an in-process token bucket per api-token. That is
+    # HONEST for this deployment shape: Cloud Run runs max-instances=1
+    # (the same single-writer invariant that guards /data and the stream
+    # tickets), so one process sees all traffic. A multi-instance future
+    # needs a shared store; this is deliberately not that.
+    public_rate_per_min = float(
+        os.environ.get("PRO_PUBLIC_RATE_LIMIT", "60"))
+    _public_buckets: dict[str, list] = {}  # token_hash -> [tokens, last_t]
+
+    def _public_rate_ok(token_hash: str) -> "tuple[bool, int]":
+        """(allowed, retry_after_seconds). Continuous-refill token bucket,
+        capacity == PRO_PUBLIC_RATE_LIMIT requests per minute."""
+        import math as _math
+        import time as _time
+
+        if public_rate_per_min <= 0:  # explicit opt-out
+            return True, 0
+        per_second = public_rate_per_min / 60.0
+        now = _time.monotonic()
+        tokens, last = _public_buckets.get(
+            token_hash, [public_rate_per_min, now])
+        tokens = min(public_rate_per_min, tokens + (now - last) * per_second)
+        if tokens >= 1.0:
+            _public_buckets[token_hash] = [tokens - 1.0, now]
+            return True, 0
+        _public_buckets[token_hash] = [tokens, now]
+        return False, max(1, _math.ceil((1.0 - tokens) / per_second))
+
+    def _public_auth(request: Request, scope: str) -> dict:
+        """Bearer-token auth + scope check + rate limit for /public/v1.
+        Returns the token record; raises 401/403/429/503."""
+        store = getattr(state.prefs, "store", None)
+        if store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="public API requires the SQLite event store")
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=401,
+                detail="missing bearer token; send Authorization: "
+                       "Bearer <api-token>")
+        record = store.resolve_api_token(
+            auth_header.removeprefix("Bearer ").strip())
+        if record is None:
+            raise HTTPException(status_code=401,
+                                detail="invalid or revoked API token")
+        if scope not in record["scopes"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"this token lacks the {scope!r} scope "
+                       f"(has: {record['scopes']})")
+        allowed, retry_after = _public_rate_ok(record["token_hash"])
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"rate limit exceeded "
+                       f"({public_rate_per_min:g} requests/minute)",
+                headers={"Retry-After": str(retry_after)})
+        return record
+
+    def _public_decision_row(run: RunRecord) -> dict:
+        rec = run.recommendation
+        return {
+            "run_id": run.run_id,
+            "symbol": run.symbol,
+            "started_at": run.started_at.isoformat(),
+            "timeframe": run.timeframe,
+            "action": rec.action.value if rec else None,
+            "rejected_at": run.rejection and run.rejection.get("stage"),
+            "confidence": rec.confidence if rec else None,
+            # P3-07 provenance stamp; None on pre-stamp runs
+            "versions": run.versions,
+        }
+
+    # async on purpose (the R2.7 lesson): pure in-memory reads must not
+    # queue behind vendor-bound threadpool handlers — and single-threaded
+    # event-loop execution makes the rate-limit bucket update atomic.
+    @app.get("/public/v1/decisions")
+    async def public_decisions(request: Request, limit: int = 50) -> dict:
+        _public_auth(request, "read:decisions")
+        limit = max(1, min(int(limit), 500))
+        return {"decisions": [_public_decision_row(run)
+                              for run in reversed(state.runs[-limit:])]}
+
+    @app.get("/public/v1/decisions/{run_id}")
+    async def public_decision(run_id: str, request: Request) -> dict:
+        _public_auth(request, "read:decisions")
+        run = _run_or_404(run_id)
+        gates = run.state.get("gate_results") or {}
+        row = _public_decision_row(run)
+        # gates summary only — verdict + reasons, never the debate record
+        row["gates"] = {
+            name: {"passed": g.get("passed"),
+                   "reasons": list(g.get("reasons") or g.get("issues") or [])}
+            for name, g in gates.items() if isinstance(g, dict)
+        }
+        row["rejection"] = run.rejection
+        return row
+
+    @app.get("/public/v1/calibration")
+    async def public_calibration(request: Request) -> dict:
+        _public_auth(request, "read:calibration")
+        return service.calibration_report(state.memory)
+
     @app.get("/api/journal")
     def journal() -> dict:
         return service.trade_journal(state.memory)
@@ -1787,7 +1994,8 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
 
         from fastapi.responses import Response
 
-        if path.startswith("api/") or path in ("api", "healthz", "metrics"):
+        if (path.startswith(("api/", "public/"))
+                or path in ("api", "public", "healthz", "metrics")):
             raise HTTPException(status_code=404, detail=f"no route /{path}")
         if has_spa and path and ".." not in path:
             candidate = static_root / path

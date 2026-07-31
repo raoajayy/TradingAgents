@@ -123,6 +123,9 @@ class PaperTradingService:
         # loop-cadence hygiene: per-symbol last driving-bar start, lazily
         # loaded from prefs (persisted so restarts keep skipping correctly)
         self._last_bar_state: dict | None = None
+        # P3-11: run_complete webhook registry, lazily wired from the
+        # prefs' event store (None until first use / in file-backed mode)
+        self.webhooks = None
         self.rehydrate()
 
 
@@ -352,6 +355,9 @@ class PaperTradingService:
                "equity": self.router.adapter.account().equity},
         )
         rec = run.recommendation
+        # P3-11: every completed run (accepted OR rejected) notifies the
+        # registered run_complete webhooks — signed, threaded, best-effort
+        self._notify_run_complete(run)
         self._emit_regime_change(snapshot.symbol)
         self._evaluate_intel_alerts()
         summary: dict = {
@@ -599,6 +605,47 @@ class PaperTradingService:
                     + (f" — {note}" if note else ""),
                 )
             self._intel_state[key] = now_true
+
+    # --- run_complete webhooks (P3-11) -----------------------------------------
+
+    def _webhook_registry(self):
+        """Lazily wired WebhookRegistry over the event store the prefs
+        ride on; None in file-backed dev/test mode (no kv table). Tests
+        may pre-set ``self.webhooks`` (injectable-fakes pattern)."""
+        if self.webhooks is None:
+            store = getattr(self.dashboard.prefs, "store", None)
+            if store is None:
+                return None
+            from tradingagents.pro.webhooks import WebhookRegistry
+
+            self.webhooks = WebhookRegistry(store, alerts=self.alerts)
+        return self.webhooks
+
+    def _notify_run_complete(self, run) -> None:
+        """Fire run_complete webhooks for one recorded run. Non-blocking:
+        dispatch happens on a daemon thread (each delivery already has a
+        5s timeout); any failure is the registry's problem, never the
+        loop's."""
+        try:
+            registry = self._webhook_registry()
+            if registry is None or not registry.has_active("run_complete"):
+                return
+            rec = run.recommendation
+            payload = {
+                "event": "run_complete",
+                "run_id": run.run_id,
+                "symbol": run.symbol,
+                "action": rec.action.value if rec else None,
+                "started_at": run.started_at.isoformat(),
+                # P3-07 provenance stamp; None on pre-stamp runs
+                "versions": run.versions,
+            }
+            threading.Thread(
+                target=registry.dispatch, args=("run_complete", payload),
+                name="run-webhooks", daemon=True,
+            ).start()
+        except Exception:
+            logger.exception("run_complete webhook dispatch not started")
 
     def _emit_regime_change(self, symbol: str) -> None:
         """Alert on regime TRANSITIONS (trader review Phase 4): the regime
