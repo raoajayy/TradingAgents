@@ -47,6 +47,10 @@ def _hermetic_operator_env(monkeypatch, tmp_path_factory):
     monkeypatch.delenv("PRO_DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
     monkeypatch.setenv("PRO_DISABLE_LIVE_VENDORS", "1")
+    # the liquidation stream's daemon threads must not open real sockets
+    # from tests (observed: a Binance OI poll traceback bleeding into
+    # unrelated suites' output)
+    monkeypatch.setenv("PRO_DISABLE_LIQUIDATION_STREAM", "1")
     # default_data_dir()/default_db_path() must never point at the
     # developer's real ~/.tradingagents/pro: DashboardState's default
     # PrefsStore persists there, so cross-run state (e.g. the loop's

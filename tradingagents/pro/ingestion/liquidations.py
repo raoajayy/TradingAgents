@@ -111,6 +111,11 @@ class LiquidationStream:
         return self._ws_thread is not None and not self._stop.is_set()
 
     def start(self) -> None:
+        # hermetic escape hatch: tests must never open real sockets
+        import os
+
+        if os.environ.get("PRO_DISABLE_LIQUIDATION_STREAM") == "1":
+            return
         if self._ws_thread is not None:
             return
         self._stop.clear()

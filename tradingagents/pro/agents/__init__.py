@@ -14,6 +14,10 @@ from tradingagents.pro.agents.computed_factor import (
     load_mined_factor_agents,
     store_survivors,
 )
+from tradingagents.pro.agents.gold_vol_context import (
+    GoldVolContextAgent,
+    attach_gold_vol_context,
+)
 from tradingagents.pro.agents.metrics import (
     compute_neutral_risk_metrics,
     compute_quant_metrics,
@@ -49,6 +53,8 @@ __all__ = [
     "attach_mined_factors",
     "load_mined_factor_agents",
     "store_survivors",
+    "GoldVolContextAgent",
+    "attach_gold_vol_context",
     "compute_neutral_risk_metrics",
     "compute_quant_metrics",
     "compute_risk_metrics",

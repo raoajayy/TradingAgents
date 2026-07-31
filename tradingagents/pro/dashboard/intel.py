@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 CORRELATION_SYMBOLS = ("BTC-USD", "XAUUSD", "DXY", "SILVER", "US10Y")
 
+# P3-09 "vol context" grouping: the snapshot repeats these readings in a
+# compact ``gold_vol_context`` block (keyed by metric name) so a future
+# vol-context tile can render without a new endpoint or recomputation.
+GOLD_VOL_CONTEXT_KEYS = ("GOLD_VOL_INDEX", "GOLD_VOL_INDEX_CHANGE_1D",
+                         "GOLD_IV_RANK", "GOLD_IV_PERCENTILE",
+                         "GOLD_IV_RV_SPREAD")
+
 
 def _friendly_error(exc: Exception) -> str:
     """One short human line for the UI; the raw exception goes to logs.
@@ -160,6 +167,22 @@ METRIC_INFO: dict[str, dict[str, str]] = {
                        "note": "CBOE gold ETF volatility index (GVZ)."},
     "GOLD_VOL_INDEX_CHANGE_1D": {"label": "Gold vol 1d change",
                                  "note": "Day-over-day change in GVZ."},
+    # P3-09 gold IV context — GVZ-derived; there is no free gold options
+    # chain, so these are honest single-index statistics, not a surface.
+    "GOLD_IV_RANK": {
+        "label": "Gold IV rank (1y)",
+        "note": "Where today's GVZ close sits between its trailing ~252-"
+                "session min and max, 0-100. Above 80 = gold options "
+                "expensive vs their own year; below 20 = cheap."},
+    "GOLD_IV_PERCENTILE": {
+        "label": "Gold IV percentile (1y)",
+        "note": "Share of the trailing ~252 GVZ closes at or below "
+                "today's, 0-100."},
+    "GOLD_IV_RV_SPREAD": {
+        "label": "Gold IV-RV spread",
+        "note": "GVZ (30d implied) minus 20d Parkinson realized vol of "
+                "gold futures, vol points — a vol-risk-premium PROXY, not "
+                "a term structure (no free gold options chain exists)."},
     "XAU_XAG_CORR_30D": {"label": "XAU/XAG corr 30d",
                          "note": "30-day gold–silver return correlation."},
     "DVOL": {"label": "BTC implied vol (DVOL)",
@@ -252,6 +275,9 @@ class IntelService:
                 GoldCrossAssetFeed,
                 YFinanceDailyBarsFeed,
             )
+            from tradingagents.pro.ingestion.gold_options import (
+                GoldVolContextFeed,
+            )
             from tradingagents.pro.ingestion.goldhub import (
                 GOLDHUB_CSV_NAME,
                 GoldhubCsvFeed,
@@ -296,6 +322,9 @@ class IntelService:
                     cache_path=default_data_dir() / "cot_cache.json"
                 ).get_metrics,
                 "gold_vol": GoldVolFeed(yf_daily).get_metrics,
+                # P3-09 IV rank/percentile + IV-RV spread proxy (GVZ-based)
+                "gold_vol_context":
+                    GoldVolContextFeed(yf_daily).get_metrics,
                 "deribit_dvol": DeribitVolFeed().get_metrics,
                 "goldhub": GoldhubCsvFeed(
                     default_data_dir() / GOLDHUB_CSV_NAME
@@ -419,6 +448,11 @@ class IntelService:
             # metric vocabulary users can build condition alerts over
             "metric_keys": sorted(METRIC_INFO),
             "headlines": headlines,
+            # P3-09: compact gold IV-context grouping (null until the GVZ
+            # feeds serve); a tile can render this block directly
+            "gold_vol_context": (
+                {m["name"]: m for m in metrics
+                 if m["name"] in GOLD_VOL_CONTEXT_KEYS} or None),
             "liquidation_heatmap": liquidation_heatmap,
             "missing_feeds": missing,
             # honest map of what money hasn't bought yet (UX: trust signal)

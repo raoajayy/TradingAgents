@@ -39,6 +39,7 @@ from tradingagents.contracts import (
 )
 from tradingagents.pro.agents import (
     SPECS_BY_TEAM,
+    attach_gold_vol_context,
     build_team,
     compute_quant_metrics,
     compute_risk_metrics,
@@ -320,6 +321,11 @@ class PipelineNodes:
                 for spec in SPECS_BY_TEAM[team]
             )
             agents = build_team(specs, self.models.for_team(team))
+            if team is AgentTeam.MACRO:
+                # P3-09 deterministic gold IV-context evidence (GVZ rank/
+                # percentile + IV-RV spread) — appended for GOLD only; a
+                # crypto snapshot gets the same list object back
+                agents = attach_gold_vol_context(agents, snapshot)
             if self.agent_workers > 1:
                 with ThreadPoolExecutor(max_workers=self.agent_workers) as pool:
                     results = list(pool.map(

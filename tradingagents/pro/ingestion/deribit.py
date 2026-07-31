@@ -5,8 +5,10 @@ for BTC and ETH as hourly candles on a free public endpoint. We surface
 the latest level plus the ~24h change — the same shape the gold side
 gets from GVZ (GOLD_VOL_INDEX / _CHANGE_1D).
 
-ponytail: level + 1d change only; the full term structure / vol surface
-is P3-09 (per-expiry instrument summaries, a much bigger pull).
+ponytail: level + 1d change only (per-expiry instrument summaries are a
+much bigger pull). Note Deribit lists NO gold options — the gold-side
+P3-09 IV context (rank/percentile, IV-RV spread proxy) is GVZ-based and
+lives in ``gold_options.py``.
 """
 
 from __future__ import annotations

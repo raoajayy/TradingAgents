@@ -193,9 +193,11 @@ def build_gold_pipeline(
     vintage_sink=None, vintage_reader=None,
 ) -> SnapshotBuilder:
     """Default gold (XAU) pipeline: GC=F daily bars + cross-asset context +
-    FRED macro + CFTC COT positioning + GVZ implied vol + Goldhub monthly
+    FRED macro + CFTC COT positioning + GVZ implied vol (level/change plus
+    P3-09 IV rank/percentile and the IV-RV spread proxy) + Goldhub monthly
     demand (ETF flows / central-bank buying, when the CSV is present) +
     session awareness. All feeds free; FRED needs its free key."""
+    from tradingagents.pro.ingestion.gold_options import GoldVolContextFeed
     from tradingagents.pro.ingestion.goldhub import GoldhubCsvFeed
     from tradingagents.pro.ingestion.news import YahooFinanceNewsFeed
     from tradingagents.pro.ingestion.positioning import GoldCotFeed, GoldVolFeed
@@ -206,6 +208,7 @@ def build_gold_pipeline(
         FredMacroFeed(transport=transport, vintage_sink=vintage_sink),
         GoldCotFeed(transport=transport, cache_path=cot_cache_path),
         GoldVolFeed(bars_feed),
+        GoldVolContextFeed(bars_feed),
     ]
     if goldhub_csv_path is not None:
         macro_feeds.append(GoldhubCsvFeed(goldhub_csv_path))
