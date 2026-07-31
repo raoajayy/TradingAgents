@@ -110,6 +110,9 @@ class PaperTradingService:
         self.run_lock = run_lock or threading.Lock()
         self.pipeline_kwargs = pipeline_kwargs
         self.open_positions: dict[str, OpenPosition] = {}
+        # P3-01: entry coid -> {"rec", "arrival"} for live orders that were
+        # accepted ("submitted") but fill asynchronously via OMS polling
+        self._pending_live_tca: dict[str, dict] = {}
         # paper-mode daily order cap (trader review): live arming has
         # max_orders_per_day; paper had none — a runaway loop could churn
         self._orders_today = 0
@@ -471,6 +474,11 @@ class PaperTradingService:
                 )
                 self._capture_tca(position, rec.symbol, snapshot)
                 self.open_positions[rec.symbol] = position
+            if result.status == "submitted":
+                # P3-01: a live entry may fill asynchronously (via OMS
+                # poll) — remember the arrival context now so TCA is
+                # captured against the decision-time mid at fill time
+                self._register_pending_live_tca(rec, snapshot)
         self._maybe_daily_pnl_summary(snapshot)
         return summary
 
@@ -958,20 +966,32 @@ class PaperTradingService:
 
     # --- internals ----------------------------------------------------------------
 
+    @staticmethod
+    def _arrival_mid(snapshot) -> float | None:
+        """Decision-time arrival price: quote mid, else last bar close."""
+        quote = snapshot.quote
+        if quote and quote.bid and quote.ask:
+            return (quote.bid + quote.ask) / 2
+        if snapshot.bars:
+            return snapshot.bars[-1].close
+        return None
+
     def _capture_tca(self, position: OpenPosition, symbol: str,
                      snapshot) -> None:
         """P1-04: per-fill TCA — arrival mid at decision, signed entry
         slippage, and best-effort markouts at +30s/+1m/+5m from the tick
         cache. ponytail: markout timers die with the process — best-effort
         by design; the entry slippage (the number that matters) is durable."""
-        quote = snapshot.quote
-        arrival = None
-        if quote and quote.bid and quote.ask:
-            arrival = (quote.bid + quote.ask) / 2
-        elif snapshot.bars:
-            arrival = snapshot.bars[-1].close
+        arrival = self._arrival_mid(snapshot)
         if not arrival:
             return
+        self._capture_tca_at(position, symbol, arrival)
+
+    def _capture_tca_at(self, position: OpenPosition, symbol: str,
+                        arrival: float) -> None:
+        """Shared TCA body: paper fills pass the snapshot's arrival mid
+        synchronously; live async fills (P3-01) pass the arrival that was
+        stored at submission time."""
         long = position.recommendation.action is TradeAction.BUY
         side = 1.0 if long else -1.0
         position.tca = {
@@ -1107,7 +1127,53 @@ class PaperTradingService:
         for oms in omses:
             oms.poll()
             closed.extend(self._drain_one_oms(oms, bar))
+        self._absorb_live_entry_fills()
         return closed
+
+    def _register_pending_live_tca(self, rec, snapshot) -> None:
+        """P3-01: remember the decision-time arrival mid for a live entry
+        that was accepted but not yet filled ('submitted')."""
+        arrival = self._arrival_mid(snapshot)
+        if arrival is None:
+            return
+        from tradingagents.pro.execution import ids as _ids
+
+        coid = _ids.client_order_id(rec.id, _ids.decision_hash(rec),
+                                    _ids.ENTRY)
+        self._pending_live_tca[coid] = {"rec": rec, "arrival": arrival}
+
+    def _absorb_live_entry_fills(self) -> None:
+        """P3-01: live entries fill asynchronously (OMS poll) rather than
+        inside submit like paper — mirror the paper path by creating the
+        OpenPosition and capturing TCA the moment the venue reports the
+        fill, against the arrival mid stored at submission."""
+        if not self._pending_live_tca:
+            return
+        live_oms = getattr(self.router, "live_oms", None)
+        if live_oms is None:
+            return
+        from tradingagents.pro.execution.interface import OrderState
+
+        for coid, info in list(self._pending_live_tca.items()):
+            order = live_oms.orders.get(coid)
+            if order is None:
+                continue
+            if order.state.terminal and order.state is not OrderState.FILLED:
+                del self._pending_live_tca[coid]  # rejected/canceled entry
+                continue
+            if order.state is not OrderState.FILLED:
+                continue
+            rec = info["rec"]
+            position = self.open_positions.get(rec.symbol) or OpenPosition(
+                recommendation=rec,
+                fill_price=order.avg_fill_price,
+                quantity=order.filled_quantity,
+                entry_commission=order.commission,
+            )
+            self._capture_tca_at(position, rec.symbol, info["arrival"])
+            self.open_positions[rec.symbol] = position
+            self.metrics.inc("orders_filled_total")
+            del self._pending_live_tca[coid]
 
     def _drain_one_oms(self, oms, bar) -> list[dict]:
         closed = []

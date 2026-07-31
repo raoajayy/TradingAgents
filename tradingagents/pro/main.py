@@ -614,11 +614,32 @@ def _wire_staged_routing(state, router, service, data_path) -> None:
     )
 
     testnet = os.environ.get("PRO_LIVE_VENUE", "testnet") != "production"
+    exchange = os.environ.get("PRO_LIVE_EXCHANGE", "delta").lower()
     try:
         from tradingagents.pro.execution import OrderManager
-        from tradingagents.pro.execution.adapters.delta import DeltaAdapter
 
-        live_adapter = DeltaAdapter.from_env(testnet=testnet)
+        if exchange == "binance":
+            # P3-01 dust pilot: Binance FUTURES (testnet-first). Inert
+            # unless a pair is armed at a live tier; hard notional cap
+            # from live.yaml (or the conservative contract default).
+            from tradingagents.pro.execution.adapters.binance_futures import (
+                BinanceFuturesAdapter,
+            )
+
+            live_adapter = BinanceFuturesAdapter.from_env(
+                testnet=testnet,
+                armed_fn=lambda: any(
+                    v["tier"] in ("canary", "live")
+                    for v in state.arming.status().values()),
+                max_order_notional=_live_max_notional(),
+                alerts=service.alerts,
+                audit=router.audit,
+                kill_switch=router.kill_switch,
+            )
+        else:
+            from tradingagents.pro.execution.adapters.delta import DeltaAdapter
+
+            live_adapter = DeltaAdapter.from_env(testnet=testnet)
         live_oms = OrderManager(
             live_adapter,
             journal_path=data_path / "oms" / "live_journal.jsonl",
@@ -634,6 +655,21 @@ def _wire_staged_routing(state, router, service, data_path) -> None:
         # stay paper-only; armed pairs will be refused, honestly
         logger.info("live route not wired (%s) — armed pairs would be "
                     "refused, paper/shadow unaffected", exc)
+
+
+def _live_max_notional() -> float:
+    """Hard per-order notional cap for the live adapter (P3-01). The
+    operator-written live.yaml wins when PRO_LIVE_CONFIG points at one;
+    otherwise the conservative LiveRiskLimits contract default applies —
+    never a silent 'unlimited'."""
+    path = os.environ.get("PRO_LIVE_CONFIG", "")
+    if path:
+        from tradingagents.pro.live_config import load_live_config
+
+        return load_live_config(path).risk.max_notional_per_trade
+    from tradingagents.contracts import LiveRiskLimits
+
+    return LiveRiskLimits().max_notional_per_trade
 
 
 def _start_live_safety_daemons(service, state) -> None:
