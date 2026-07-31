@@ -52,6 +52,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0,
                         help="label-mapping seed for --memorization-audit "
                              "(default 0)")
+    parser.add_argument("--factor-mine", action="store_true",
+                        help="P3-03: LLM factor-mining loop — propose "
+                             "formulaic factors, evaluate OOS (purged IC) "
+                             "vs Alpha158-style baselines, report survivors")
+    parser.add_argument("--iterations", type=int, default=3,
+                        help="proposal rounds for --factor-mine (default 3)")
     parser.add_argument("--self-assessment", action="store_true",
                         help="P3-08: generate the RTS-6-flavored quarterly "
                              "self-assessment from the event store (no "
@@ -140,6 +146,8 @@ def main() -> int:
 
     if args.stability:
         n_runs = len(DEFAULT_CASE_NAMES) * args.k
+    elif args.factor_mine:
+        n_runs = args.iterations  # one proposal call per round
     elif args.memorization_audit:
         n_runs = len(DEFAULT_CASE_NAMES) * args.samples * 2  # named + anon arms
     else:
@@ -155,6 +163,10 @@ def main() -> int:
         print(f"ablation: {args.points} historical cut points x 2 arms "
               f"(~${args.points * EST_COST_PER_CASE_RUN * price_scale:.2f} "
               f"estimated at {routing.llm_provider} rates)\n")
+    elif args.factor_mine:
+        print(f"factor mining: {args.iterations} proposal rounds "
+              f"(~${est:.2f} estimated at {routing.llm_provider} rates; "
+              f"evaluation itself is model-free)\n")
     elif args.stability:
         print(f"stability: {len(DEFAULT_CASE_NAMES)} frozen snapshots x "
               f"k={args.k} = {n_runs} pipeline runs (~${est:.2f} estimated "
@@ -172,6 +184,54 @@ def main() -> int:
     bundle.quick = CostTrackingLLM(bundle.quick, price=price)
     deep_tracker = CostTrackingLLM(bundle.deep, price=price)
     bundle.deep = deep_tracker if bundle.deep is not bundle.quick else bundle.quick
+
+    if args.factor_mine:
+        import json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        import pandas as pd
+
+        from tradingagents.contracts import Timeframe
+        from tradingagents.pro.evals.factor_mining import mine
+        from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
+
+        bars = DeltaExchangeFeed().get_bars("BTCUSD", Timeframe.H4, limit=1000)
+        bars_df = pd.DataFrame(
+            {"open": [b.open for b in bars], "high": [b.high for b in bars],
+             "low": [b.low for b in bars], "close": [b.close for b in bars],
+             "volume": [b.volume for b in bars]})
+        report = mine(bundle.deep, bars_df, iterations=args.iterations,
+                      symbol="BTC-USD")
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "provider": routing.llm_provider,
+            "quick": routing.quick_think_llm,
+            "deep": routing.deep_think_llm,
+            **report,
+        }
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = out_dir / f"factors_{stamp}.json"
+        out.write_text(json.dumps(payload, indent=2) + "\n")
+        c = report["counts"]
+        print(f"proposed={c['proposed']} invalid={c['invalid']} "
+              f"weak={c['weak']} duplicate={c['duplicate']} "
+              f"survivors={c['survivors']} (ic bar {report['ic_bar']:.4f})")
+        for s in report["survivors"]:
+            print(f"  SURVIVOR {s['name']}: ic_mean={s['ic_mean']:+.4f} "
+                  f"ic_ir={s['ic_ir']} folds={s['n_folds']}  {s['expression']}")
+        if not report["survivors"]:
+            print("  no survivors — documented negative result "
+                  "(see AC of P3-03)")
+        print("  registration is a separate operator step: "
+              "agents.computed_factor.store_survivors(store, survivors)")
+        deep_report = bundle.deep.report
+        print(f"\ndeep-model calls: {deep_report.calls}, "
+              f"est cost ${deep_report.est_cost_usd:.2f}")
+        print(f"wrote {out}")
+        return 0
 
     if args.memorization_audit:
         import json

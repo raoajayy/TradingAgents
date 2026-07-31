@@ -4,6 +4,13 @@ Everything here is pure, typed Python — the numeric ground truth that
 quant- and risk-team agents explain but never compute (Constraint 2).
 """
 
+from tradingagents.pro.analytics.factors import (
+    FactorExpr,
+    evaluate_factor_oos,
+    factor_ic,
+    forward_returns,
+    ic_decay,
+)
 from tradingagents.pro.analytics.features import (
     classify_regime,
     close_zscore,
@@ -29,6 +36,11 @@ from tradingagents.pro.analytics.risk import (
 )
 
 __all__ = [
+    "FactorExpr",
+    "evaluate_factor_oos",
+    "factor_ic",
+    "forward_returns",
+    "ic_decay",
     "classify_regime",
     "close_zscore",
     "realized_volatility",

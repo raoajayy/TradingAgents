@@ -7,6 +7,13 @@ from tradingagents.pro.agents.base import (
     load_team_template,
     run_agents,
 )
+from tradingagents.pro.agents.computed_factor import (
+    MINED_FACTORS_KEY,
+    ComputedFactorAgent,
+    attach_mined_factors,
+    load_mined_factor_agents,
+    store_survivors,
+)
 from tradingagents.pro.agents.metrics import (
     compute_neutral_risk_metrics,
     compute_quant_metrics,
@@ -37,6 +44,11 @@ __all__ = [
     "build_team",
     "load_team_template",
     "run_agents",
+    "MINED_FACTORS_KEY",
+    "ComputedFactorAgent",
+    "attach_mined_factors",
+    "load_mined_factor_agents",
+    "store_survivors",
     "compute_neutral_risk_metrics",
     "compute_quant_metrics",
     "compute_risk_metrics",

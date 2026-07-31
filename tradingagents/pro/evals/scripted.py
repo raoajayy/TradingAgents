@@ -66,5 +66,9 @@ class FakePipelineLLM:
         self.prompts: dict[str, list[str]] = {}
 
     def with_structured_output(self, schema):
-        payload = self.overrides.get(schema, DEFAULT_DRAFTS[schema])
+        # lazy lookup, not .get(schema, DEFAULT_DRAFTS[schema]): the default
+        # arm is evaluated eagerly and would KeyError on overridden schemas
+        # that have no canned default (e.g. FactorProposalBatch)
+        payload = (self.overrides[schema] if schema in self.overrides
+                   else DEFAULT_DRAFTS[schema])
         return FakeRunnable(payload, self.prompts.setdefault(schema.__name__, []))

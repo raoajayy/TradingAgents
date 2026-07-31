@@ -453,10 +453,17 @@ def build_service(llm=None, data_dir: str | Path | None = None):
         EventStore,
         SqliteMemoryStore,
         migrate_legacy,
+        seed_users,
     )
 
     event_store = EventStore()
     migrate_legacy(event_store, data_path)
+    # P3-05: first boot with an empty users table seeds every allowlisted
+    # email as operator (pre-roles deployments were single-operator).
+    # Guarded + idempotent like migrate_legacy; create_app re-runs the
+    # same seed defensively for states wired outside this builder.
+    seed_users(event_store,
+               os.environ.get("PRO_ALLOWED_EMAILS", "").split(","))
     from tradingagents.pro.memory.embedding import make_default_embedder
 
     memory = ProMemory(store=SqliteMemoryStore(event_store),
