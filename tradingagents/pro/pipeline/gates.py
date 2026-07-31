@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from tradingagents.contracts import MetricReading, ProConfig, TradeAction
+from tradingagents.contracts import MetricReading, ProConfig, RiskLimits, TradeAction
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,77 @@ class GateResult:
     passed: bool
     checks: dict[str, bool] = field(default_factory=dict)
     reasons: tuple[str, ...] = ()
+
+
+def conformal_vol_gate(
+    conformal: dict | None,
+    limits: RiskLimits,
+) -> tuple[GateResult, float]:
+    """Uncertainty gate on the conformal vol-forecast interval (P3-04).
+
+    ``conformal`` is the output of
+    ``tradingagents.pro.analytics.conformal.conformal_vol_gate_inputs``:
+    a one-step HAR realized-vol forecast with an adaptive-conformal band
+    around it. The point forecast is NOT gated — a high but well-understood
+    vol is a sizing problem, already handled by VaR and fixed-fractional
+    sizing. What this gate consumes is the interval WIDTH: when the band
+    blows out, the model cannot say what next-bar vol will be, and stops
+    or sizes computed from any point estimate are guesses.
+
+    Behavior (``width`` is a per-bar return fraction; compared as percent
+    of price against ``limits.max_vol_interval_width_pct``):
+
+    - cap is None -> disabled, passes (no checks recorded);
+    - inputs missing/None (short history) -> passes OPEN, disclosed via
+      ``checks["vol_interval_available"] = False`` — a data gap must not
+      silently halt trading (same doctrine as the event gate);
+    - width <= cap -> passes;
+    - width > cap and ``vol_interval_size_scale`` is False -> blocks;
+    - width > cap and ``vol_interval_size_scale`` is True -> passes but
+      returns a size scale of ``cap / width`` (floor 0.25) that the sizing
+      stage multiplies into the position — degrade gracefully instead of
+      flapping between full-size and nothing at the threshold.
+
+    Returns ``(result, size_scale)``; ``size_scale`` is 1.0 except in the
+    scaled-breach case.
+    """
+    if limits.max_vol_interval_width_pct is None:
+        return GateResult(passed=True), 1.0
+    width = (conformal or {}).get("width")
+    if width is None:
+        return GateResult(
+            passed=True,
+            checks={"vol_interval_available": False},
+            reasons=("conformal vol interval unavailable (insufficient "
+                     "history); uncertainty gate passes open",),
+        ), 1.0
+    cap = limits.max_vol_interval_width_pct
+    width_pct = width * 100.0  # per-bar return fraction -> % of price
+    checks = {"vol_interval_available": True}
+    if width_pct <= cap:
+        checks["vol_interval_within_cap"] = True
+        return GateResult(passed=True, checks=checks), 1.0
+    if limits.vol_interval_size_scale:
+        scale = max(0.25, cap / width_pct)
+        checks["vol_interval_within_cap"] = False
+        checks["vol_interval_size_scaled"] = True
+        return GateResult(
+            passed=True,
+            checks=checks,
+            reasons=(
+                f"vol interval {width_pct:.1f}% > {cap:.1f}% cap — "
+                f"position scaled to {scale:.0%}",
+            ),
+        ), scale
+    checks["vol_interval_within_cap"] = False
+    return GateResult(
+        passed=False,
+        checks=checks,
+        reasons=(
+            f"vol interval {width_pct:.1f}% > {cap:.1f}% cap — "
+            f"uncertainty too wide",
+        ),
+    ), 1.0
 
 
 def risk_gate(

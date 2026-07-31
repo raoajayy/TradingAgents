@@ -47,8 +47,15 @@ from tradingagents.pro.agents import (
 from tradingagents.pro.agents.metrics import compute_neutral_risk_metrics, infer_timeframe
 from tradingagents.pro.agents.rendering import wrap_untrusted
 from tradingagents.pro.analytics import classify_regime
+from tradingagents.pro.analytics.conformal import conformal_vol_gate_inputs
 from tradingagents.pro.models import ModelBundle
-from tradingagents.pro.pipeline.gates import event_gate, risk_gate, trade_quality_gate
+from tradingagents.pro.pipeline.gates import (
+    GateResult,
+    conformal_vol_gate,
+    event_gate,
+    risk_gate,
+    trade_quality_gate,
+)
 from tradingagents.pro.pipeline.schemas import (
     CriticReport,
     DebateTurn,
@@ -107,6 +114,25 @@ TEAM_ORDER = (
     AgentTeam.QUANT,
     AgentTeam.RISK,
 )
+
+
+_SIZE_METRICS = ("POSITION_SIZE_UNITS", "POSITION_NOTIONAL", "POSITION_PCT_EQUITY")
+
+
+def _apply_vol_interval_scale(
+    sided: dict[str, MetricReading], scale: float
+) -> dict[str, MetricReading]:
+    """P3-04: multiply the engine's sizing readings by the conformal
+    uncertainty scale the risk gate attached to the state (cap/width,
+    floor 0.25). Applied BEFORE the gates re-check so every downstream
+    consumer — gates, ticket, execution — sees the same shipped numbers."""
+    if scale >= 1.0:
+        return sided
+    return {
+        name: (reading.model_copy(update={"value": reading.value * scale})
+               if name in _SIZE_METRICS else reading)
+        for name, reading in sided.items()
+    }
 
 
 def _all_evidence(state: dict) -> list[AgentEvidence]:
@@ -406,11 +432,29 @@ class PipelineNodes:
                               "checks": event_result.checks,
                               "reasons": list(event_result.reasons)}
         update: dict[str, Any] = {"gate_results": gates}
+        # P3-04: conformal vol-forecast uncertainty gate. Only computed when
+        # an operator set the cap; short/missing history passes open with
+        # the gap disclosed in the checks dict (conformal_vol_gate).
+        conformal_result: GateResult | None = None
+        if self.config.risk.max_vol_interval_width_pct is not None:
+            snapshot = state["snapshot"]
+            timeframe = state.get("run_timeframe") or infer_timeframe(snapshot)
+            bars = [b for b in snapshot.bars if b.timeframe == timeframe] or list(
+                snapshot.bars)
+            conformal_result, vol_scale = conformal_vol_gate(
+                conformal_vol_gate_inputs(bars), self.config.risk)
+            gates["conformal_vol"] = {"passed": conformal_result.passed,
+                                      "checks": conformal_result.checks,
+                                      "reasons": list(conformal_result.reasons)}
+            update["vol_interval_scale"] = vol_scale
         if event_result is not None and not event_result.passed:
             update["rejection"] = {"stage": "event_gate",
                                    "reasons": list(event_result.reasons)}
         elif not result.passed:
             update["rejection"] = {"stage": "risk_gate", "reasons": list(result.reasons)}
+        elif conformal_result is not None and not conformal_result.passed:
+            update["rejection"] = {"stage": "risk_gate",
+                                   "reasons": list(conformal_result.reasons)}
         return update
 
     def critic(self, state: dict) -> dict:
@@ -690,6 +734,9 @@ class PipelineNodes:
             timeframe=timeframe,
             invalidation_price=invalidation_price,
         )
+        # P3-04: conformal-uncertainty size scale from the risk-gate node
+        sided = _apply_vol_interval_scale(
+            sided, float(state.get("vol_interval_scale") or 1.0))
         update: dict[str, Any] = {}
         if reflection_patch is not None:
             update["reflection"] = reflection_patch

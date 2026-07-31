@@ -102,6 +102,24 @@ class RiskLimits(ContractModel):
         "wearing several tickers. Only trips when at least one correlated "
         "peer is open. None disables.",
     )
+    # --- P3-04 conformal vol-forecast uncertainty. None/False = disabled,
+    # so existing configs behave exactly as before until an operator opts in.
+    max_vol_interval_width_pct: float | None = Field(
+        default=None, gt=0, le=100,
+        description="Cap on the width of the adaptive-conformal interval "
+        "around the one-step HAR realized-vol forecast, in percent of price "
+        "(per-bar return vol x 100). A wide interval means the vol model "
+        "does not know what the next bar looks like — entries are blocked "
+        "when the width exceeds this. Missing/short history passes open "
+        "(disclosed in the gate's checks). None disables.",
+    )
+    vol_interval_size_scale: bool = Field(
+        default=False,
+        description="When True, a breach of max_vol_interval_width_pct "
+        "scales the position down by cap/width (floor 0.25) instead of "
+        "blocking the entry outright — graceful degradation under forecast "
+        "uncertainty. No effect while the cap is None.",
+    )
 
 
 class LiveRiskLimits(ContractModel):

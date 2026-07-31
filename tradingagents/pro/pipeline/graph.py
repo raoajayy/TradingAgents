@@ -59,6 +59,7 @@ class PipelineState(TypedDict, total=False):
     technical_rounds: int
     macro_rounds: int
     gate_results: dict[str, dict]
+    vol_interval_scale: float  # P3-04: conformal-uncertainty size scale
     historical_analogs: list[HistoricalAnalog]
     memory_context: str
     reflection: dict
