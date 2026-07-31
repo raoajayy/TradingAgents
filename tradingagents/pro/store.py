@@ -1,12 +1,15 @@
 """P2-01 event store: SQLite (WAL) as the single source of truth.
 
-One database, three append-oriented tables, three thin adapters that
+One database, four append-oriented tables, three thin adapters that
 slot into the existing writers' protocols so recorder/memory/prefs
 switch backends without changing their public APIs:
 
-- ``runs``    — one row per pipeline run (recorder's RunRecord JSON)
-- ``memory``  — append-only MemoryRecord rows (JsonlStore protocol)
-- ``kv``      — whole-document values (prefs, small state blobs)
+- ``runs``     — one row per pipeline run (recorder's RunRecord JSON)
+- ``memory``   — append-only MemoryRecord rows (JsonlStore protocol)
+- ``kv``       — whole-document values (prefs, small state blobs)
+- ``vintages`` — P3-02 point-in-time metric observations
+  (name, value, observed_at, as_of, source); additive CREATE TABLE IF NOT
+  EXISTS, so existing P2-01 databases upgrade in place on open
 
 Durability model: SQLite in WAL mode on a REAL local disk. In prod the
 GCS FUSE mount at /data is fine for the old whole-file writers but is
@@ -27,6 +30,7 @@ import logging
 import os
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tradingagents.pro.memory.records import MemoryRecord
@@ -58,7 +62,31 @@ CREATE TABLE IF NOT EXISTS kv (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE TABLE IF NOT EXISTS vintages (
+    name        TEXT NOT NULL,
+    value       REAL NOT NULL,
+    observed_at TEXT NOT NULL,
+    as_of       TEXT NOT NULL,
+    source      TEXT,
+    PRIMARY KEY (name, as_of, observed_at)
+);
+CREATE INDEX IF NOT EXISTS vintages_name_observed
+    ON vintages (name, observed_at);
 """
+
+
+def _iso_utc(value: datetime | str) -> str:
+    """Normalize timestamps to sortable UTC ISO-8601 text.
+
+    The vintages table compares timestamps lexicographically, so every
+    write and read must funnel through one canonical rendering. Date-only
+    strings (FRED observation dates) become midnight UTC.
+    """
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def default_db_path() -> Path:
@@ -167,6 +195,80 @@ class EventStore:
                 "SELECT value FROM kv WHERE key=?", (key,)
             ).fetchone()
         return row[0] if row else None
+
+    # --- vintages (P3-02 point-in-time metric history) --------------------
+    # Every metric observation is appended as (name, value, observed_at,
+    # as_of): as_of is the period the value describes (the FRED observation
+    # date), observed_at is when the world learned that value (ALFRED's
+    # realtime_start). Revisions append new rows — nothing is ever
+    # overwritten, so a past decision's recorded inputs stay reproducible.
+
+    def record_vintage(
+        self,
+        name: str,
+        value: float,
+        observed_at: datetime | str,
+        as_of: datetime | str,
+        source: str | None = None,
+    ) -> None:
+        """Append one vintage; idempotent on (name, as_of, observed_at)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO vintages "
+                "(name, value, observed_at, as_of, source) VALUES (?,?,?,?,?)",
+                (name, float(value), _iso_utc(observed_at), _iso_utc(as_of),
+                 source),
+            )
+
+    def latest_as_known(
+        self, name: str, at: datetime | str
+    ) -> dict | None:
+        """Newest observation of ``name`` knowable at ``at``.
+
+        "Newest" is by as_of (latest period), then observed_at (latest
+        revision of that period), among rows with observed_at <= at — the
+        value a decision made at ``at`` would have seen. None when nothing
+        had been observed yet.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name, value, observed_at, as_of, source FROM vintages "
+                "WHERE name=? AND observed_at<=? "
+                "ORDER BY as_of DESC, observed_at DESC LIMIT 1",
+                (name, _iso_utc(at)),
+            ).fetchone()
+        return self._vintage_row(row) if row else None
+
+    def has_vintages(self, name: str) -> bool:
+        """True when ``name`` is tracked in the vintage store at all —
+        lets readers distinguish "not yet knowable" from "never vintaged"."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM vintages WHERE name=? LIMIT 1", (name,)
+            ).fetchone()
+        return row is not None
+
+    def load_vintages(self, name: str | None = None) -> list[dict]:
+        """Full vintage history (oldest first), optionally for one metric."""
+        sql = ("SELECT name, value, observed_at, as_of, source FROM vintages "
+               "{} ORDER BY name, as_of, observed_at")
+        args: tuple = ()
+        where = ""
+        if name is not None:
+            where, args = "WHERE name=?", (name,)
+        with self._lock:
+            rows = self._conn.execute(sql.format(where), args).fetchall()
+        return [self._vintage_row(r) for r in rows]
+
+    @staticmethod
+    def _vintage_row(row: tuple) -> dict:
+        return {
+            "name": row[0],
+            "value": row[1],
+            "observed_at": datetime.fromisoformat(row[2]),
+            "as_of": datetime.fromisoformat(row[3]),
+            "source": row[4],
+        }
 
 
 class SqliteMemoryStore:

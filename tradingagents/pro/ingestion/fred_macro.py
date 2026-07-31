@@ -10,18 +10,34 @@ FRED rate limit: 120 requests/minute (free key). One snapshot build issues
 one request per series (~6), far below the limit. The ``units`` transform
 is applied server-side by FRED (pc1 = percent change vs year ago, chg =
 change from previous value), keeping all math out of this process.
+
+P3-02 vintages: FRED is really ALFRED underneath — every observation
+carries ``realtime_start``, the date this exact value became public.
+When a ``vintage_sink`` is injected, each fetch also appends
+(name, value, observed_at=realtime_start, as_of=observation date) so
+revised macro data never rewrites what a past decision saw. Without a
+sink the feed behaves exactly as before.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from tradingagents.contracts import MetricReading
 from tradingagents.dataflows.fred import FredNotConfiguredError
 from tradingagents.pro.ingestion.base import HttpTransport, RequestsTransport
 
+logger = logging.getLogger(__name__)
+
 API_BASE = "https://api.stlouisfed.org/fred"
+
+# P3-02 vintage sink: called once per usable observation with keyword args
+# (name, value, observed_at, as_of, source) — the exact signature of
+# EventStore.record_vintage, so the store method IS a valid sink.
+VintageSink = Callable[..., None]
 
 # metric name -> (FRED series id, units transform, unit label)
 DEFAULT_SERIES: dict[str, tuple[str, str, str]] = {
@@ -47,10 +63,12 @@ class FredMacroFeed:
         transport: HttpTransport | None = None,
         series: dict[str, tuple[str, str, str]] | None = None,
         api_key: str | None = None,
+        vintage_sink: VintageSink | None = None,
     ):
         self._transport = transport or RequestsTransport()
         self._series = series or DEFAULT_SERIES
         self._api_key = api_key
+        self._vintage_sink = vintage_sink
 
     def _key(self) -> str:
         key = self._api_key or os.environ.get("FRED_API_KEY", "")
@@ -117,17 +135,49 @@ class FredMacroFeed:
                     "limit": 5,  # tolerate a few leading "." placeholders
                 },
             )
+            reading_emitted = False
             for obs in payload.get("observations", []):
                 if obs.get("value") in (".", "", None):
                     continue
-                readings.append(
-                    MetricReading(
-                        name=name,
-                        value=float(obs["value"]),
-                        unit=unit_label,
-                        as_of=datetime.fromisoformat(obs["date"]).replace(tzinfo=timezone.utc),
-                        source=f"fred:{series_id}",
-                    )
+                value = float(obs["value"])
+                as_of = datetime.fromisoformat(obs["date"]).replace(
+                    tzinfo=timezone.utc
                 )
-                break
+                self._record_vintage(name, value, obs, as_of,
+                                     f"fred:{series_id}")
+                if not reading_emitted:
+                    readings.append(
+                        MetricReading(
+                            name=name,
+                            value=value,
+                            unit=unit_label,
+                            as_of=as_of,
+                            source=f"fred:{series_id}",
+                        )
+                    )
+                    reading_emitted = True
+                if self._vintage_sink is None:
+                    break  # no sink: stop at the first usable value, as before
         return readings
+
+    def _record_vintage(self, name: str, value: float, obs: dict,
+                        as_of: datetime, source: str) -> None:
+        """P3-02: append (value, observed_at, as_of) through the sink.
+
+        ``observed_at`` is ALFRED's ``realtime_start`` — the date the world
+        first knew this exact value (FRED echoes it on every observation).
+        Sink failures only log: vintage capture must never degrade the feed.
+        """
+        if self._vintage_sink is None:
+            return
+        try:
+            raw = obs.get("realtime_start") or ""
+            observed_at = (
+                datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+                if raw else datetime.now(timezone.utc)
+            )
+            self._vintage_sink(name=name, value=value,
+                               observed_at=observed_at, as_of=as_of,
+                               source=source)
+        except Exception:  # noqa: BLE001 — sink is best-effort by contract
+            logger.warning("vintage sink failed for %s", name, exc_info=True)

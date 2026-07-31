@@ -47,6 +47,7 @@ class SnapshotBuilder:
         indicator_names: Sequence[str] = DEFAULT_INDICATOR_NAMES,
         session_fn: SessionFn | None = None,
         news_feed=None,
+        vintage_reader=None,
     ):
         self._bars_feed = bars_feed
         self._quote_feed = quote_feed
@@ -56,6 +57,10 @@ class SnapshotBuilder:
         self._indicator_names = tuple(indicator_names)
         self._session_fn = session_fn
         self._news_feed = news_feed
+        # P3-02: anything exposing latest_as_known(name, at) -> row|None
+        # (EventStore qualifies). Only consulted for explicit-as_of builds
+        # (backtests/evals); the live path never touches it.
+        self._vintage_reader = vintage_reader
 
     def build(
         self,
@@ -66,6 +71,9 @@ class SnapshotBuilder:
         bar_limit: int = 250,
         as_of: datetime | None = None,
     ) -> MarketSnapshot:
+        # an explicit as_of marks a point-in-time build (backtest/eval);
+        # its macro readings must be replayed "as known then" (P3-02)
+        pit_as_of = as_of
         as_of = as_of or datetime.now(timezone.utc)
         missing: list[str] = []
 
@@ -106,6 +114,8 @@ class SnapshotBuilder:
                     missing.append(f"{self._news_feed.name}:empty")
 
         macro = self._collect(self._macro_feeds, missing)
+        if pit_as_of is not None and self._vintage_reader is not None:
+            macro = self._apply_vintages(macro, pit_as_of)
         onchain = self._collect(self._onchain_feeds, missing)
         for fn in self._extra_metric_fns:
             try:
@@ -129,6 +139,42 @@ class SnapshotBuilder:
             missing_feeds=missing,
         )
 
+    def _apply_vintages(
+        self, readings: list[MetricReading], at: datetime
+    ) -> list[MetricReading]:
+        """P3-02 point-in-time read: replay macro metrics "as known at" ``at``.
+
+        Per reading: a vintage knowable at ``at`` replaces it (revised data
+        never leaks into the past); a metric the vintage store tracks but
+        had not yet observed is dropped (it was not knowable then); a metric
+        the store has never vintaged passes through unchanged (cross-asset
+        correlations etc. have no vintage history — best effort beats
+        gutting the snapshot).
+        """
+        has_vintages = getattr(self._vintage_reader, "has_vintages",
+                               lambda _name: False)
+        out: list[MetricReading] = []
+        for reading in readings:
+            try:
+                row = self._vintage_reader.latest_as_known(reading.name, at)
+            except Exception:
+                logger.warning("vintage read failed for %s", reading.name,
+                               exc_info=True)
+                out.append(reading)
+                continue
+            if row is not None:
+                out.append(MetricReading(
+                    name=reading.name,
+                    value=row["value"],
+                    unit=reading.unit,
+                    as_of=row["as_of"],
+                    source=row.get("source") or reading.source,
+                ))
+            elif not has_vintages(reading.name):
+                out.append(reading)
+            # else: tracked series, nothing observed by ``at`` — drop
+        return out
+
     @staticmethod
     def _collect(feeds: Sequence[MetricsFeed], missing: list[str]) -> list[MetricReading]:
         readings: list[MetricReading] = []
@@ -144,6 +190,7 @@ class SnapshotBuilder:
 def build_gold_pipeline(
     loader=None, transport=None, correlation_window: int = 30,
     cot_cache_path=None, goldhub_csv_path=None,
+    vintage_sink=None, vintage_reader=None,
 ) -> SnapshotBuilder:
     """Default gold (XAU) pipeline: GC=F daily bars + cross-asset context +
     FRED macro + CFTC COT positioning + GVZ implied vol + Goldhub monthly
@@ -156,7 +203,7 @@ def build_gold_pipeline(
     bars_feed = YFinanceDailyBarsFeed(loader=loader)
     macro_feeds = [
         GoldCrossAssetFeed(bars_feed, correlation_window=correlation_window),
-        FredMacroFeed(transport=transport),
+        FredMacroFeed(transport=transport, vintage_sink=vintage_sink),
         GoldCotFeed(transport=transport, cache_path=cot_cache_path),
         GoldVolFeed(bars_feed),
     ]
@@ -167,6 +214,7 @@ def build_gold_pipeline(
         macro_feeds=tuple(macro_feeds),
         news_feed=YahooFinanceNewsFeed("GC=F"),
         session_fn=current_session,
+        vintage_reader=vintage_reader,
     )
 
 

@@ -88,7 +88,7 @@ FX_WIRING: dict[str, tuple[str, str]] = {
 }
 
 
-def _crypto_snapshot_builder(symbol: str):
+def _crypto_snapshot_builder(symbol: str, vintage_sink=None):
     """One SnapshotBuilder per crypto symbol: Delta bars/derivatives +
     CoinMetrics on-chain + Fear & Greed + Yahoo news — the BTC wiring,
     parameterized (Phase 2 of the score plan: ETH/SOL are config, not code)."""
@@ -125,14 +125,14 @@ def _crypto_snapshot_builder(symbol: str):
         onchain.append(shared_stream("BTCUSDT"))
     return SnapshotBuilder(
         bars_feed=_MappedBars(delta, {symbol: vendor}),
-        macro_feeds=(FredMacroFeed(),),
+        macro_feeds=(FredMacroFeed(vintage_sink=vintage_sink),),
         onchain_feeds=tuple(onchain),
         news_feed=YahooFinanceNewsFeed(symbol),
         session_fn=current_session,
     )
 
 
-def _fx_snapshot_builder(symbol: str):
+def _fx_snapshot_builder(symbol: str, vintage_sink=None):
     """One SnapshotBuilder per FX pair: OANDA intraday bars when the token
     is configured (else yfinance daily), FRED rates + dollar/yield context,
     Yahoo news, FX session awareness. Deliberately composed WITHOUT crypto
@@ -159,7 +159,7 @@ def _fx_snapshot_builder(symbol: str):
     # are simply unused by FX-relevant agents
     return SnapshotBuilder(
         bars_feed=bars_feed,
-        macro_feeds=(FredMacroFeed(),
+        macro_feeds=(FredMacroFeed(vintage_sink=vintage_sink),
                      GoldCrossAssetFeed(YFinanceDailyBarsFeed())),
         news_feed=YahooFinanceNewsFeed(yf_sym),
         session_fn=current_session,
@@ -517,9 +517,21 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
     from tradingagents.pro.ingestion.goldhub import GOLDHUB_CSV_NAME
 
+    # P3-02: every FRED fetch also appends (name, value, observed_at, as_of)
+    # to the event store so backtests can read metrics "as known at decision
+    # time". Best-effort by contract — a vintage failure never fails a boot
+    # or a snapshot build.
+    def _vintage_sink(**kw):
+        try:
+            event_store.record_vintage(**kw)
+        except Exception:
+            logging.getLogger(__name__).warning("vintage record failed",
+                                                exc_info=True)
+
     builder = build_gold_pipeline(loader=gold_loader,
                                   cot_cache_path=data_path / "cot_cache.json",
-                                  goldhub_csv_path=data_path / GOLDHUB_CSV_NAME)
+                                  goldhub_csv_path=data_path / GOLDHUB_CSV_NAME,
+                                  vintage_sink=_vintage_sink)
 
     # multi-symbol rotation (Phase 2, P2-10): one symbol per hourly tick,
     # so LLM spend stays flat while the whole universe accrues decisions —
@@ -529,9 +541,11 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
     from tradingagents.contracts import ASSET_BY_SYMBOL, AssetClass as AC
 
-    crypto_builders = {sym: _crypto_snapshot_builder(sym)
+    crypto_builders = {sym: _crypto_snapshot_builder(sym,
+                                                     vintage_sink=_vintage_sink)
                        for sym in CRYPTO_WIRING}
-    fx_builders = {sym: _fx_snapshot_builder(sym) for sym in FX_WIRING}
+    fx_builders = {sym: _fx_snapshot_builder(sym, vintage_sink=_vintage_sink)
+                   for sym in FX_WIRING}
     rotation = itertools.cycle(("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD",
                                 "EURUSD", "USDJPY"))
 
