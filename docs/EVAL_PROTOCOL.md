@@ -115,3 +115,22 @@ Every harness writes a timestamped JSON under `docs/evals/`
 provider, model ids, parameters and per-case rows; human-readable
 summaries live beside them (`stability.md`, `ablation.md`). Published
 claims must cite the artifact they came from.
+
+## Recorded verdicts
+
+- **2026-07-31 memorization audit (n=1 + n=3 confirmation, claude-cli
+  haiku/sonnet)** — `memorization_20260730T142630Z.json`,
+  `memorization_20260731T024933Z.json`. **No direction-level
+  contamination**: across all 20 arm-runs, no approved decision ever
+  flipped direction (every approval was BUY on both bullish fixtures,
+  named or masked). **Gate-level naming sensitivity found**: pooling
+  both audits, anonymized arms rejected 4/8 runs vs 1/8 named — masking
+  shifts the approve/reject boundary toward rejection, while mean stated
+  confidence is basically unchanged (XAUUSD 50.5 named vs 48.0 anon).
+  Working hypothesis: an anonymizer ARTIFACT, not memorization — masked
+  evidence ("ASSET_A") strips asset vocabulary the critic weighs, making
+  the audit stage more skeptical — compounded by the known boundary
+  nondeterminism (P1-01: 30–50% gate flip, reduced not eliminated).
+  Distinguishing artifact from true naming reliance needs per-arm
+  evidence-count/critic-issue comparison at larger n. Flags stand as
+  recorded; direction-level verdict: CLEAN.

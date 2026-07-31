@@ -1,0 +1,50 @@
+{
+  "as_of": "2026-07-31T02:49:33.558383+00:00",
+  "provider": "claude-cli",
+  "quick": "claude-haiku-4-5-20251001",
+  "deep": "claude-sonnet-5",
+  "samples": 3,
+  "seed": 0,
+  "rows": [
+    {
+      "case": "clean_uptrend_supportive_macro",
+      "symbol": "XAUUSD",
+      "token": "ASSET_A",
+      "samples": 3,
+      "named_actions": [
+        "rejected",
+        "BUY",
+        "BUY"
+      ],
+      "anon_actions": [
+        "BUY",
+        "rejected",
+        "rejected"
+      ],
+      "named_mean_confidence": 50.5,
+      "anon_mean_confidence": 48,
+      "action_agreement": 0.0,
+      "flagged": true
+    },
+    {
+      "case": "btc_h1_uptrend",
+      "symbol": "BTC-USD",
+      "token": "ASSET_A",
+      "samples": 3,
+      "named_actions": [
+        "BUY",
+        "BUY",
+        "BUY"
+      ],
+      "anon_actions": [
+        "BUY",
+        "BUY",
+        "rejected"
+      ],
+      "named_mean_confidence": 43,
+      "anon_mean_confidence": 50.5,
+      "action_agreement": 0.667,
+      "flagged": true
+    }
+  ]
+}
