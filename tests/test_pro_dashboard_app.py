@@ -296,6 +296,162 @@ class TestRunPersistence:
         assert rows[0]["timeframe"] == "1d"
 
 
+# P3-06 golden pack: every deterministic field of the export, verbatim.
+# Volatile fields (ids, timestamps, hashes) are normalized to "<volatile>"
+# before comparison; transcript/evidence/recommendation are asserted
+# separately against the view helpers they must reuse.
+_EXPORT_GOLDEN = {
+    "pack_format": 1,
+    "generated_at": "<volatile>",
+    "run_id": "<volatile>",
+    "symbol": "XAUUSD",
+    "asset": "XAU",
+    "started_at": "<volatile>",
+    "trigger": "loop",
+    "timeframe": "1d",
+    "versions": {
+        "git_sha": "<volatile>",
+        "prompt_hash": "<volatile>",
+        "model_ids": ["gpt-5.4-mini", "gpt-5.5"],
+        "config_hash": "<volatile>",
+    },
+    "snapshot": {
+        "symbol": "XAUUSD",
+        "as_of": "2026-07-06T14:30:00+00:00",
+        "last_close": 130.0,
+        "n_bars": 60,
+        "session": None,
+        "missing_feeds": [],
+        "regime": "trending_up",
+        "bar_range": {
+            "first": "2026-06-01T00:00:00+00:00",
+            "last": "2026-07-30T00:00:00+00:00",
+        },
+    },
+    "gates": {
+        "risk": {
+            "passed": True,
+            "checks": {
+                "var_available": True,
+                "var_within_limit": True,
+                "cvar_within_limit": True,
+            },
+            "reasons": [],
+        },
+        "critic": {
+            "passed": True,
+            "issues": [],
+            "samples": 3,
+            "votes_pass": 3,
+        },
+    },
+    "execution": {
+        "execution_status": "accepted:paper",
+        "order": {
+            "trade_record_id": "<volatile>",
+            "recommendation_id": "<volatile>",
+            "action": "BUY",
+            "confidence": 72,
+            "regime": "trending_up",
+            "entry_price": 130.0,
+            "stop_loss": 125.0,
+            "take_profits": [132.5, 147.5],
+            "risk_reward": 2.0,
+        },
+    },
+    "outcome": None,
+    "calibration": None,
+}
+
+
+def _normalize_pack(pack: dict) -> dict:
+    """Blank the volatile fields (ids/timestamps/hashes); drop the three
+    sections asserted separately against their view helpers."""
+    import copy
+
+    norm = copy.deepcopy(pack)
+    for key in ("generated_at", "run_id", "started_at"):
+        norm[key] = "<volatile>"
+    for key in ("git_sha", "prompt_hash", "config_hash"):
+        norm["versions"][key] = "<volatile>"
+    order = norm["execution"]["order"]
+    if order is not None:
+        order["trade_record_id"] = "<volatile>"
+        order["recommendation_id"] = "<volatile>"
+    for section in ("transcript", "evidence", "recommendation"):
+        norm.pop(section)
+    return norm
+
+
+class TestExportPack:
+    """P3-06 decision-audit export packs."""
+
+    def test_export_pack_golden(self):
+        import json
+
+        from tradingagents.pro.dashboard import service
+
+        state = DashboardState(memory=ProMemory())
+        run = state.recorder.record_run(
+            FakePipelineLLM(), CONFIG, pipeline_snapshot(), memory=state.memory
+        )
+        client = TestClient(create_app(state))
+        resp = client.get(f"/api/runs/{run.run_id}/export")
+        assert resp.status_code == 200
+        assert resp.headers["content-disposition"] == (
+            f'attachment; filename="run-{run.run_id}.json"')
+        pack = resp.json()
+
+        # complete structure: exactly the documented keys, no drift
+        assert set(pack) == set(_EXPORT_GOLDEN) | {
+            "transcript", "evidence", "recommendation"}
+        # P3-07 stamp present with all four provenance keys
+        assert set(pack["versions"]) == {
+            "git_sha", "prompt_hash", "model_ids", "config_hash"}
+        assert pack["versions"]["git_sha"]
+        # full transcript, straight from the debate_timeline view helper
+        assert pack["transcript"]["entries"]
+        assert pack["transcript"] == json.loads(
+            json.dumps(service.debate_timeline(run)))
+        assert [e["speaker"] for e in pack["transcript"]["entries"]] == [
+            "technical_bull", "technical_bear", "macro_bull", "macro_bear",
+            "sentiment", "critic", "reflection", "judge"]
+        # evidence panels, straight from the evidence_panels view helper
+        assert pack["evidence"] == json.loads(
+            json.dumps(service.evidence_panels(run)))
+        # the ticket is the full recommendation view
+        rec = pack["recommendation"]
+        assert rec["action"] == "BUY" and rec["confidence"] == 72
+        assert rec["invalidation"] and rec["rejection"] is None
+        # deterministic remainder matches the checked-in golden verbatim
+        assert _normalize_pack(pack) == _EXPORT_GOLDEN
+
+    def test_export_pack_includes_outcome_and_calibration(self):
+        state = DashboardState(memory=ProMemory())
+        run = state.recorder.record_run(
+            FakePipelineLLM(), CONFIG, pipeline_snapshot(), memory=state.memory
+        )
+        trade = state.memory.find_trade_by_recommendation(
+            run.recommendation.id)
+        state.memory.close_trade(trade.id, pnl=42.0, details={
+            "mode": "paper", "venue_order_id": "V-1", "fill_price": 130.2})
+        # enough scored outcomes for a p_win estimate (min_n=5)
+        for _ in range(5):
+            extra = state.memory.record_trade(run.recommendation)
+            state.memory.close_trade(extra.id, pnl=1.0, write_lesson=False)
+        client = TestClient(create_app(state))
+        pack = client.get(f"/api/runs/{run.run_id}/export").json()
+        assert pack["outcome"]["pnl"] == 42.0
+        assert pack["outcome"]["won"] is True
+        assert pack["outcome"]["venue_order_id"] == "V-1"
+        assert pack["outcome"]["fill_price"] == 130.2
+        assert pack["calibration"]["p_win"] == 1.0
+        assert pack["calibration"]["n"] >= 5
+
+    def test_export_unknown_run_is_404(self, client):
+        assert client.get("/api/runs/nope/export").status_code == 404
+
+
 class TestPipelineTriggerEndpoint:
     @pytest.fixture()
     def triggered_client(self):

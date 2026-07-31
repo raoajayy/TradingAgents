@@ -52,7 +52,59 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0,
                         help="label-mapping seed for --memorization-audit "
                              "(default 0)")
+    parser.add_argument("--self-assessment", action="store_true",
+                        help="P3-08: generate the RTS-6-flavored quarterly "
+                             "self-assessment from the event store (no "
+                             "model calls); requires --start and --end")
+    parser.add_argument("--start", default=None,
+                        help="period start YYYY-MM-DD (--self-assessment)")
+    parser.add_argument("--end", default=None,
+                        help="period end YYYY-MM-DD, inclusive "
+                             "(--self-assessment)")
     args = parser.parse_args()
+
+    if args.self_assessment:
+        # zero-LLM: reads the shared /data volume like the operator CLI —
+        # runs, memory, and the hash-chained audit log; never a provider key
+        from datetime import date
+        from pathlib import Path
+
+        from tradingagents.pro.dashboard.prefs import default_data_dir
+        from tradingagents.pro.dashboard.recorder import PipelineRecorder
+        from tradingagents.pro.evals.self_assessment import (
+            generate_self_assessment,
+        )
+        from tradingagents.pro.memory import ProMemory
+
+        if not args.start or not args.end:
+            print("--self-assessment requires --start and --end "
+                  "(YYYY-MM-DD)", file=sys.stderr)
+            return 2
+        try:
+            start = date.fromisoformat(args.start)
+            end = date.fromisoformat(args.end)
+        except ValueError as exc:
+            print(f"bad date: {exc}", file=sys.stderr)
+            return 2
+        data = default_data_dir()
+        memory_path = data / "memory.jsonl"
+        memory = (ProMemory(store_path=memory_path)
+                  if memory_path.exists() else ProMemory())
+        doc = generate_self_assessment(
+            recorder_runs=PipelineRecorder(store_dir=data / "runs").runs,
+            memory=memory,
+            audit_path=data / "audit.jsonl",
+            metrics=None,
+            start=start,
+            end=end,
+        )
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"self_assessment_{start}_{end}.md"
+        out.write_text(doc, encoding="utf-8")
+        print(doc)
+        print(f"\nwrote {out}")
+        return 0
 
     cases = golden_cases()
     if args.tag:

@@ -269,6 +269,79 @@ def evidence_panels(run: RunRecord) -> dict:
     return panels
 
 
+def _linked_trade_and_outcome(run: RunRecord, memory: ProMemory):
+    """The (TRADE, OUTCOME) memory records for a run's recommendation, or
+    (None, None). The journal's linkage: the pipeline writes a TRADE record
+    carrying ``payload.recommendation_id``; closing it writes an OUTCOME
+    whose ``ref_id`` is that TRADE record's id."""
+    rec = run.recommendation
+    if rec is None or memory is None:
+        return None, None
+    trade = memory.find_trade_by_recommendation(rec.id)
+    if trade is None:
+        return None, None
+    outcome = next((o for o in memory.records(MemoryKind.OUTCOME)
+                    if o.ref_id == trade.id), None)
+    return trade, outcome
+
+
+def decision_export_pack(run: RunRecord, memory: ProMemory) -> dict:
+    """P3-06 decision-audit export pack: the complete reviewable record of
+    ONE run, assembled from the existing tested view helpers — snapshot
+    inputs, full debate transcript, gate results, the recommendation (or
+    rejection), execution outcome, the graded result from memory,
+    calibration context, and the P3-07 version stamp. Everything comes
+    from the event store; nothing is recomputed or invented."""
+    from tradingagents.contracts import utc_now
+
+    snapshot = run.state.get("snapshot")
+    bars = snapshot.bars if snapshot is not None else []
+    inputs = run.snapshot_summary() if snapshot is not None else {}
+    inputs["bar_range"] = {
+        "first": bars[0].start.isoformat() if bars else None,
+        "last": bars[-1].start.isoformat() if bars else None,
+    }
+    reflection = run.state.get("reflection") or {}
+    rec = run.recommendation
+    trade, outcome = _linked_trade_and_outcome(run, memory)
+    return {
+        "pack_format": 1,
+        "generated_at": utc_now().isoformat(),
+        "run_id": run.run_id,
+        "symbol": run.symbol,
+        "asset": run.asset,
+        "started_at": run.started_at.isoformat(),
+        "trigger": run.trigger,
+        "timeframe": run.timeframe,
+        # P3-07 provenance stamp; None on pre-stamp runs
+        "versions": run.versions,
+        "snapshot": inputs,
+        "transcript": debate_timeline(run),
+        "evidence": evidence_panels(run),
+        "gates": run.state.get("gate_results") or {},
+        "recommendation": recommendation_view(
+            rec, invalidation=reflection.get("invalidation"),
+            rejection=run.rejection),
+        "execution": {
+            # honest venue verdict, e.g. "accepted:paper" /
+            # "rejected:order (kill_switch: …)"; None on pre-execution runs
+            "execution_status": run.state.get("execution_status"),
+            # the order geometry the pipeline committed to (entry/stop/TPs)
+            "order": ({"trade_record_id": trade.id, **trade.payload}
+                      if trade is not None else None),
+        },
+        # graded result once the trade closed: pnl/won plus the venue truth
+        # (mode, commission, venue_order_id, fill_price, TCA) when present
+        "outcome": ({"closed_at": outcome.created_at.isoformat(),
+                     **outcome.payload}
+                    if outcome is not None else None),
+        # empirical p(win) at this ticket's confidence; None below the
+        # sample floor — never an invented number
+        "calibration": (estimate_p_win(memory, rec.confidence)
+                        if rec is not None else None),
+    }
+
+
 def trade_journal(memory: ProMemory) -> dict:
     trades = {r.id: r for r in memory.records(MemoryKind.TRADE)}
     entries = []

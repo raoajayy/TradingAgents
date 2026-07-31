@@ -694,6 +694,21 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
     def evidence(run_id: str) -> dict:
         return service.evidence_panels(_run_or_404(run_id))
 
+    @app.get("/api/runs/{run_id}/export")
+    def export_run(run_id: str) -> JSONResponse:
+        """P3-06 decision-audit export pack: one complete JSON bundle per
+        run (inputs, transcript, gates, ticket, execution, outcome,
+        calibration, P3-07 versions) — the compliance artifact. Served as
+        a download; auth-gated by the /api middleware like every run view.
+        JSON only: the repo's HTML/PDF report generator renders
+        BacktestResults, not decision runs, and a PDF dependency for this
+        pack is deliberately avoided."""
+        run = _run_or_404(run_id)  # 404 before any filename is built
+        pack = service.decision_export_pack(run, state.memory)
+        return JSONResponse(pack, headers={
+            "Content-Disposition":
+                f'attachment; filename="run-{run.run_id}.json"'})
+
     def _ticket_view(run: RunRecord | None) -> dict:
         if run is None:
             return service.recommendation_view(None)
