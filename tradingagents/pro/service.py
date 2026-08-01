@@ -105,6 +105,12 @@ class PaperTradingService:
         self.dashboard = dashboard_state or DashboardState(memory=memory)
         self.metrics = metrics or MetricsRegistry()
         self.alerts = alerts or AlertManager(metrics=self.metrics)
+        # P3-10 TWAP slicing: the router pages through the service's alert
+        # manager on a mid-window slice failure and prices each slice's
+        # arrival off the shared tick cache. Both fail-open — a bare router
+        # logs instead of alerting and falls back to the entry reference.
+        router.alerts = self.alerts
+        router.twap_price_fn = self._twap_price
         self.on_event = on_event
         # serializes pipeline executions (hourly loop vs on-demand trigger)
         self.run_lock = run_lock or threading.Lock()
@@ -473,6 +479,7 @@ class PaperTradingService:
                     entry_commission=result.commission,
                 )
                 self._capture_tca(position, rec.symbol, snapshot)
+                self._annotate_twap(position)  # P3-10: sliced-entry TCA
                 self.open_positions[rec.symbol] = position
             if result.status == "submitted":
                 # P3-01: a live entry may fill asynchronously (via OMS
@@ -1021,6 +1028,48 @@ class PaperTradingService:
             timer.daemon = True
             timer.start()
 
+    # --- P3-10 TWAP slicing ------------------------------------------------------
+
+    def _twap_price(self, symbol: str) -> float | None:
+        """Router-injected arrival source for TWAP slices: last cached tick
+        (the same cache the P1-04 markouts read), None when unavailable."""
+        ticks = getattr(self.dashboard, "ticks", None)
+        if ticks is None:
+            return None
+        try:
+            cached = ticks.get(symbol)
+            return float(cached[0]) if cached else None
+        except Exception:
+            return None
+
+    def _annotate_twap(self, position: OpenPosition) -> None:
+        """Fold the router's per-slice TCA into the position: quantity and
+        entry price become the across-slices totals (P&L stays honest) and
+        ``tca['twap']`` carries the sliced-vs-single summary that lands on
+        the journal entry as ``tca_twap_summary`` at close."""
+        summary_fn = getattr(self.router, "twap_summary", None)
+        if summary_fn is None:
+            return
+        summary = summary_fn(position.recommendation.id)
+        if summary is None:
+            return
+        position.tca["twap"] = summary
+        if summary.get("filled_quantity") and summary.get("avg_fill_price"):
+            position.quantity = summary["filled_quantity"]
+            position.fill_price = summary["avg_fill_price"]
+            position.entry_commission = summary.get(
+                "commission", position.entry_commission)
+
+    def _absorb_twap_fills(self) -> None:
+        """Slices 2..n fill on the router's timer chain between runs — pull
+        them into the open positions before exits are evaluated."""
+        executions = getattr(self.router, "twap_executions", None)
+        if not executions:
+            return
+        for position in self.open_positions.values():
+            if position.recommendation.id in executions:
+                self._annotate_twap(position)
+
     @staticmethod
     def _accrue_funding(position: OpenPosition, snapshot, bar) -> None:
         """P1-03: charge realized perp funding on open crypto positions.
@@ -1052,6 +1101,7 @@ class PaperTradingService:
             return []
         bar = snapshot.bars[-1]
         closed = self._consume_oms_exits(bar)
+        self._absorb_twap_fills()  # P3-10: fold timer-chain slice fills in
         for symbol, position in list(self.open_positions.items()):
             if symbol != snapshot.symbol:
                 continue
@@ -1096,6 +1146,10 @@ class PaperTradingService:
                         "commission": position.entry_commission + result.commission,
                         "funding_paid": position.funding_paid,
                         "tca": position.tca,
+                        # P3-10: sliced-vs-single aggregation, explicit on
+                        # the journal entry (absent for unsliced entries)
+                        **({"tca_twap_summary": position.tca["twap"]}
+                           if "twap" in position.tca else {}),
                         "venue_order_id": result.venue_symbol,
                         "fill_price": result.fill_price,
                         "entry_price": position.fill_price,
@@ -1136,10 +1190,16 @@ class PaperTradingService:
         arrival = self._arrival_mid(snapshot)
         if arrival is None:
             return
-        from tradingagents.pro.execution import ids as _ids
+        entry_coid = getattr(self.router, "entry_coid", None)
+        if entry_coid is not None:
+            # P3-10: when TWAP slicing applies, the first venue order is
+            # the sliced child — register its coid, not the full rec's
+            coid = entry_coid(rec)
+        else:
+            from tradingagents.pro.execution import ids as _ids
 
-        coid = _ids.client_order_id(rec.id, _ids.decision_hash(rec),
-                                    _ids.ENTRY)
+            coid = _ids.client_order_id(rec.id, _ids.decision_hash(rec),
+                                        _ids.ENTRY)
         self._pending_live_tca[coid] = {"rec": rec, "arrival": arrival}
 
     def _absorb_live_entry_fills(self) -> None:
@@ -1191,6 +1251,8 @@ class PaperTradingService:
                         details={
                             "mode": self._trade_mode(trade.symbol),
                             "commission": trade.commission,
+                            **({"tca_twap_summary": position.tca["twap"]}
+                               if "twap" in position.tca else {}),
                             "venue_order_id": trade.client_order_id,
                             "fill_price": trade.exit_price,
                             "entry_price": trade.entry_price,

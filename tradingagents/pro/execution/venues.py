@@ -204,10 +204,7 @@ class PaperVenueAdapter:
         self._cash -= fee
         sign = 1 if order.side == "BUY" else -1
         self._cash -= sign * quantity * fill_price
-        self._positions[order.symbol] = BrokerPosition(
-            symbol=order.symbol, side=order.side, quantity=quantity,
-            avg_price=fill_price,
-        )
+        self._book_entry(order.symbol, order.side, quantity, fill_price)
         result = OrderResult(
             status="filled", idempotency_key=order.idempotency_key,
             venue=self.name, venue_symbol=venue_symbol,
@@ -236,6 +233,25 @@ class PaperVenueAdapter:
             venue=self.name, venue_symbol=self.venue.venue_symbol(symbol),
             filled_quantity=position.quantity, fill_price=fill_price, commission=fee,
         )
+
+    def _book_entry(self, symbol: str, side: str, quantity: float,
+                    fill_price: float) -> None:
+        """Record an entry fill. Same-side entries ACCUMULATE (quantity sums,
+        weighted-average price) like a real venue book — P3-10 TWAP slices
+        land as one growing position, not each slice clobbering the last."""
+        position = self._positions.get(symbol)
+        if position is not None and position.side == side:
+            total = round(position.quantity + quantity,
+                          self.venue.quantity_precision)
+            avg = ((position.avg_price * position.quantity
+                    + fill_price * quantity)
+                   / (position.quantity + quantity))
+            self._positions[symbol] = BrokerPosition(
+                symbol=symbol, side=side, quantity=total, avg_price=avg)
+        else:
+            self._positions[symbol] = BrokerPosition(
+                symbol=symbol, side=side, quantity=quantity,
+                avg_price=fill_price)
 
     def positions(self) -> list[BrokerPosition]:
         return list(self._positions.values())
@@ -320,10 +336,7 @@ class PaperVenueAdapter:
 
         sign = 1 if spec.side == "BUY" else -1
         self._cash -= sign * quantity * fill_price + fee
-        self._positions[spec.symbol] = BrokerPosition(
-            symbol=spec.symbol, side=spec.side, quantity=quantity,
-            avg_price=fill_price,
-        )
+        self._book_entry(spec.symbol, spec.side, quantity, fill_price)
         return self._v2_update(spec, OrderState.FILLED, filled=quantity,
                                price=fill_price, fee=fee)
 

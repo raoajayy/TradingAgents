@@ -4,14 +4,39 @@ Order of gates (each step audited):
 validate -> kill switch -> circuit breaker -> idempotent submit with
 bounded retries. Reconciliation compares the router's book against what
 the adapter reports — drift is surfaced, never silently adopted.
+
+P3-10 TWAP entry slicing lives HERE, in the router, not in the OMS.
+Rationale: the OMS's atomicity unit is one ExecutionPlan = one entry plus
+its protection, placed as a unit (native bracket on Binance, synthetic
+stop + watchdog elsewhere). Slicing above that boundary means every child
+slice is a complete plan flowing through the SAME dispatch tail a single
+order uses — so the P3-01 "no naked entry" invariant holds per slice by
+construction, on every venue, with zero new code inside the OMS or the
+adapters.
+
+Per-venue stop rule (investigated, P3-10): no wired venue can rest a
+protective stop for quantity that has not filled yet — Binance rejects a
+reduce-only STOP_MARKET with no position behind it, and the paper
+adapter's synthetic-stop path likewise rejects reduce-only orders without
+an opposing position. The "venue stop for the full intended quantity goes
+first" variant is therefore impossible everywhere; the safest available
+rule is PER-SLICE stops: each child carries the full BracketSpec, so
+Binance places entry+STOP_MARKET atomically inside place_order per slice,
+the synthetic-bracket OMS path places a per-slice reduce-only stop, and
+the paper default (bar_close) manages whatever quantity is open. A process
+death mid-window leaves the remaining slices unplaced (timers are
+best-effort, like the P1-04 markouts) — every already-filled slice is
+already protected, and a detectable mid-window failure logs, audits and
+alerts (``twap_slice_failed``).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 
-from tradingagents.contracts import RiskLimits, TradeRecommendation
+from tradingagents.contracts import RiskLimits, TradeRecommendation, utc_now
 from tradingagents.pro.execution.audit import AuditLog
 from tradingagents.pro.execution.interface import (
     AdapterError,
@@ -69,6 +94,16 @@ class ExecutionRouter:
     # service sets it from versioning.build_version_stamp(config); None
     # (bare routers, old wiring) simply omits the field.
     versions = None
+    # P3-10 TWAP slicing: the service wires ``alerts`` (AlertManager) so a
+    # mid-window slice failure pages, and ``twap_price_fn`` (symbol -> last
+    # price or None) so each slice records its own arrival price off the
+    # shared tick cache. Both optional — bare routers fall back to logging
+    # and the recommendation's entry reference. ``twap_executions`` holds
+    # per-recommendation slice state (fills, schedule, summary) keyed by
+    # recommendation id; the service folds it into position TCA.
+    alerts = None
+    twap_price_fn = None
+    twap_executions: dict[str, dict] = field(default_factory=dict)
 
     def tier_for(self, symbol: str) -> str:
         if self.arming is None:
@@ -164,6 +199,19 @@ class ExecutionRouter:
             if not gate.ok:
                 return self._refuse(rec, gate.gate, gate.reason)
 
+        # P3-10: a gated ENTRY may be split into TWAP child orders; every
+        # child flows through the same dispatch tail below. Disabled
+        # (twap_slices=1, the default) this branch is never taken and the
+        # single-order path is byte-identical to pre-P3-10 behavior.
+        if self._twap_applies(rec, tier):
+            return self._submit_twap(rec, tier, route_live)
+
+        return self._dispatch_entry(rec, tier, route_live)
+
+    def _dispatch_entry(self, rec: TradeRecommendation, tier: str,
+                        route_live: bool) -> OrderResult:
+        """The venue dispatch tail every gated entry takes — a single order
+        directly, TWAP children one slice at a time."""
         if route_live:
             return self._submit_via_oms(rec, oms=self.live_oms, tier=tier)
 
@@ -197,6 +245,244 @@ class ExecutionRouter:
             )
         self._maybe_shadow(rec, tier, result)
         return result
+
+    # --- P3-10 TWAP entry slicing ---------------------------------------------
+
+    def _twap_applies(self, rec, tier: str) -> bool:
+        """Entries only, n>1 with a window, never canary (already clamped
+        to the venue minimum — children would round below it)."""
+        n = getattr(self.limits, "twap_slices", 1) or 1
+        window = getattr(self.limits, "twap_window_minutes", None)
+        if n <= 1 or not window or tier == "canary":
+            return False
+        return getattr(getattr(rec, "position_size", None),
+                       "quantity", 0.0) > 0
+
+    @staticmethod
+    def _twap_slice_quantities(total: float, n: int) -> list[float]:
+        """n ~equal children whose sum is exactly ``total`` — the rounding
+        remainder lands on the last slice."""
+        base = round(total / n, 10)
+        return [base] * (n - 1) + [round(total - base * (n - 1), 10)]
+
+    @staticmethod
+    def _twap_child(rec, index: int, quantity: float):
+        """Slice ``index`` as a full recommendation copy: same symbol, side,
+        stop and TP ladder (per-slice protection), sliced quantity. Slice 1
+        keeps the recommendation id so idempotent resubmission still
+        dedupes; later slices get a deterministic ``#twapK`` suffix."""
+        update = {
+            "position_size": rec.position_size.model_copy(update={
+                "quantity": quantity,
+                "notional": (quantity * rec.entry_price
+                             if rec.entry_price else None),
+            }),
+        }
+        if index > 0:
+            update["id"] = f"{rec.id}#twap{index + 1}"
+        return rec.model_copy(update=update)
+
+    def entry_coid(self, rec) -> str:
+        """Deterministic client order id of the FIRST entry order this
+        recommendation produces — the sliced child when TWAP applies, the
+        recommendation itself otherwise (used by the service's pending
+        live-TCA registration)."""
+        from tradingagents.pro.execution import ids
+
+        target = rec
+        if self._twap_applies(rec, self.tier_for(rec.symbol)):
+            quantity = self._twap_slice_quantities(
+                rec.position_size.quantity, self.limits.twap_slices)[0]
+            target = self._twap_child(rec, 0, quantity)
+        return ids.client_order_id(target.id, ids.decision_hash(target),
+                                   ids.ENTRY)
+
+    def _twap_arrival(self, symbol: str, fallback: float | None):
+        """Per-slice arrival price: live tick when the service wired a
+        source, else the recommendation's entry reference."""
+        if self.twap_price_fn is not None:
+            try:
+                price = self.twap_price_fn(symbol)
+                if price:
+                    return float(price)
+            except Exception:
+                logger.warning("twap arrival price unavailable for %s",
+                               symbol, exc_info=True)
+        return fallback
+
+    def _submit_twap(self, rec, tier: str, route_live: bool) -> OrderResult:
+        n = int(self.limits.twap_slices)
+        quantities = self._twap_slice_quantities(
+            rec.position_size.quantity, n)
+        existing = self.twap_executions.get(rec.id)
+        if existing is not None:
+            # resubmission of a known decision: re-dispatch slice 1 only —
+            # the venue/OMS dedupe answers, the schedule is NOT restarted
+            return self._dispatch_entry(
+                self._twap_child(rec, 0, quantities[0]), tier, route_live)
+        state = {
+            "recommendation_id": rec.id,
+            "symbol": rec.symbol,
+            "side": rec.action.value,
+            "slices": n,
+            "window_minutes": float(self.limits.twap_window_minutes),
+            "total_quantity": rec.position_size.quantity,
+            "quantities": quantities,
+            "fills": [],
+            "next_slice": 1,
+            "failed": False,
+            "complete": False,
+            "timer": None,
+        }
+        self.twap_executions[rec.id] = state
+        self.audit.append("twap_started", self._stamped({
+            "recommendation_id": rec.id, "symbol": rec.symbol,
+            "slices": n, "window_minutes": state["window_minutes"],
+            "quantities": quantities, "tier": tier,
+        }))
+        result = self._twap_submit_slice(rec, state, 0, tier, route_live)
+        if result.status not in ("filled", "submitted"):
+            self._twap_abort(rec, state, 0,
+                             reason=result.reason or result.status)
+            return result
+        self._twap_schedule_next(rec, state, tier, route_live)
+        return result
+
+    def _twap_submit_slice(self, rec, state: dict, index: int, tier: str,
+                           route_live: bool) -> OrderResult:
+        child = self._twap_child(rec, index, state["quantities"][index])
+        arrival = self._twap_arrival(rec.symbol, rec.entry_price)
+        result = self._dispatch_entry(child, tier, route_live)
+        if result.status in ("filled", "submitted"):
+            state["fills"].append({
+                "slice": index + 1,
+                "client_id": child.id,
+                "arrival_mid": arrival,
+                "fill_price": result.fill_price,
+                "quantity": result.filled_quantity,
+                "commission": result.commission,
+                "status": result.status,
+                "ts": utc_now().isoformat(),
+            })
+            self.audit.append("twap_slice", self._stamped({
+                "recommendation_id": rec.id, "slice": index + 1,
+                "of": state["slices"], "status": result.status,
+                "quantity": result.filled_quantity,
+                "fill_price": result.fill_price, "arrival_mid": arrival,
+            }))
+        return result
+
+    def _twap_schedule_next(self, rec, state: dict, tier: str,
+                            route_live: bool) -> None:
+        index = state["next_slice"]
+        if index >= state["slices"]:
+            state["complete"] = True
+            self.audit.append("twap_complete", self._stamped({
+                "recommendation_id": rec.id,
+                **(self.twap_summary(rec.id) or {}),
+            }))
+            return
+        # slice k fires at k * window/n — even spread across the window
+        delay = state["window_minutes"] * 60.0 / state["slices"]
+        timer = threading.Timer(
+            delay, self._twap_fire, args=(rec, state, index, tier, route_live))
+        timer.daemon = True
+        state["timer"] = timer
+        timer.start()
+
+    def _twap_fire(self, rec, state: dict, index: int, tier: str,
+                   route_live: bool) -> None:
+        """Timer-chain body for slices 2..n. Best-effort by design: process
+        death leaves remaining slices unplaced (the filled quantity is
+        already protected per slice); a detectable failure aborts the chain
+        with a critical alert."""
+        state["next_slice"] = index + 1
+        try:
+            if self.kill_switch.engaged:
+                return self._twap_abort(
+                    rec, state, index,
+                    reason=self.kill_switch.reason or "kill switch engaged")
+            result = self._twap_submit_slice(rec, state, index, tier,
+                                             route_live)
+        except Exception as exc:  # noqa: BLE001 — must alert, never die silent
+            logger.exception("twap slice %d/%d for %s raised",
+                             index + 1, state["slices"], rec.symbol)
+            return self._twap_abort(rec, state, index, reason=str(exc))
+        if result.status not in ("filled", "submitted"):
+            return self._twap_abort(rec, state, index,
+                                    reason=result.reason or result.status)
+        self._twap_schedule_next(rec, state, tier, route_live)
+
+    def _twap_abort(self, rec, state: dict, index: int, reason: str) -> None:
+        state["failed"] = True
+        state["complete"] = True
+        unplaced = state["slices"] - index
+        detail = (
+            f"TWAP for {rec.symbol} aborted at slice {index + 1}/"
+            f"{state['slices']}: {reason} — {unplaced} slice(s) unplaced; "
+            "the filled quantity stays protected (per-slice venue stops / "
+            "bar-close management)")
+        logger.error(detail)
+        self.audit.append("twap_slice_failed", self._stamped({
+            "recommendation_id": rec.id, "symbol": rec.symbol,
+            "slice": index + 1, "reason": reason,
+            "unplaced_slices": unplaced,
+        }))
+        if self.alerts is not None:
+            try:
+                self.alerts.emit("critical", "twap_slice_failed", detail,
+                                 symbol=rec.symbol)
+            except Exception:
+                logger.exception("twap failure alert delivery failed")
+
+    def twap_summary(self, recommendation_id: str) -> dict | None:
+        """P3-10 TCA aggregation: sliced execution (arrival mid of slice 1
+        -> quantity-weighted average fill) vs the single-order counterfactual
+        (the slice-1 fill price for the whole quantity), in signed bps —
+        positive slippage = paid worse than arrival."""
+        state = self.twap_executions.get(recommendation_id)
+        if state is None:
+            return None
+        fills = [f for f in state["fills"]
+                 if f["quantity"] > 0 and f["fill_price"] > 0]
+        side = 1.0 if state["side"] == "BUY" else -1.0
+
+        def bps(fill_price: float, reference) -> float | None:
+            if not reference:
+                return None
+            return side * (fill_price - reference) / reference * 10_000.0
+
+        summary = {
+            "slices_planned": state["slices"],
+            "slices_filled": len(fills),
+            "window_minutes": state["window_minutes"],
+            "intended_quantity": state["total_quantity"],
+            "filled_quantity": round(sum(f["quantity"] for f in fills), 10),
+            "commission": sum(f["commission"] for f in fills),
+            "complete": state["complete"],
+            "failed": state["failed"],
+            "per_slice": [{
+                "slice": f["slice"],
+                "quantity": f["quantity"],
+                "arrival_mid": f["arrival_mid"],
+                "fill_price": f["fill_price"],
+                "slippage_bps": bps(f["fill_price"], f["arrival_mid"]),
+            } for f in fills],
+        }
+        if fills:
+            arrival = fills[0]["arrival_mid"]
+            total = sum(f["quantity"] for f in fills)
+            wavg = sum(f["quantity"] * f["fill_price"] for f in fills) / total
+            summary["arrival_mid"] = arrival
+            summary["avg_fill_price"] = wavg
+            summary["twap_slippage_bps"] = bps(wavg, arrival)
+            summary["single_order_slippage_bps"] = bps(
+                fills[0]["fill_price"], arrival)
+            if summary["twap_slippage_bps"] is not None:
+                summary["improvement_bps"] = (
+                    summary["single_order_slippage_bps"]
+                    - summary["twap_slippage_bps"])
+        return summary
 
     def _canary_sized(self, rec):
         """A copy of the recommendation resized to the live venue's minimum

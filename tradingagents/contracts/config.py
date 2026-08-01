@@ -120,6 +120,30 @@ class RiskLimits(ContractModel):
         "blocking the entry outright — graceful degradation under forecast "
         "uncertainty. No effect while the cap is None.",
     )
+    # --- P3-10 TWAP entry slicing. Default 1/None = disabled, so existing
+    # configs submit single orders exactly as before. ---
+    twap_slices: int = Field(
+        default=1, ge=1, le=20,
+        description="Split every ENTRY into this many ~equal child market "
+        "orders spread evenly across twap_window_minutes (TWAP). 1 keeps "
+        "the single-order behavior byte-identical. Exits, flattens and "
+        "reduce-only orders are never sliced.",
+    )
+    twap_window_minutes: float | None = Field(
+        default=None, gt=0, le=24 * 60,
+        description="Window (minutes) over which TWAP child orders are "
+        "spread — slice k fires at k*window/n. Required when twap_slices "
+        "> 1; None otherwise (nullable pattern: unset keeps slicing off).",
+    )
+
+    @model_validator(mode="after")
+    def _twap_needs_window(self) -> RiskLimits:
+        if self.twap_slices > 1 and self.twap_window_minutes is None:
+            raise ValueError(
+                "twap_slices > 1 requires twap_window_minutes — a slice "
+                "count without a window has no schedule"
+            )
+        return self
 
 
 class LiveRiskLimits(ContractModel):

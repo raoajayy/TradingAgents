@@ -23,6 +23,9 @@ Env:
                                 equity); unset = disabled
     PRO_MAX_RUNS                recorder retention / boot-RAM knob
                                 (int, default 500)
+    PRO_TWAP_SLICES / PRO_TWAP_WINDOW_MIN
+                                P3-10 TWAP entry slicing (int slices /
+                                float minutes); unset = single orders
     PRO_RERUN_UNCHANGED_BARS=1  loop re-runs a symbol even when its driving
                                 bar is unchanged (restores the pre-skip
                                 behavior; see service._skip_unchanged_bar)
@@ -442,6 +445,10 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     limits = RiskLimits(
         max_portfolio_var_pct=_env_float("PRO_MAX_PORTFOLIO_VAR_PCT"),
         max_correlated_gross_pct=_env_float("PRO_MAX_CORRELATED_GROSS_PCT"),
+        # P3-10 TWAP entry slicing; unset keeps the contract default
+        # (1 slice = single order, byte-identical to pre-P3-10 behavior)
+        twap_slices=int(os.environ.get("PRO_TWAP_SLICES") or 1),
+        twap_window_minutes=_env_float("PRO_TWAP_WINDOW_MIN"),
     )
     # persistent memory + venue book: without both, service.rehydrate()
     # has nothing to read after a container restart (go-live Phase 0)
