@@ -1336,6 +1336,16 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                                 detail=f"no webhook {hook_id}")
         return {"deleted": hook_id}
 
+    @app.post("/api/webhooks/{hook_id}/enable")
+    def enable_webhook(hook_id: str, request: Request) -> dict:
+        # POST => the middleware already enforced role=operator. Clears
+        # the strike count + disabled flag after a three-strikes
+        # auto-disable (the webhook_disabled alert points here).
+        if not _webhook_registry().enable(hook_id):
+            raise HTTPException(status_code=404,
+                                detail=f"no webhook {hook_id}")
+        return {"enabled": hook_id}
+
     # --- P3-11 public read-only API (/public/v1, Bearer-token gated) --------
     # Mounted OUTSIDE /api on purpose: the session middleware matches
     # request paths on startswith("/api"), so /public/v1 never sees the

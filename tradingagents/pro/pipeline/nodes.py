@@ -40,6 +40,7 @@ from tradingagents.contracts import (
 from tradingagents.pro.agents import (
     SPECS_BY_TEAM,
     attach_gold_vol_context,
+    attach_mined_factors,
     build_team,
     compute_quant_metrics,
     compute_risk_metrics,
@@ -167,6 +168,7 @@ class PipelineNodes:
         llm_retries: int = 1,
         agent_workers: int = 1,
         calendar_fn=None,
+        factor_store=None,
     ):
         if llm_retries < 0 or agent_workers < 1:
             raise ValueError("llm_retries must be >= 0 and agent_workers >= 1")
@@ -175,6 +177,13 @@ class PipelineNodes:
         self.equity = equity
         self.memory = memory  # ProMemory | None (duck-typed; tests may fake it)
         self.advisor = advisor  # RLAdvisor | None: advisory metrics only (ADR-0025)
+        # P3-03: anything exposing get_kv (the EventStore) holding mined-
+        # factor survivors; None (tests, legacy layouts) skips the lookup.
+        # Read per run inside the QUANT team node so newly registered
+        # survivors take effect without a restart — the exact mechanics of
+        # attach_gold_vol_context (attach inside the node, strict no-op
+        # when there is nothing to attach).
+        self.factor_store = factor_store
         # () -> next_major dict | None, fetched fresh per run for the event
         # gate (review P1.2); None disables the gate alongside config=0
         self.calendar_fn = calendar_fn
@@ -326,6 +335,18 @@ class PipelineNodes:
                 # percentile + IV-RV spread) — appended for GOLD only; a
                 # crypto snapshot gets the same list object back
                 agents = attach_gold_vol_context(agents, snapshot)
+            if team is AgentTeam.QUANT and self.factor_store is not None:
+                # P3-03 mined-factor survivors as deterministic QUANT
+                # evidence, keyed to the run's timeframe. Guarded twice:
+                # an absent/empty/malformed kv is a strict no-op inside
+                # attach_mined_factors, and a store read must never take
+                # the team node down.
+                try:
+                    agents = attach_mined_factors(
+                        agents, self.factor_store, timeframe=run_timeframe)
+                except Exception:
+                    logger.warning("mined-factor roster attach failed; "
+                                   "running without", exc_info=True)
             if self.agent_workers > 1:
                 with ThreadPoolExecutor(max_workers=self.agent_workers) as pool:
                     results = list(pool.map(

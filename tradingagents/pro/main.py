@@ -21,6 +21,14 @@ Env:
     PRO_MAX_PORTFOLIO_VAR_PCT / PRO_MAX_CORRELATED_GROSS_PCT
                                 P2-05 portfolio caps (float, percent of
                                 equity); unset = disabled
+    PRO_MAX_VOL_INTERVAL_WIDTH_PCT
+                                P3-04 conformal vol-uncertainty gate: cap on
+                                the adaptive-conformal interval width around
+                                the HAR vol forecast, percent of price
+                                (float); unset = gate disabled
+    PRO_VOL_INTERVAL_SIZE_SCALE=1
+                                P3-04: a width breach scales the position by
+                                cap/width (floor 0.25) instead of blocking
     PRO_MAX_RUNS                recorder retention / boot-RAM knob
                                 (int, default 500)
     PRO_TWAP_SLICES / PRO_TWAP_WINDOW_MIN
@@ -228,10 +236,14 @@ class PipelineTrigger:
             self.current = {"symbol": symbol, "timeframe": timeframe}
             asset = ASSET_BY_SYMBOL[symbol]
             # symbol passed explicitly: AssetClass.FX spans multiple pairs,
-            # so the per-asset default would mislabel a USDJPY run
+            # so the per-asset default would mislabel a USDJPY run.
+            # risk: the SAME limits object the service config carries, so
+            # env-armed gates (P3-04 conformal cap, P2-05, TWAP) apply to
+            # operator-triggered runs exactly as to loop runs
             config = ProConfig(asset=asset, symbol=symbol,
                                max_debate_rounds=1,
-                               models=self.service.config.models)
+                               models=self.service.config.models,
+                               risk=self.service.config.risk)
             tf = Timeframe(timeframe)
             snapshot = self._build_snapshot(symbol, asset, tf)
             return self.service.run_once(snapshot=snapshot, config=config,
@@ -239,6 +251,24 @@ class PipelineTrigger:
         finally:
             self.current = None
             self._busy.release()
+
+    def _vintage_sink(self):
+        """P3-02: operator-triggered builds record FRED vintages into the
+        SAME event store the loop's builders write to (via the service's
+        recorder). None when no store is wired (file-backed dev/tests) —
+        the feeds treat a missing sink as a no-op."""
+        store = getattr(
+            getattr(self.service, "dashboard", None), "recorder", None)
+        store = getattr(store, "store", None)
+        if store is None:
+            return None
+
+        def sink(**kw):
+            try:
+                store.record_vintage(**kw)
+            except Exception:
+                logger.warning("vintage record failed", exc_info=True)
+        return sink
 
     def _build_snapshot(self, symbol: str, asset, tf):
         from tradingagents.contracts import Timeframe
@@ -253,6 +283,7 @@ class PipelineTrigger:
         from tradingagents.pro.ingestion.positioning import GoldCotFeed, GoldVolFeed
         from tradingagents.pro.ingestion.sessions import current_session
 
+        vintage_sink = self._vintage_sink()
         if symbol == "XAUUSD":
             if tf is Timeframe.D1:
                 # the loop's canonical daily gold path (GC=F futures)
@@ -268,6 +299,7 @@ class PipelineTrigger:
                     loader=gold_loader,
                     cot_cache_path=default_data_dir() / "cot_cache.json",
                     goldhub_csv_path=default_data_dir() / GOLDHUB_CSV_NAME,
+                    vintage_sink=vintage_sink,
                 )
             else:
                 # intraday gold: Delta XAUT (≈ spot) + the same macro context
@@ -276,7 +308,8 @@ class PipelineTrigger:
                 builder = SnapshotBuilder(
                     bars_feed=_MappedBars(delta, {"XAUUSD": "XAUTUSD"}),
                     macro_feeds=(
-                        GoldCrossAssetFeed(yf), FredMacroFeed(),
+                        GoldCrossAssetFeed(yf),
+                        FredMacroFeed(vintage_sink=vintage_sink),
                         GoldCotFeed(cache_path=default_data_dir()
                                     / "cot_cache.json"),
                         GoldVolFeed(yf),
@@ -284,9 +317,10 @@ class PipelineTrigger:
                     session_fn=current_session,
                 )
         elif symbol in FX_WIRING:
-            builder = _fx_snapshot_builder(symbol)
+            builder = _fx_snapshot_builder(symbol, vintage_sink=vintage_sink)
         else:
-            builder = _crypto_snapshot_builder(symbol)
+            builder = _crypto_snapshot_builder(symbol,
+                                               vintage_sink=vintage_sink)
         return builder.build(symbol, asset, timeframes=(tf,), bar_limit=250)
 
 
@@ -394,8 +428,33 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     )
     from tradingagents.contracts import EventTriggerConfig
 
+    def _env_float(name: str) -> float | None:
+        raw = os.environ.get(name)
+        return float(raw) if raw else None
+
+    # P2-05 portfolio caps, env-plumbed so an operator can arm them without
+    # a code change; unset keeps the contract default (None = disabled)
+    limits = RiskLimits(
+        max_portfolio_var_pct=_env_float("PRO_MAX_PORTFOLIO_VAR_PCT"),
+        max_correlated_gross_pct=_env_float("PRO_MAX_CORRELATED_GROSS_PCT"),
+        # P3-04 conformal vol-uncertainty gate; unset keeps the contract
+        # default (None = disabled, exactly the pre-P3-04 behavior)
+        max_vol_interval_width_pct=_env_float(
+            "PRO_MAX_VOL_INTERVAL_WIDTH_PCT"),
+        vol_interval_size_scale=os.environ.get(
+            "PRO_VOL_INTERVAL_SIZE_SCALE") == "1",
+        # P3-10 TWAP entry slicing; unset keeps the contract default
+        # (1 slice = single order, byte-identical to pre-P3-10 behavior)
+        twap_slices=int(os.environ.get("PRO_TWAP_SLICES") or 1),
+        twap_window_minutes=_env_float("PRO_TWAP_WINDOW_MIN"),
+    )
+
     config = ProConfig(
         asset=AssetClass.GOLD, max_debate_rounds=1, models=routing,
+        # P3-04: the env-armed limits must reach the PIPELINE config too —
+        # the router enforcing caps at submit time is not the same thing as
+        # the risk_gate node reading config.risk during the run
+        risk=limits,
         # P2-06: opt-in — nothing changes for existing deployments
         event_triggers=EventTriggerConfig(
             enabled=os.environ.get("PRO_EVENT_TRIGGERS") == "1"),
@@ -436,20 +495,6 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
     from tradingagents.pro.dashboard.recorder import PipelineRecorder
 
-    def _env_float(name: str) -> float | None:
-        raw = os.environ.get(name)
-        return float(raw) if raw else None
-
-    # P2-05 portfolio caps, env-plumbed so an operator can arm them without
-    # a code change; unset keeps the contract default (None = disabled)
-    limits = RiskLimits(
-        max_portfolio_var_pct=_env_float("PRO_MAX_PORTFOLIO_VAR_PCT"),
-        max_correlated_gross_pct=_env_float("PRO_MAX_CORRELATED_GROSS_PCT"),
-        # P3-10 TWAP entry slicing; unset keeps the contract default
-        # (1 slice = single order, byte-identical to pre-P3-10 behavior)
-        twap_slices=int(os.environ.get("PRO_TWAP_SLICES") or 1),
-        twap_window_minutes=_env_float("PRO_TWAP_WINDOW_MIN"),
-    )
     # persistent memory + venue book: without both, service.rehydrate()
     # has nothing to read after a container restart (go-live Phase 0)
     # P2-01: SQLite event store is the source of truth; legacy JSON/JSONL
@@ -565,9 +610,13 @@ def build_service(llm=None, data_dir: str | Path | None = None):
 
     def snapshot_source():
         symbol = next(rotation)
-        # symbol passed explicitly: AssetClass.FX spans multiple pairs
+        # symbol passed explicitly: AssetClass.FX spans multiple pairs.
+        # risk=limits: the SAME env-armed limits object as the service
+        # config — a per-run config that dropped it would silently disarm
+        # the P3-04 conformal gate on every rotation run
         run_config = ProConfig(asset=ASSET_BY_SYMBOL[symbol], symbol=symbol,
-                               max_debate_rounds=1, models=routing)
+                               max_debate_rounds=1, models=routing,
+                               risk=limits)
         if symbol == "XAUUSD":
             return builder.build("XAUUSD", AC.GOLD, bar_limit=250), run_config
         source = fx_builders if symbol in fx_builders else crypto_builders
@@ -590,6 +639,9 @@ def build_service(llm=None, data_dir: str | Path | None = None):
             sinks=_build_alert_sinks(state.broadcaster, state.prefs)),
         on_event=_bell_on_event(state),
         calendar_fn=next_major_event,
+        # P3-03: mined-factor survivors registered in the event store's kv
+        # join the QUANT roster on every run (empty/absent kv = no-op)
+        factor_store=event_store,
     )
     # P2-06: the event-trigger check scans the same universe the loop
     # rotates through (bars come from the dashboard's cached market data)

@@ -56,6 +56,15 @@
 #                                 runs (each holds a full snapshot) are kept
 #                                 in memory / reloaded at boot. Default 500 —
 #                                 this script deliberately does not set it.
+#   PRO_MAX_VOL_INTERVAL_WIDTH_PCT
+#                                 P3-04 conformal vol-uncertainty gate: cap
+#                                 on the adaptive-conformal interval width
+#                                 around the HAR vol forecast, percent of
+#                                 price. Unset = gate disabled (contract
+#                                 default).
+#   PRO_VOL_INTERVAL_SIZE_SCALE   P3-04: set 1 so a width breach scales the
+#                                 position by cap/width (floor 0.25) instead
+#                                 of blocking the entry. Unset = block.
 #
 # Optional operator-supplied secrets (create + wire out-of-band, exactly like
 # the Telegram alerting secrets — this script does NOT manage them):
@@ -153,13 +162,22 @@ gcloud builds submit \
 # Google sign-in vars PRO_FIREBASE_PROJECT_ID/PRO_ALLOWED_EMAILS/
 # PRO_FIREBASE_WEB_CONFIG — see docs/DEPLOYMENT.md).
 #
-# Secrets: only the dashboard token + the LLM key are wired HERE. The
-# Telegram alerting secrets live on the prod service out-of-band (applied
-# once via gcloud/console; --update-secrets MERGES so redeploys keep them).
-# Staging therefore never receives them — a fresh staging service carries
-# exactly these two secrets, which is all the smoke check needs. Do NOT
-# add prod alerting secrets to staging: a staging boot must not page
-# anyone or message the prod Telegram channel.
+# Secrets: the dashboard token, the LLM key, and the FRED key are wired
+# HERE. The Telegram alerting secrets live on the prod service out-of-band
+# (applied once via gcloud/console; --update-secrets MERGES so redeploys
+# keep them). Staging therefore never receives those — a fresh staging
+# service carries exactly the three secrets below, which is all the smoke
+# check needs. Do NOT add prod alerting secrets to staging: a staging boot
+# must not page anyone or message the prod Telegram channel.
+#
+# fred-api-key (P3-02): wired unconditionally to FRED_API_KEY — the macro
+# snapshot feed AND the vintage capture (point-in-time metric history)
+# depend on it. The secret must already exist in Secret Manager (it does on
+# this project; see the one-time setup checklist in docs/DEPLOYMENT.md):
+#   printf '%s' '<key>' | gcloud secrets create fred-api-key --data-file=-
+# gcloud cannot conditionally include a secret in one deploy command, so a
+# missing secret fails the deploy loudly instead of silently shipping a
+# service without macro vintages.
 deploy_service() {
   local service="$1" bucket="$2" loop_disabled="$3" env_vars
   # PRO_EVENT_TRIGGERS=1 turns on P2-06 event-driven runs (calendar T+5min /
@@ -189,7 +207,7 @@ deploy_service() {
     --add-volume "name=data,type=cloud-storage,bucket=${bucket}" \
     --add-volume-mount "volume=data,mount-path=/data" \
     --update-env-vars "$env_vars" \
-    --update-secrets "PRO_DASHBOARD_TOKEN=pro-dashboard-token:latest,${LLM_KEY_ENV}=${LLM_PROVIDER}-api-key:latest" \
+    --update-secrets "PRO_DASHBOARD_TOKEN=pro-dashboard-token:latest,${LLM_KEY_ENV}=${LLM_PROVIDER}-api-key:latest,FRED_API_KEY=fred-api-key:latest" \
     --allow-unauthenticated
 }
 

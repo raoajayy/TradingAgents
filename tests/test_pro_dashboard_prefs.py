@@ -200,3 +200,31 @@ class TestPrefsEndpoints:
                              json={"ids": [note["id"]]}).json()
         assert marked == {"marked": 1}
         assert client.get("/api/notifications").json()["unread"] == 0
+
+
+class TestPerUserKvKeys:
+    """P3-05: PrefsStore documents keyed per identity in the same kv table."""
+
+    def test_kv_key_isolates_documents(self, tmp_path):
+        from tradingagents.pro.store import EventStore
+
+        event_store = EventStore(tmp_path / "pro.db")
+        try:
+            shared = PrefsStore(store=event_store)
+            alice = PrefsStore(store=event_store,
+                               kv_key="dashboard_prefs:alice@x.com")
+            shared.upsert_watchlist({"name": "shared", "symbols": []})
+            alice.upsert_watchlist({"name": "mine", "symbols": ["BTC-USD"]})
+
+            assert [w["name"] for w in shared.watchlists()] == ["shared"]
+            assert [w["name"] for w in alice.watchlists()] == ["mine"]
+            # rows live under distinct keys; the legacy key is the default
+            assert event_store.get_kv("dashboard_prefs") is not None
+            assert event_store.get_kv("dashboard_prefs:alice@x.com") is not None
+
+            # a fresh store over the same key reloads the same document
+            reloaded = PrefsStore(store=event_store,
+                                  kv_key="dashboard_prefs:alice@x.com")
+            assert [w["name"] for w in reloaded.watchlists()] == ["mine"]
+        finally:
+            event_store.close()

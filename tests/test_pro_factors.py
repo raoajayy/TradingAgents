@@ -451,3 +451,74 @@ def test_survivors_round_trip_and_bad_records_are_skipped(tmp_path):
         assert evidence.agent_id == "factor_vol_anomaly"
     finally:
         store.close()
+
+
+# --- P3-03 wiring: survivors reach real pipeline runs ----------------------
+
+def test_pipeline_run_includes_mined_factor_evidence(tmp_path):
+    """The audited gap: attach_mined_factors existed but no pipeline path
+    called it. With a factor_store wired, a scripted run's QUANT evidence
+    must include the computed factor agent's deterministic claim."""
+    from tests.test_pro_pipeline_graph import CONFIG, pipeline_snapshot
+    from tradingagents.pro.pipeline import run_pipeline
+
+    store = EventStore(tmp_path / "pro.db")
+    try:
+        store_survivors(store, [
+            {"name": "vol_anomaly", "expression": "zscore(volume, 10)",
+             "ic_mean": 0.12, "ic_ir": 1.8},
+        ])
+        state = run_pipeline(FakePipelineLLM(), CONFIG, pipeline_snapshot(),
+                             factor_store=store)
+        quant = state["evidence_by_team"]["quant"]
+        factor_evidence = [e for e in quant
+                           if e.agent_id == "factor_vol_anomaly"]
+        assert len(factor_evidence) == 1
+        assert "zscore(volume, 10)" in factor_evidence[0].claim
+    finally:
+        store.close()
+
+
+def test_pipeline_run_without_store_is_unchanged(tmp_path):
+    from tests.test_pro_pipeline_graph import CONFIG, pipeline_snapshot
+    from tradingagents.pro.pipeline import run_pipeline
+
+    state = run_pipeline(FakePipelineLLM(), CONFIG, pipeline_snapshot())
+    assert not [e for e in state["evidence_by_team"]["quant"]
+                if e.agent_id.startswith("factor_")]
+
+
+def test_build_service_wires_the_event_store_into_runs(tmp_path, monkeypatch):
+    """End-to-end through the prod assembly: survivors seeded in the P2-01
+    event store surface as evidence in a service run (main.py passes
+    factor_store=event_store into the pipeline kwargs)."""
+    pytest.importorskip("fastapi")
+    import tradingagents.pro.main as main_module
+    from tests.test_pro_pipeline_graph import pipeline_snapshot
+    from tradingagents.pro.ingestion import builder as builder_module
+
+    db_path = tmp_path / "pro.db"
+    monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(db_path))
+    seed = EventStore(db_path)
+    store_survivors(seed, [
+        {"name": "vol_anomaly", "expression": "zscore(volume, 10)",
+         "ic_mean": 0.12, "ic_ir": 1.8},
+    ])
+    seed.close()
+
+    class FakeBuilder:
+        def build(self, symbol, asset, **kwargs):
+            return pipeline_snapshot()
+
+    monkeypatch.setattr(builder_module, "build_gold_pipeline",
+                        lambda *a, **k: FakeBuilder())
+    service, state = main_module.build_service(llm=FakePipelineLLM(),
+                                               data_dir=tmp_path)
+    # hermetic: the real calendar_fn reaches for the network-backed intel
+    # service; no upcoming event = the event gate passes open
+    service.pipeline_kwargs["calendar_fn"] = lambda: None
+    summary = service.run_once()
+    assert summary["run_id"]
+    run = state.latest_run()
+    quant = run.state["evidence_by_team"]["quant"]
+    assert any(e.agent_id == "factor_vol_anomaly" for e in quant)

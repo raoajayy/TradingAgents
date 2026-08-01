@@ -11,8 +11,13 @@ Delivery contract:
   so the receiver can verify both origin and integrity
 - 5s timeout; failures are logged, counted, and NEVER raised into the
   trading loop
+- one in-dispatch retry after a short backoff (2s) masks a transient
+  receiver blip; only a delivery that fails BOTH attempts counts as one
+  failure
 - 3 consecutive failures disable the registration and emit a warning
   alert (``webhook_disabled``); a successful delivery resets the count
+- an operator re-arms a disabled registration via ``enable`` (POST
+  /api/webhooks/{id}/enable), which clears the strike count
 
 The transport is injectable (tests capture deliveries without sockets);
 the default is stdlib urllib — no new dependency, mirroring
@@ -25,6 +30,7 @@ import hmac
 import json
 import logging
 import threading
+import time
 import urllib.request
 import uuid
 
@@ -35,6 +41,7 @@ logger = logging.getLogger(__name__)
 WEBHOOKS_KV_KEY = "webhooks"
 SUPPORTED_EVENTS = ("run_complete",)
 MAX_CONSECUTIVE_FAILURES = 3
+RETRY_BACKOFF_SECONDS = 2.0
 
 
 def _default_transport(url: str, body: bytes, headers: dict,
@@ -59,11 +66,15 @@ class WebhookRegistry:
     """
 
     def __init__(self, store, alerts=None, transport=None,
-                 timeout: float = 5.0):
+                 timeout: float = 5.0,
+                 retry_delay: float = RETRY_BACKOFF_SECONDS):
         self._store = store
         self._alerts = alerts
         self._transport = transport or _default_transport
         self._timeout = timeout
+        # backoff before the single in-dispatch retry; injectable so tests
+        # never sleep for real
+        self._retry_delay = retry_delay
         self._lock = threading.Lock()
 
     # --- persistence -----------------------------------------------------
@@ -127,6 +138,23 @@ class WebhookRegistry:
             self._save(kept)
         return True
 
+    def enable(self, hook_id: str) -> bool:
+        """Re-arm a registration: clear the strike count and the disabled
+        flag (the operator's answer to a three-strikes ``webhook_disabled``
+        alert — no more delete-and-re-register with a fresh secret). False
+        when no such registration exists."""
+        found = False
+        with self._lock:
+            hooks = self._load()
+            for hook in hooks:
+                if hook.get("id") == hook_id:
+                    hook["failures"] = 0
+                    hook["disabled"] = False
+                    found = True
+            if found:
+                self._save(hooks)
+        return found
+
     def has_active(self, event: str) -> bool:
         with self._lock:
             return any(h.get("event") == event and not h.get("disabled")
@@ -148,16 +176,28 @@ class WebhookRegistry:
                     "Content-Type": "application/json",
                     "X-Pro-Signature": sign_payload(hook["secret"], body),
                 }
-                try:
-                    self._transport(hook["url"], body, headers, self._timeout)
-                except Exception:
-                    logger.warning("webhook delivery to %s failed",
-                                   hook["url"], exc_info=True)
-                    self._record_failure(hook["id"])
-                else:
+                if self._deliver(hook["url"], body, headers):
                     self._record_success(hook["id"])
+                else:
+                    self._record_failure(hook["id"])
         except Exception:  # noqa: BLE001 — belt-and-braces: never raise
             logger.exception("webhook dispatch failed")
+
+    def _deliver(self, url: str, body: bytes, headers: dict) -> bool:
+        """One delivery = up to two transport attempts with a short backoff
+        between them, so a single transient receiver blip (cold start,
+        connection reset) never accrues a strike. True on any success."""
+        for attempt in (1, 2):
+            try:
+                self._transport(url, body, headers, self._timeout)
+            except Exception:
+                logger.warning("webhook delivery to %s failed (attempt %d)",
+                               url, attempt, exc_info=True)
+                if attempt == 1 and self._retry_delay > 0:
+                    time.sleep(self._retry_delay)
+            else:
+                return True
+        return False
 
     def _record_success(self, hook_id: str) -> None:
         with self._lock:
@@ -186,7 +226,7 @@ class WebhookRegistry:
                     "warning", "webhook_disabled",
                     f"webhook {disabled_url} disabled after "
                     f"{MAX_CONSECUTIVE_FAILURES} consecutive delivery "
-                    "failures; re-register to re-enable",
+                    "failures; POST /api/webhooks/{id}/enable to re-enable",
                 )
             except Exception:
                 logger.exception("webhook_disabled alert not delivered")

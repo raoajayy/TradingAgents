@@ -166,12 +166,21 @@ def run_ablation(llm, config: ProConfig, snapshot, future_bars,
 
 def run_ablation_series(llm, config: ProConfig, symbol: str = "BTC-USD",
                         vendor: str = "BTCUSD", points: int = 5,
-                        horizon: int = 42, **kwargs) -> list[dict]:
+                        horizon: int = 42, vintage_reader=None,
+                        **kwargs) -> list[dict]:
     """Real-data ablation: N historical cut points on Delta bars. Each
     snapshot is bars + deterministic indicators as of the cut — no
     macro/news feeds, so there is zero look-ahead leakage and both arms
     see byte-identical inputs. Tickets are graded on the ``horizon`` bars
-    that actually followed."""
+    that actually followed.
+
+    ``vintage_reader`` (P3-02): anything exposing ``latest_as_known(name,
+    at)`` / ``has_vintages(name)`` — the EventStore qualifies. Every cut
+    is an explicit-``as_of`` (point-in-time) build, so the builder replays
+    any vintaged metric "as known at the cut", never the revised value.
+    With the default bars-only feed set there is nothing to replay yet;
+    wiring the reader here keeps the PIT contract honest the moment a
+    macro feed joins this series."""
     from tradingagents.contracts import Timeframe
     from tradingagents.pro.ingestion.builder import SnapshotBuilder
     from tradingagents.pro.ingestion.delta_exchange import DeltaExchangeFeed
@@ -184,6 +193,7 @@ def run_ablation_series(llm, config: ProConfig, symbol: str = "BTC-USD",
     builder = SnapshotBuilder(
         bars_feed=_MappedBars(feed, {symbol: vendor}),
         session_fn=current_session,
+        vintage_reader=vintage_reader,
     )
     first = 250  # need a full lookback window behind every cut
     last = len(bars) - horizon

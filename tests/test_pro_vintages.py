@@ -286,3 +286,96 @@ class TestSnapshotPitRead:
                                   macro_feeds=(LiveMacro(),))
         snapshot = builder.build("XAUUSD", AssetClass.GOLD, as_of=BETWEEN)
         assert {m.name: m.value for m in snapshot.macro}["NFP_CHANGE"] == V2
+
+
+# --- P3-02 wiring: the PIT-shaped callers actually receive the reader/sink --
+
+class TestAblationVintageReader:
+    def test_series_threads_the_reader_into_pit_builds(self, store, monkeypatch):
+        """run_ablation_series builds every cut with an explicit as_of AND
+        the caller's vintage_reader — the audited gap was the reader never
+        reaching the one PIT-shaped SnapshotBuilder in the eval suite."""
+        from tests.pro_fakes import make_bars
+        from tradingagents.contracts import ProConfig, Timeframe
+        from tradingagents.pro.evals import ablation as ablation_module
+        from tradingagents.pro.ingestion import (
+            builder as builder_module,
+            delta_exchange as delta_module,
+        )
+
+        bars = make_bars(300, timeframe=Timeframe.H4)
+        captured: dict = {}
+
+        class FakeFeed:
+            def get_bars(self, vendor, tf, limit=500):
+                return bars
+
+        class CapturingBuilder:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def build(self, symbol, asset, **kwargs):
+                captured["as_of"] = kwargs.get("as_of")
+                return "snapshot"
+
+        monkeypatch.setattr(delta_module, "DeltaExchangeFeed", FakeFeed)
+        monkeypatch.setattr(builder_module, "SnapshotBuilder",
+                            CapturingBuilder)
+        monkeypatch.setattr(ablation_module, "run_ablation",
+                            lambda *a, **k: [])
+
+        config = ProConfig(asset=AssetClass.BITCOIN)
+        rows = ablation_module.run_ablation_series(
+            llm=None, config=config, points=1, vintage_reader=store)
+        assert captured["vintage_reader"] is store
+        assert captured["as_of"] is not None  # every cut is a PIT build
+        assert rows and "error" not in rows[0]
+
+
+class TestOperatorTriggerVintageSink:
+    def _trigger(self, store):
+        from tradingagents.pro.main import PipelineTrigger
+
+        class _Obj:
+            pass
+
+        service = _Obj()
+        service.dashboard = _Obj()
+        service.dashboard.recorder = _Obj()
+        service.dashboard.recorder.store = store
+        return PipelineTrigger(service)
+
+    def test_trigger_builders_receive_a_recording_sink(self, store, monkeypatch):
+        """Operator-triggered builds mirror the loop wiring: their FRED
+        feeds get a sink that records into the service's event store."""
+        import tradingagents.pro.main as main_module
+        from tradingagents.contracts import Timeframe
+
+        captured: dict = {}
+
+        def fake_crypto_builder(symbol, vintage_sink=None):
+            captured["sink"] = vintage_sink
+
+            class B:
+                def build(self, *a, **k):
+                    return "snapshot"
+            return B()
+
+        monkeypatch.setattr(main_module, "_crypto_snapshot_builder",
+                            fake_crypto_builder)
+        trigger = self._trigger(store)
+        assert trigger._build_snapshot("BTC-USD", AssetClass.BITCOIN,
+                                       Timeframe.H1) == "snapshot"
+        sink = captured["sink"]
+        assert sink is not None
+        sink(name="NFP_CHANGE", value=V1, observed_at=T1, as_of=JUNE,
+             source="fred:PAYEMS")
+        assert store.latest_as_known("NFP_CHANGE", BETWEEN)["value"] == V1
+        # best-effort by contract: a store failure never raises out of
+        # the sink (a vintage write must not fail a snapshot build)
+        store.close()
+        sink(name="CPI_YOY", value=3.1, observed_at=T1, as_of=JUNE)
+
+    def test_trigger_without_a_store_passes_no_sink(self):
+        trigger = self._trigger(None)
+        assert trigger._vintage_sink() is None

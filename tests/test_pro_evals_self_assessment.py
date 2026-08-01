@@ -162,3 +162,38 @@ def test_cli_writes_the_doc(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv",
                         ["tradingagents.pro.evals", "--self-assessment"])
     assert main() == 2
+
+
+def test_cli_reads_the_event_store_when_the_db_exists(tmp_path, monkeypatch):
+    """P3-08 store read path: when the P2-01 SQLite DB exists (prod, or a
+    Litestream-restored replica pointed at via TRADINGAGENTS_PRO_DB), the
+    CLI reads runs + memory from IT — not the legacy file layout, which is
+    absent on store-backed deployments and would yield an empty doc."""
+    import sys
+
+    from tradingagents.pro.evals.__main__ import main
+    from tradingagents.pro.store import EventStore, SqliteMemoryStore
+
+    data = tmp_path / "data"
+    db_path = data / "pro.db"
+    monkeypatch.setenv("TRADINGAGENTS_PRO_DATA", str(data))
+    monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(db_path))
+    store = EventStore(db_path)
+    memory = ProMemory(store=SqliteMemoryStore(store))
+    PipelineRecorder(store=store).record_run(
+        FakePipelineLLM(), CONFIG, pipeline_snapshot(), memory=memory)
+    store.close()
+    # deliberately NO data/runs directory and NO memory.jsonl: only the
+    # event store holds the run, so a populated doc proves the store path
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "tradingagents.pro.evals", "--self-assessment",
+        "--start", str(START), "--end", str(END)])
+    assert main() == 0
+    out = tmp_path / "docs" / "evals" / f"self_assessment_{START}_{END}.md"
+    doc = out.read_text(encoding="utf-8")
+    assert "1 pipeline run(s)" in doc
+    assert "No pipeline runs recorded in this period." not in doc
+    for section in SECTIONS:
+        assert section in doc

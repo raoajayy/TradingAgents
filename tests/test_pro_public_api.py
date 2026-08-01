@@ -316,12 +316,13 @@ class TestWebhookRegistry:
         sink = _CaptureSink()
         transport = _CaptureTransport(failures=99)
         registry = WebhookRegistry(store, alerts=AlertManager(sinks=[sink]),
-                                   transport=transport)
+                                   transport=transport, retry_delay=0)
         registry.add("https://down.example.com/hook", "run_complete", "s")
 
         for _ in range(3):
             registry.dispatch("run_complete", {"event": "run_complete"})
-        assert len(transport.calls) == 3
+        # each dispatch = original attempt + one in-dispatch retry
+        assert len(transport.calls) == 6
 
         hook = registry.list()[0]
         assert hook["failures"] == 3
@@ -333,20 +334,77 @@ class TestWebhookRegistry:
 
         # disabled hooks receive nothing further
         registry.dispatch("run_complete", {"event": "run_complete"})
-        assert len(transport.calls) == 3
+        assert len(transport.calls) == 6
         store.close()
 
     def test_success_resets_the_strike_count(self, tmp_path):
         store = EventStore(tmp_path / "pro.db")
-        transport = _CaptureTransport(failures=2)
-        registry = WebhookRegistry(store, transport=transport)
+        # four scripted transport failures = two fully failed deliveries
+        # (each dispatch burns the attempt AND its retry)
+        transport = _CaptureTransport(failures=4)
+        registry = WebhookRegistry(store, transport=transport, retry_delay=0)
         registry.add("https://flaky.example.com/hook", "run_complete", "s")
 
-        registry.dispatch("run_complete", {})  # fail (1)
-        registry.dispatch("run_complete", {})  # fail (2)
+        registry.dispatch("run_complete", {})  # attempt+retry fail (1)
+        registry.dispatch("run_complete", {})  # attempt+retry fail (2)
         registry.dispatch("run_complete", {})  # success -> reset
         hook = registry.list()[0]
         assert hook["failures"] == 0 and hook["disabled"] is False
+        store.close()
+
+    def test_retry_masks_a_single_transient_failure(self, tmp_path):
+        # one connection blip: the in-dispatch retry delivers, so the
+        # registration accrues NO strike
+        store = EventStore(tmp_path / "pro.db")
+        transport = _CaptureTransport(failures=1)
+        registry = WebhookRegistry(store, transport=transport, retry_delay=0)
+        registry.add("https://blip.example.com/hook", "run_complete", "s")
+
+        registry.dispatch("run_complete", {"event": "run_complete"})
+        assert len(transport.calls) == 2  # attempt + successful retry
+        hook = registry.list()[0]
+        assert hook["failures"] == 0 and hook["disabled"] is False
+        store.close()
+
+    def test_two_hard_failures_count_once_each(self, tmp_path):
+        # a delivery whose retry ALSO fails is exactly one strike — the
+        # retry must never double-count a hard-down receiver
+        store = EventStore(tmp_path / "pro.db")
+        transport = _CaptureTransport(failures=99)
+        registry = WebhookRegistry(store, transport=transport, retry_delay=0)
+        registry.add("https://down.example.com/hook", "run_complete", "s")
+
+        registry.dispatch("run_complete", {})
+        registry.dispatch("run_complete", {})
+        assert len(transport.calls) == 4  # 2 dispatches x (attempt + retry)
+        hook = registry.list()[0]
+        assert hook["failures"] == 2
+        assert hook["disabled"] is False  # third strike hasn't happened
+        store.close()
+
+    def test_enable_resets_strikes_and_resumes_delivery(self, tmp_path):
+        store = EventStore(tmp_path / "pro.db")
+        transport = _CaptureTransport(failures=99)
+        registry = WebhookRegistry(store, transport=transport, retry_delay=0)
+        created = registry.add("https://down.example.com/hook",
+                               "run_complete", "s")
+        for _ in range(3):
+            registry.dispatch("run_complete", {})
+        assert registry.list()[0]["disabled"] is True
+        n_calls = len(transport.calls)
+
+        assert registry.enable(created["id"]) is True
+        hook = registry.list()[0]
+        assert hook["failures"] == 0 and hook["disabled"] is False
+        assert registry.has_active("run_complete") is True
+
+        # deliveries resume (receiver healthy again)
+        transport.failures = 0
+        registry.dispatch("run_complete", {"event": "run_complete"})
+        assert len(transport.calls) == n_calls + 1
+        assert registry.list()[0]["failures"] == 0
+
+        assert registry.enable("no-such-id") is False
         store.close()
 
 
@@ -374,6 +432,37 @@ class TestWebhookEndpoints:
                              headers=OPERATOR).status_code == 404
         # unauthenticated management is refused by the /api middleware
         assert client.get("/api/webhooks").status_code == 401
+
+    def test_enable_endpoint_rearms_a_disabled_hook(self, tmp_path):
+        from tradingagents.pro.webhooks import WebhookRegistry
+
+        client, state, store, run = _build(tmp_path)
+        hook = client.post("/api/webhooks", headers=OPERATOR, json={
+            "url": "https://example.com/hook", "event": "run_complete",
+            "secret": "s3cret"}).json()
+        # trip the three-strikes auto-disable through the same kv document
+        registry = WebhookRegistry(store,
+                                   transport=_CaptureTransport(failures=99),
+                                   retry_delay=0)
+        for _ in range(3):
+            registry.dispatch("run_complete", {})
+        listed = client.get("/api/webhooks",
+                            headers=OPERATOR).json()["webhooks"]
+        assert listed[0]["disabled"] is True and listed[0]["failures"] == 3
+
+        enabled = client.post(f"/api/webhooks/{hook['id']}/enable",
+                              headers=OPERATOR)
+        assert enabled.status_code == 200
+        assert enabled.json() == {"enabled": hook["id"]}
+        listed = client.get("/api/webhooks",
+                            headers=OPERATOR).json()["webhooks"]
+        assert listed[0]["disabled"] is False and listed[0]["failures"] == 0
+
+        assert client.post("/api/webhooks/no-such-id/enable",
+                           headers=OPERATOR).status_code == 404
+        # unauthenticated enable is refused by the /api middleware
+        assert client.post(
+            f"/api/webhooks/{hook['id']}/enable").status_code == 401
 
 
 class TestRunCompleteIntegration:

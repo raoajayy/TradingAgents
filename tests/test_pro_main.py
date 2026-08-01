@@ -99,6 +99,55 @@ class TestBuildService:
         assert service.router.limits.max_correlated_gross_pct is None
         assert state.recorder.max_runs == 500
 
+    def test_env_conformal_gate_reaches_pipeline_runs(self, tmp_path, monkeypatch):
+        # P3-04: PRO_MAX_VOL_INTERVAL_WIDTH_PCT / PRO_VOL_INTERVAL_SIZE_SCALE
+        # must land on the PIPELINE config (config.risk), not only on the
+        # router limits — the audited gap was three prod ProConfig builds
+        # omitting risk=, leaving the conformal gate permanently disabled.
+        import tradingagents.pro.main as main_module
+        from tests.test_pro_conformal import make_vol_bars
+        from tests.test_pro_pipeline_graph import pipeline_snapshot
+        from tradingagents.pro.ingestion import builder as builder_module
+
+        class FakeBuilder:
+            def build(self, symbol, asset, **kwargs):
+                # enough vol history for a real conformal interval
+                return pipeline_snapshot(bars=make_vol_bars(200))
+
+        monkeypatch.setattr(builder_module, "build_gold_pipeline",
+                            lambda *a, **k: FakeBuilder())
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
+        monkeypatch.setenv("PRO_MAX_VOL_INTERVAL_WIDTH_PCT", "90")
+        monkeypatch.setenv("PRO_VOL_INTERVAL_SIZE_SCALE", "1")
+        service, state = main_module.build_service(llm=FakePipelineLLM(),
+                                                   data_dir=tmp_path)
+        # the service config AND the router limits carry the env-armed cap
+        assert service.config.risk.max_vol_interval_width_pct == 90.0
+        assert service.config.risk.vol_interval_size_scale is True
+        assert service.router.limits.max_vol_interval_width_pct == 90.0
+
+        # hermetic: the real calendar_fn reaches for the network-backed
+        # intel service; no upcoming event = the event gate passes open
+        service.pipeline_kwargs["calendar_fn"] = lambda: None
+        summary = service.run_once()  # rotation path builds its own config
+        assert summary["run_id"]
+        run = state.latest_run()
+        gate = run.state["gate_results"]["conformal_vol"]
+        assert gate["checks"].get("vol_interval_available") is True
+        assert gate["passed"] is True  # generous 90% cap
+
+    def test_env_conformal_gate_unset_stays_disabled(self, tmp_path, monkeypatch):
+        from tradingagents.pro.main import build_service
+
+        monkeypatch.setenv("TRADINGAGENTS_PRO_DB", str(tmp_path / "pro.db"))
+        for var in ("PRO_MAX_VOL_INTERVAL_WIDTH_PCT",
+                    "PRO_VOL_INTERVAL_SIZE_SCALE"):
+            monkeypatch.delenv(var, raising=False)
+        service, state = build_service(llm=FakePipelineLLM(),
+                                       data_dir=tmp_path)
+        assert service.config.risk.max_vol_interval_width_pct is None
+        assert service.config.risk.vol_interval_size_scale is False
+
     def test_prod_bundle_wrapped_with_cost_tracking(self, tmp_path, monkeypatch):
         # P2 observability: the env-configured bundle must emit
         # llm_calls_total / llm_est_cost_usd into the SAME registry the

@@ -74,13 +74,24 @@ def simulate_ticket(
 
 
 def backfill_outcomes(runs, memory, bars_for,
-                      open_rec_ids: frozenset | set = frozenset()) -> dict:
+                      open_rec_ids: frozenset | set = frozenset(),
+                      vintage_reader=None) -> dict:
     """Score every eligible stored run. ``bars_for(run)`` returns the bars
     strictly AFTER the run's decision bar for its symbol/timeframe (the
     caller owns data access). ``open_rec_ids`` = recommendation ids whose
     tickets OWN a live open position — those belong to the live loop,
     never to retro; older never-filled tickets on the same symbol are
-    fair game. Returns counters for the operator."""
+    fair game. Returns counters for the operator.
+
+    ``vintage_reader`` (P3-02): the point-in-time source — anything
+    exposing ``latest_as_known(name, at)``, e.g. the EventStore — for any
+    future macro-aware retro scoring. Today's replay is bars-only
+    (``simulate_ticket`` walks price against the ticket's own levels and
+    consults no macro state), so the reader is deliberately accepted but
+    unused: the parameter documents where PIT reads must come from WHEN a
+    macro-conditional retro is built, without pretending such logic
+    exists now."""
+    del vintage_reader  # accepted for the PIT contract; no macro replay yet
     from tradingagents.pro.memory import MemoryKind
 
     scored = 0

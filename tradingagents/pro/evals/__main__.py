@@ -61,7 +61,13 @@ def main() -> int:
     parser.add_argument("--self-assessment", action="store_true",
                         help="P3-08: generate the RTS-6-flavored quarterly "
                              "self-assessment from the event store (no "
-                             "model calls); requires --start and --end")
+                             "model calls); requires --start and --end. "
+                             "Reads the P2-01 SQLite event store when its "
+                             "DB exists, else the legacy file layout. "
+                             "Against PROD data: restore the Litestream "
+                             "replica first (mirror scripts/"
+                             "pro_restore_drill.sh) and point "
+                             "TRADINGAGENTS_PRO_DB at the restored DB.")
     parser.add_argument("--start", default=None,
                         help="period start YYYY-MM-DD (--self-assessment)")
     parser.add_argument("--end", default=None,
@@ -93,11 +99,30 @@ def main() -> int:
             print(f"bad date: {exc}", file=sys.stderr)
             return 2
         data = default_data_dir()
-        memory_path = data / "memory.jsonl"
-        memory = (ProMemory(store_path=memory_path)
-                  if memory_path.exists() else ProMemory())
+        # P3-08: the P2-01 SQLite event store is the source of truth for
+        # runs and memory wherever it exists (prod, and any dir restored
+        # from the Litestream replica — see scripts/pro_restore_drill.sh +
+        # TRADINGAGENTS_PRO_DB); the legacy one-file-per-run/JSONL layout
+        # remains the fallback for pre-P2-01 data dirs. The audit log is a
+        # hash-chained FILE in both layouts.
+        from tradingagents.pro.store import (
+            SqliteMemoryStore,
+            default_db_path,
+        )
+
+        if default_db_path().exists():
+            from tradingagents.pro.store import EventStore
+
+            store = EventStore()
+            recorder_runs = PipelineRecorder(store=store).runs
+            memory = ProMemory(store=SqliteMemoryStore(store))
+        else:
+            memory_path = data / "memory.jsonl"
+            memory = (ProMemory(store_path=memory_path)
+                      if memory_path.exists() else ProMemory())
+            recorder_runs = PipelineRecorder(store_dir=data / "runs").runs
         doc = generate_self_assessment(
-            recorder_runs=PipelineRecorder(store_dir=data / "runs").runs,
+            recorder_runs=recorder_runs,
             memory=memory,
             audit_path=data / "audit.jsonl",
             metrics=None,
@@ -277,8 +302,21 @@ def main() -> int:
 
         abl_config = ProConfig(asset=AC.BITCOIN, max_debate_rounds=1,
                                models=routing)
+        # P3-02: point-in-time macro reads for the historical cuts — the
+        # default event store's vintages (latest_as_known). Best-effort:
+        # an unopenable store degrades to reader-less builds, never aborts
+        # the series.
+        vintage_reader = None
+        try:
+            from tradingagents.pro.store import EventStore
+
+            vintage_reader = EventStore()
+        except Exception as exc:  # noqa: BLE001 — degrade, don't abort
+            print(f"vintage store unavailable ({exc}); ablation builds "
+                  "without point-in-time macro replay", file=sys.stderr)
         rows = run_ablation_series(bundle, abl_config, points=args.points,
-                                   agent_workers=8)
+                                   agent_workers=8,
+                                   vintage_reader=vintage_reader)
         payload = {
             "as_of": datetime.now(timezone.utc).isoformat(),
             "provider": routing.llm_provider,
