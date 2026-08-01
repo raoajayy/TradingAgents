@@ -153,6 +153,13 @@ Derived from `docs/COMPETITIVE_TEARDOWN.md` (§21 roadmap, §22 backlog, top-25 
 
 ## Phase 3 — Institutional-grade (6 months)
 
+> **STATUS: CODE COMPLETE 2026-07-31** (P3-01..12 all shipped; deployed
+> through rev 00120). Operator ceremonies outstanding: P3-01's AC (testnet
+> keys → kill-switch drill → 10 fills → mainnet dust OWNER SIGN-OFF per
+> docs/LIVE_PILOT_RUNBOOK.md) and P3-10's sliced-vs-single TCA comparison
+> on those fills. P3-03 mining run + P3-12 gap remediations tracked in
+> docs/CONTROLS.md.
+
 ### P3-01 Live dust pilot (one exchange) — 3w
 - **What**: real orders at minimum size on one venue (Delta or Binance testnet→mainnet dust), reduce-only ladder to start; real TCA (P1-04 pipeline against real fills); protective stop placed ON VENUE at entry (fixes LLM-outage risk #48).
 - **Files**: `execution/` live adapter (extend existing live-gates/OMS scaffolding — `live_config.py`, `arming.py` exist), runbook doc.
