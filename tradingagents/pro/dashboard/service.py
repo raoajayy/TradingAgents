@@ -16,6 +16,7 @@ from tradingagents.contracts import TradeAction, TradeRecommendation
 from tradingagents.pro.backtest import BacktestResult
 from tradingagents.pro.dashboard.recorder import RunRecord
 from tradingagents.pro.memory import MemoryKind, ProMemory
+from tradingagents.pro.pipeline.nodes import ABSTAINED_ARGUMENT
 
 
 def market_overview(run: RunRecord | None) -> dict:
@@ -243,6 +244,13 @@ def debate_timeline(run: RunRecord) -> dict:
                 "confidence": e.get("confidence"),
                 "argument": e["argument"],
                 "cited": e.get("cited", []),
+                # the model call failed and this turn was dropped. Runs
+                # recorded before the flag existed encoded the same thing
+                # as confidence 0 + a fixed argument string.
+                "abstained": bool(
+                    e.get("abstained",
+                          e["argument"] == ABSTAINED_ARGUMENT)
+                ),
             }
             for e in run.debate
         ],
@@ -283,6 +291,484 @@ def _linked_trade_and_outcome(run: RunRecord, memory: ProMemory):
     outcome = next((o for o in memory.records(MemoryKind.OUTCOME)
                     if o.ref_id == trade.id), None)
     return trade, outcome
+
+
+# --- P5-05 run diff: "what changed the machine's mind" ----------------------------
+
+#: Materiality floor for a metric reading to count as data drift (percent
+#: of the earlier reading). Below it, a number moved but the story didn't.
+DIFF_METRIC_PCT_THRESHOLD = 10.0
+
+#: How many confidence movers the diff carries (largest |delta| first).
+DIFF_TOP_MOVERS = 5
+
+#: Headline precedence, strongest driver first. Documented here because the
+#: headline is a claim about CAUSALITY and must never be an LLM's guess:
+#:
+#:   versions   the code / prompts / models / config changed between the two
+#:              runs — the machine itself is different, so NOTHING below is
+#:              safely attributable to the market. Always wins.
+#:   verdict    the call itself moved (action changed, or a gate stage
+#:              started/stopped rejecting the trade).
+#:   gate       a gate flipped pass/fail without changing the final verdict.
+#:   evidence   an agent flipped direction, went silent, or started speaking.
+#:   data       a metric drifted materially, a feed was lost/restored, or the
+#:              regime reclassified.
+#:   confidence only the stated confidence moved (same action, same gates).
+#:   none       nothing material changed.
+DIFF_PRECEDENCE = ("versions", "verdict", "gate", "evidence", "data",
+                   "confidence", "none")
+
+
+def _run_stub(run: RunRecord) -> dict:
+    return {
+        "run_id": run.run_id,
+        "started_at": run.started_at.isoformat(),
+        "symbol": run.symbol,
+        "timeframe": run.timeframe,
+        "trigger": run.trigger,
+    }
+
+
+def _verdict_of(run: RunRecord) -> dict:
+    rec = run.recommendation
+    return {
+        "action": rec.action.value if rec is not None else None,
+        "confidence": rec.confidence if rec is not None else None,
+        "rejected_at": (run.rejection or {}).get("stage"),
+        "execution_status": run.state.get("execution_status"),
+    }
+
+
+def _verdict_label(verdict: dict) -> str:
+    """Human phrase for one side of the verdict delta — honest about the
+    three distinguishable states: rejected, ticketed, and unknown."""
+    if verdict["rejected_at"]:
+        return f"rejected at {verdict['rejected_at']}"
+    if verdict["action"] is None:
+        return "no ticket"
+    if verdict["confidence"] is None:
+        return str(verdict["action"])
+    return f"{verdict['action']} {verdict['confidence']}"
+
+
+def _versions_delta(earlier: RunRecord, later: RunRecord) -> dict:
+    """P3-07 stamp diff. ``comparable`` is False whenever either run
+    predates stamping — an unstamped pair CANNOT be said to share code,
+    and saying so would be the exact dishonesty this panel exists to
+    prevent."""
+    before, after = earlier.versions, later.versions
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return {
+            "comparable": False,
+            "changed": None,
+            "fields": [],
+            "note": "one or both runs carry no version stamp — whether the "
+                    "code changed between them is unknown",
+        }
+    fields = []
+    for name in sorted(set(before) | set(after)):
+        was, now = before.get(name), after.get(name)
+        if was != now:
+            fields.append({"field": name, "before": was, "after": now})
+    return {
+        "comparable": True,
+        "changed": bool(fields),
+        "fields": fields,
+        "note": ("the machine itself changed between these runs, not just "
+                 "the market — differences below are not attributable to "
+                 "market conditions alone")
+        if fields else None,
+    }
+
+
+def _gates_delta(earlier: RunRecord, later: RunRecord) -> dict:
+    """Per-gate pass/fail transitions. Gate payloads carry their refusal
+    text under ``reasons`` (risk/event/conformal) or ``issues`` (critic);
+    both are surfaced verbatim."""
+    before = earlier.state.get("gate_results") or {}
+    after = later.state.get("gate_results") or {}
+
+    def reasons_of(payload) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        raw = payload.get("reasons")
+        if raw is None:
+            raw = payload.get("issues")
+        return [str(r) for r in (raw or [])]
+
+    def passed_of(payload):
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("passed")
+        return bool(value) if value is not None else None
+
+    changed, added, removed = [], [], []
+    for gate in sorted(set(before) | set(after)):
+        was, now = before.get(gate), after.get(gate)
+        if gate not in after:
+            removed.append({"gate": gate, "before_passed": passed_of(was),
+                            "before_reasons": reasons_of(was)})
+            continue
+        if gate not in before:
+            added.append({"gate": gate, "after_passed": passed_of(now),
+                          "after_reasons": reasons_of(now)})
+            continue
+        was_passed, now_passed = passed_of(was), passed_of(now)
+        if was_passed != now_passed:
+            changed.append({
+                "gate": gate,
+                "before_passed": was_passed,
+                "after_passed": now_passed,
+                "before_reasons": reasons_of(was),
+                "after_reasons": reasons_of(now),
+            })
+    return {"changed": changed, "added": added, "removed": removed}
+
+
+def _evidence_stances(run: RunRecord) -> dict[str, dict]:
+    """agent_id -> its evidence stance for one run. Agents that produced no
+    evidence simply do not appear (that absence IS the abstention signal)."""
+    stances: dict[str, dict] = {}
+    for team, evidence in (run.state.get("evidence_by_team") or {}).items():
+        for item in evidence:
+            stances[item.agent_id] = {
+                "team": getattr(team, "value", str(team)),
+                "direction": item.direction.value,
+                "confidence": item.confidence,
+                "claim": item.claim,
+            }
+    return stances
+
+
+def _debate_abstainers(run: RunRecord) -> set[str]:
+    """Speakers whose model call failed and whose turn was dropped. Runs
+    recorded before the flag existed encoded the same thing as the fixed
+    abstention argument string."""
+    return {
+        entry["speaker"] for entry in run.debate
+        if bool(entry.get("abstained",
+                          entry.get("argument") == ABSTAINED_ARGUMENT))
+    }
+
+
+def _debate_speakers(run: RunRecord) -> set[str]:
+    return {entry["speaker"] for entry in run.debate}
+
+
+def _evidence_delta(earlier: RunRecord, later: RunRecord,
+                    top_movers: int = DIFF_TOP_MOVERS) -> dict:
+    """Who changed their mind, who stopped talking, who started."""
+    before, after = _evidence_stances(earlier), _evidence_stances(later)
+
+    flipped = []
+    movers = []
+    for agent_id in sorted(set(before) & set(after)):
+        was, now = before[agent_id], after[agent_id]
+        if was["direction"] != now["direction"]:
+            flipped.append({
+                "agent_id": agent_id,
+                "team": now["team"],
+                "before_direction": was["direction"],
+                "after_direction": now["direction"],
+                "before_confidence": was["confidence"],
+                "after_confidence": now["confidence"],
+                "before_claim": was["claim"],
+                "after_claim": now["claim"],
+            })
+        delta = now["confidence"] - was["confidence"]
+        if delta:
+            movers.append({
+                "agent_id": agent_id,
+                "team": now["team"],
+                "before": was["confidence"],
+                "after": now["confidence"],
+                "delta": delta,
+                "direction": now["direction"],
+            })
+    # deterministic: largest absolute move first, ties broken by agent_id
+    movers.sort(key=lambda m: (-abs(m["delta"]), m["agent_id"]))
+
+    # abstention has two honest sources: a dropped debate turn (flagged),
+    # and evidence that simply is not there this time
+    was_abstaining = _debate_abstainers(earlier) | (
+        _debate_speakers(later) - _debate_speakers(earlier))
+    now_abstaining = _debate_abstainers(later) | (
+        _debate_speakers(earlier) - _debate_speakers(later))
+    newly_abstaining = [
+        {"agent_id": a, "team": before[a]["team"] if a in before else None,
+         "before_direction": before[a]["direction"] if a in before else None,
+         "before_confidence": before[a]["confidence"] if a in before else None}
+        for a in sorted((set(before) - set(after)) | (now_abstaining
+                                                      - was_abstaining))
+    ]
+    newly_speaking = [
+        {"agent_id": a, "team": after[a]["team"] if a in after else None,
+         "after_direction": after[a]["direction"] if a in after else None,
+         "after_confidence": after[a]["confidence"] if a in after else None}
+        for a in sorted((set(after) - set(before)) | (was_abstaining
+                                                      - now_abstaining))
+    ]
+    return {
+        "flipped": flipped,
+        "newly_abstaining": newly_abstaining,
+        "newly_speaking": newly_speaking,
+        "confidence_movers": movers[:max(0, int(top_movers))],
+        "n_confidence_movers": len(movers),
+    }
+
+
+def _metrics_of(run: RunRecord) -> dict[str, object]:
+    """Every named MetricReading the run reasoned over (quant + risk)."""
+    merged: dict[str, object] = {}
+    for key in ("quant_metrics", "risk_metrics"):
+        block = run.state.get(key)
+        if isinstance(block, dict):
+            merged.update(block)
+    return merged
+
+
+def _pct_change(before: float, after: float) -> float | None:
+    """Percent move, or None when the base is zero — a change from 0 has no
+    honest percentage, and reporting one would invent a number."""
+    if before == 0:
+        return None
+    return (after - before) / abs(before) * 100.0
+
+
+def _data_delta(earlier: RunRecord, later: RunRecord,
+                pct_threshold: float = DIFF_METRIC_PCT_THRESHOLD) -> dict:
+    before_m, after_m = _metrics_of(earlier), _metrics_of(later)
+    metrics = []
+    for name in sorted(set(before_m) & set(after_m)):
+        was, now = before_m[name], after_m[name]
+        was_value = getattr(was, "value", None)
+        now_value = getattr(now, "value", None)
+        if was_value is None or now_value is None or was_value == now_value:
+            continue
+        pct = _pct_change(was_value, now_value)
+        # a move off zero has no percentage but is unambiguously material
+        if pct is not None and abs(pct) < pct_threshold:
+            continue
+        metrics.append({
+            "name": name,
+            "before": was_value,
+            "after": now_value,
+            "delta": now_value - was_value,
+            "pct_change": pct,
+            "unit": getattr(now, "unit", None),
+        })
+    metrics.sort(key=lambda m: (-abs(m["pct_change"] or float("inf")),
+                                m["name"]))
+
+    before_s = earlier.state.get("snapshot")
+    after_s = later.state.get("snapshot")
+    before_feeds = set(before_s.missing_feeds) if before_s else set()
+    after_feeds = set(after_s.missing_feeds) if after_s else set()
+
+    before_regime = earlier.state.get("regime")
+    after_regime = later.state.get("regime")
+    before_regime = getattr(before_regime, "value", before_regime)
+    after_regime = getattr(after_regime, "value", after_regime)
+
+    return {
+        "pct_threshold": pct_threshold,
+        "metrics": metrics,
+        # missing_feeds set diff, named for what it means to a reader:
+        # a feed appearing in missing_feeds is a feed the machine LOST
+        "feeds_lost": sorted(after_feeds - before_feeds),
+        "feeds_restored": sorted(before_feeds - after_feeds),
+        "feeds_still_missing": sorted(before_feeds & after_feeds),
+        "regime": {
+            "before": before_regime,
+            "after": after_regime,
+            "changed": (before_regime != after_regime
+                        if before_regime is not None and after_regime is not None
+                        else None),
+        },
+        "bars": _bar_window_delta(before_s, after_s),
+    }
+
+
+def _bar_window_delta(before_s, after_s) -> dict:
+    """How far the price window advanced between the two runs. ``new_bars``
+    counts later bars that start after the earlier run's last bar; None
+    when either window is empty (unknowable, not zero)."""
+    before_bars = list(before_s.bars) if before_s is not None else []
+    after_bars = list(after_s.bars) if after_s is not None else []
+    before_last = before_bars[-1].start if before_bars else None
+    after_last = after_bars[-1].start if after_bars else None
+    new_bars = (
+        sum(1 for b in after_bars if b.start > before_last)
+        if before_last is not None and after_bars else None
+    )
+    return {
+        "before_n": len(before_bars),
+        "after_n": len(after_bars),
+        "before_last_bar": before_last.isoformat() if before_last else None,
+        "after_last_bar": after_last.isoformat() if after_last else None,
+        "new_bars": new_bars,
+        "before_last_close": before_bars[-1].close if before_bars else None,
+        "after_last_close": after_bars[-1].close if after_bars else None,
+    }
+
+
+def _diff_headline(versions: dict, verdict: dict, gates: dict,
+                   evidence: dict, data: dict) -> tuple[str, str]:
+    """(driver, headline) under DIFF_PRECEDENCE — deterministic, no LLM.
+
+    Within a tier the choice is also deterministic: the gate/agent/metric
+    lists are already sorted (name, then magnitude), so the "biggest"
+    element is always the same for the same pair of runs."""
+    if versions.get("changed"):
+        parts = ", ".join(
+            f"{f['field']} {_short(f['before'])} → {_short(f['after'])}"
+            for f in versions["fields"])
+        return "versions", (f"different machine: {parts} — the code changed, "
+                            f"not just the market")
+
+    if verdict["action_changed"] or verdict["rejection_changed"]:
+        return "verdict", (f"{_verdict_label(verdict['before'])} → "
+                           f"{_verdict_label(verdict['after'])}")
+
+    if gates["changed"]:
+        gate = gates["changed"][0]
+        def word(passed):
+            return {True: "pass", False: "fail"}.get(passed, "unknown")
+        reasons = gate["after_reasons"] or gate["before_reasons"]
+        tail = f": {reasons[0]}" if reasons else ""
+        return "gate", (f"{gate['gate']} gate {word(gate['before_passed'])} → "
+                        f"{word(gate['after_passed'])}{tail}")
+
+    if evidence["flipped"]:
+        flip = evidence["flipped"][0]
+        return "evidence", (f"{flip['agent_id']} flipped "
+                            f"{flip['before_direction']} → "
+                            f"{flip['after_direction']}")
+    if evidence["newly_abstaining"]:
+        who = evidence["newly_abstaining"][0]["agent_id"]
+        n = len(evidence["newly_abstaining"])
+        extra = f" (+{n - 1} more)" if n > 1 else ""
+        return "evidence", f"{who} went silent this run{extra}"
+    if evidence["newly_speaking"]:
+        who = evidence["newly_speaking"][0]["agent_id"]
+        n = len(evidence["newly_speaking"])
+        extra = f" (+{n - 1} more)" if n > 1 else ""
+        return "evidence", f"{who} spoke this run after being absent{extra}"
+
+    if data["feeds_lost"]:
+        feeds = ", ".join(data["feeds_lost"])
+        return "data", f"feed lost: {feeds} — the machine reasoned on less"
+    if data["feeds_restored"]:
+        return "data", ("feed restored: "
+                        + ", ".join(data["feeds_restored"]))
+    if data["regime"]["changed"]:
+        return "data", (f"regime {data['regime']['before']} → "
+                        f"{data['regime']['after']}")
+    if data["metrics"]:
+        metric = data["metrics"][0]
+        pct = metric["pct_change"]
+        move = f"{pct:+.1f}%" if pct is not None else "off zero"
+        return "data", (f"{metric['name']} moved {move} "
+                        f"({metric['before']:g} → {metric['after']:g})")
+
+    if verdict["confidence_delta"]:
+        return "confidence", (f"same {verdict['after']['action']} call, "
+                              f"confidence {verdict['before']['confidence']} → "
+                              f"{verdict['after']['confidence']}")
+
+    return "none", ("no material change: same verdict, same gates, same "
+                    "agent stances, no material data drift")
+
+
+def _short(value) -> str:
+    """Compact display of a stamp field — hashes truncated, lists joined."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) or "(none)"
+    text = str(value) if value is not None else "(unstamped)"
+    return text[:8] if len(text) > 12 else text
+
+
+def run_diff(earlier_run: RunRecord, later_run: RunRecord,
+             pct_threshold: float = DIFF_METRIC_PCT_THRESHOLD,
+             top_movers: int = DIFF_TOP_MOVERS) -> dict:
+    """P5-05: what changed the machine's mind between two runs of the SAME
+    symbol.
+
+    The two runs are ordered chronologically by ``started_at`` regardless
+    of argument order, so the diff always reads forward in time.
+
+    Every section is a plain projection of what the event store recorded —
+    nothing is recomputed, nothing is inferred, and anything unknowable is
+    ``None`` rather than a comfortable default. In particular:
+
+    - ``versions.comparable`` is False when either run predates the P3-07
+      stamp: "we don't know whether the code changed" is a different claim
+      from "the code didn't change";
+    - the ``headline`` is chosen by the fixed ``DIFF_PRECEDENCE`` rule, not
+      by a model, so the same pair of runs always yields the same sentence;
+    - a versions change outranks everything: when the machine itself moved,
+      no downstream difference can honestly be blamed on the market.
+
+    Raises ValueError when the two runs are for different symbols — a
+    cross-symbol "diff" would compare two unrelated decisions.
+    """
+    if earlier_run.symbol != later_run.symbol:
+        raise ValueError(
+            f"cannot diff runs for different symbols: "
+            f"{earlier_run.symbol!r} vs {later_run.symbol!r}")
+    if earlier_run.run_id == later_run.run_id:
+        raise ValueError("cannot diff a run against itself")
+    earlier, later = sorted((earlier_run, later_run),
+                            key=lambda r: (r.started_at, r.run_id))
+
+    before_v, after_v = _verdict_of(earlier), _verdict_of(later)
+    confidence_delta = (
+        after_v["confidence"] - before_v["confidence"]
+        if before_v["confidence"] is not None
+        and after_v["confidence"] is not None else None
+    )
+    verdict = {
+        "before": before_v,
+        "after": after_v,
+        "action_changed": before_v["action"] != after_v["action"],
+        "confidence_delta": confidence_delta,
+        "rejection_changed": before_v["rejected_at"] != after_v["rejected_at"],
+        "summary": f"{_verdict_label(before_v)} → {_verdict_label(after_v)}",
+    }
+    versions = _versions_delta(earlier, later)
+    gates = _gates_delta(earlier, later)
+    evidence = _evidence_delta(earlier, later, top_movers=top_movers)
+    data = _data_delta(earlier, later, pct_threshold=pct_threshold)
+    driver, headline = _diff_headline(versions, verdict, gates, evidence, data)
+    return {
+        "diff_format": 1,
+        "symbol": later.symbol,
+        "earlier": _run_stub(earlier),
+        "later": _run_stub(later),
+        "headline": headline,
+        "headline_driver": driver,
+        "precedence": list(DIFF_PRECEDENCE),
+        "versions": versions,
+        "verdict": verdict,
+        "gates": gates,
+        "evidence": evidence,
+        "data": data,
+    }
+
+
+def previous_run_for(runs: Sequence[RunRecord], run: RunRecord) -> RunRecord | None:
+    """The most recent run for the same symbol that started before ``run``
+    — the default comparison target of the diff endpoint. Ties on
+    ``started_at`` (same-second runs) break by run_id so the answer is
+    stable; None when this is the symbol's first run."""
+    key = (run.started_at, run.run_id)
+    candidates = [r for r in runs
+                  if r.symbol == run.symbol and r.run_id != run.run_id
+                  and (r.started_at, r.run_id) < key]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: (r.started_at, r.run_id))
 
 
 def decision_export_pack(run: RunRecord, memory: ProMemory) -> dict:

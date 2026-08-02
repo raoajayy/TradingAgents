@@ -38,6 +38,7 @@ import {
   OverviewSchema,
   PrefsSchema,
   RecommendationSchema,
+  RunDiffSchema,
   RunListSchema,
   StatusSchema,
   SymbolsSchema,
@@ -60,6 +61,8 @@ export const qk = {
   runs: ["runs"] as const,
   runTimeline: (id: string) => ["runs", id, "timeline"] as const,
   runEvidence: (id: string) => ["runs", id, "evidence"] as const,
+  runDiff: (id: string, against: string) =>
+    ["runs", id, "diff", against] as const,
   recommendation: (symbol?: string) =>
     ["recommendation", "latest", symbol ?? "any"] as const,
   runRecommendation: (id: string) => ["runs", id, "recommendation"] as const,
@@ -150,6 +153,22 @@ export const useRunEvidence = (runId: string | null, isLatest: boolean) =>
     enabled: runId != null,
     staleTime: isLatest ? 4_000 : Infinity,
     refetchInterval: isLatest ? () => pollingInterval : false,
+  });
+
+/** P5-05 "what changed the machine's mind": this run against the previous
+ * run for the same symbol. 404 = the symbol's first run (no earlier
+ * decision to compare against); the panel says so rather than retrying. */
+export const useRunDiff = (runId: string | null | undefined, against = "previous") =>
+  useQuery({
+    queryKey: qk.runDiff(runId ?? "none", against),
+    queryFn: fetchParsed(
+      `/api/runs/${runId}/diff?against=${encodeURIComponent(against)}`,
+      RunDiffSchema,
+    ),
+    enabled: runId != null,
+    // both runs are complete and immutable — the diff never changes
+    staleTime: Infinity,
+    retry: false,
   });
 
 export const useRecommendation = (symbol?: string) =>

@@ -147,6 +147,9 @@ export const TimelineSchema = z.object({
         confidence: z.number().nullable(),
         argument: z.string(),
         cited: z.array(z.string()),
+        // the model call failed and the turn was dropped — distinct from
+        // a genuine low-confidence argument (older runs lack the field)
+        abstained: z.boolean().optional(),
       })
       .passthrough(),
   ),
@@ -1001,3 +1004,164 @@ export const ListingSchema = z.object({
 });
 export type Listing = z.infer<typeof ListingSchema>;
 export const ListingsSchema = z.object({ listings: z.array(ListingSchema) });
+
+// --- P5-05 run diff: "what changed the machine's mind" -----------------------
+// Mirrors tradingagents/pro/dashboard/service.py run_diff. Honest nulls are
+// load-bearing here: `versions.changed === null` means "we cannot know
+// whether the code changed" (an unstamped run), which is a different claim
+// from `false`. `.passthrough()` where the backend may grow sections.
+
+const RunDiffStubSchema = z.object({
+  run_id: z.string(),
+  started_at: z.string(),
+  symbol: z.string(),
+  timeframe: z.string().nullable().optional(),
+  trigger: z.string().nullable().optional(),
+});
+
+const RunDiffVerdictSideSchema = z.object({
+  action: z.string().nullable(),
+  confidence: z.number().nullable(),
+  rejected_at: z.string().nullable(),
+  execution_status: z.string().nullable().optional(),
+});
+
+export const RunDiffSchema = z
+  .object({
+    diff_format: z.number(),
+    symbol: z.string(),
+    earlier: RunDiffStubSchema,
+    later: RunDiffStubSchema,
+    headline: z.string(),
+    headline_driver: z.enum([
+      "versions",
+      "verdict",
+      "gate",
+      "evidence",
+      "data",
+      "confidence",
+      "none",
+    ]),
+    precedence: z.array(z.string()),
+    versions: z.object({
+      // null = unknowable (a run predates the P3-07 stamp)
+      comparable: z.boolean(),
+      changed: z.boolean().nullable(),
+      fields: z.array(
+        z.object({
+          field: z.string(),
+          before: z.unknown(),
+          after: z.unknown(),
+        }),
+      ),
+      note: z.string().nullable().optional(),
+    }),
+    verdict: z.object({
+      before: RunDiffVerdictSideSchema,
+      after: RunDiffVerdictSideSchema,
+      action_changed: z.boolean(),
+      confidence_delta: z.number().nullable(),
+      rejection_changed: z.boolean(),
+      summary: z.string(),
+    }),
+    gates: z.object({
+      changed: z.array(
+        z.object({
+          gate: z.string(),
+          before_passed: z.boolean().nullable(),
+          after_passed: z.boolean().nullable(),
+          before_reasons: z.array(z.string()),
+          after_reasons: z.array(z.string()),
+        }),
+      ),
+      added: z.array(
+        z.object({
+          gate: z.string(),
+          after_passed: z.boolean().nullable(),
+          after_reasons: z.array(z.string()),
+        }),
+      ),
+      removed: z.array(
+        z.object({
+          gate: z.string(),
+          before_passed: z.boolean().nullable(),
+          before_reasons: z.array(z.string()),
+        }),
+      ),
+    }),
+    evidence: z.object({
+      flipped: z.array(
+        z.object({
+          agent_id: z.string(),
+          team: z.string().nullable(),
+          before_direction: z.string(),
+          after_direction: z.string(),
+          before_confidence: z.number(),
+          after_confidence: z.number(),
+          before_claim: z.string(),
+          after_claim: z.string(),
+        }),
+      ),
+      newly_abstaining: z.array(
+        z.object({
+          agent_id: z.string(),
+          team: z.string().nullable(),
+          before_direction: z.string().nullable(),
+          before_confidence: z.number().nullable(),
+        }),
+      ),
+      newly_speaking: z.array(
+        z.object({
+          agent_id: z.string(),
+          team: z.string().nullable(),
+          after_direction: z.string().nullable(),
+          after_confidence: z.number().nullable(),
+        }),
+      ),
+      confidence_movers: z.array(
+        z.object({
+          agent_id: z.string(),
+          team: z.string().nullable(),
+          before: z.number(),
+          after: z.number(),
+          delta: z.number(),
+          direction: z.string(),
+        }),
+      ),
+      n_confidence_movers: z.number(),
+    }),
+    data: z.object({
+      pct_threshold: z.number(),
+      metrics: z.array(
+        z.object({
+          name: z.string(),
+          before: z.number(),
+          after: z.number(),
+          delta: z.number(),
+          // null = the earlier reading was zero; a percentage off zero
+          // would be an invented number
+          pct_change: z.number().nullable(),
+          unit: z.string().nullable().optional(),
+        }),
+      ),
+      feeds_lost: z.array(z.string()),
+      feeds_restored: z.array(z.string()),
+      feeds_still_missing: z.array(z.string()),
+      regime: z.object({
+        before: z.string().nullable(),
+        after: z.string().nullable(),
+        changed: z.boolean().nullable(),
+      }),
+      bars: z.object({
+        before_n: z.number(),
+        after_n: z.number(),
+        before_last_bar: z.string().nullable(),
+        after_last_bar: z.string().nullable(),
+        new_bars: z.number().nullable(),
+        before_last_close: z.number().nullable(),
+        after_last_close: z.number().nullable(),
+      }),
+    }),
+  })
+  .passthrough();
+export type RunDiff = z.infer<typeof RunDiffSchema>;

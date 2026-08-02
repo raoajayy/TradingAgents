@@ -63,6 +63,7 @@ Run locally:
 # endpoint annotations at runtime against module globals, and Request/
 # Response are imported lazily inside create_app (fastapi is an optional
 # extra). Deferred annotations would demote them to query params.
+import logging
 from dataclasses import dataclass, field
 from importlib import resources
 
@@ -82,6 +83,14 @@ from tradingagents.pro.memory import ProMemory
 # (observed live: successful Google sign-in bounced straight back to the
 # login screen). Plain deployments don't care what it's called.
 SESSION_COOKIE = "__session"
+
+logger = logging.getLogger(__name__)
+
+# In-band marker for a stream that died AFTER bytes were sent (no status
+# code left to use). The client watches for this prefix and retries the
+# question against the structured /ask endpoint rather than rendering the
+# note as the model's answer.
+STREAM_INTERRUPTED = "[stream interrupted:"
 
 
 def _verify_firebase_token(id_token: str, audience: str) -> dict:
@@ -860,6 +869,32 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             "Content-Disposition":
                 f'attachment; filename="run-{run.run_id}.json"'})
 
+    @app.get("/api/runs/{run_id}/diff")
+    def run_diff(run_id: str, against: str = "previous") -> dict:
+        """P5-05 "what changed the machine's mind": a structured, honest
+        diff of two runs of the SAME symbol.
+
+        ``against`` is another run_id, or the literal "previous" (default)
+        — the most recent earlier run for this run's symbol. 404 names an
+        unknown run (either side) or the absence of a previous run; 422
+        explains a cross-symbol comparison rather than diffing two
+        unrelated decisions.
+        """
+        run = _run_or_404(run_id)
+        if against == "previous":
+            other = service.previous_run_for(state.runs, run)
+            if other is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"no earlier run for {run.symbol} to compare "
+                           f"against; this is its first recorded run")
+        else:
+            other = _run_or_404(against)
+        try:
+            return service.run_diff(other, run)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
     def _ticket_view(run: RunRecord | None) -> dict:
         if run is None:
             return service.recommendation_view(None)
@@ -967,16 +1002,25 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         client splits into citation tags. Falls back to /ask on the client
         if the model can't stream."""
         from tradingagents.pro.models import ModelBundle
+        from tradingagents.pro.observability import supports_streaming
         from tradingagents.pro.pipeline.nodes import _debate_block
         from tradingagents.pro.pipeline.qa import build_qa_stream_prompt
 
         run, llm, question, supporting, counters, invalidation = _ask_prep(
             run_id, await request.json())
+        bundle = ModelBundle.coerce(llm)
+        # capability probe BEFORE any bytes go out: a model that cannot
+        # stream must produce a status the client can branch on, not a 200
+        # whose body is an error string. Discovering this inside generate()
+        # is what made the documented /ask fallback unreachable.
+        if not supports_streaming(bundle.deep):
+            raise HTTPException(
+                status_code=501,
+                detail="this model does not support streaming; use /ask")
         prompt = build_qa_stream_prompt(
             question, symbol=run.symbol, recommendation=run.recommendation,
             supporting=supporting, counterarguments=counters,
             debate_block=_debate_block(run.debate), invalidation=invalidation)
-        bundle = ModelBundle.coerce(llm)
 
         def generate():
             try:
@@ -984,8 +1028,12 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                     text = getattr(chunk, "content", None)
                     if text:
                         yield text if isinstance(text, str) else str(text)
-            except Exception as exc:  # surface as an in-band note, never 500
-                yield f"\n[stream interrupted: {type(exc).__name__}]"
+            except Exception as exc:
+                # bytes may already be on the wire, so a status code is no
+                # longer available: emit the sentinel the client watches for
+                # and let it retry against /ask.
+                logger.exception("ask stream failed for run %s", run.run_id)
+                yield f"\n{STREAM_INTERRUPTED} {type(exc).__name__}]"
 
         return StreamingResponse(generate(), media_type="text/plain")
 

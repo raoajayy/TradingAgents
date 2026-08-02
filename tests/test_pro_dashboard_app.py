@@ -104,6 +104,100 @@ def test_ask_run_stream_yields_prose_and_sources(tmp_path):
                        json={}).status_code == 422
 
 
+def _run_with_llm(llm):
+    state = DashboardState(memory=ProMemory())
+    run = state.recorder.record_run(
+        FakePipelineLLM(), CONFIG, pipeline_snapshot(), memory=state.memory
+    )
+    state.trigger = type("T", (), {"service": type("S", (), {"llm": llm})()})()
+    return run, TestClient(create_app(state))
+
+
+def test_ask_run_stream_through_production_wrapper_shape():
+    """Regression: the wrapped-bundle shape main.py actually builds.
+
+    CostTrackingLLM implements only with_structured_output, so
+    bundle.deep.stream(...) raised AttributeError and the endpoint yielded
+    it as the answer body — every question returned
+    '[stream interrupted: AttributeError]'. The old _StubLLM was passed
+    bare, so no test ever exercised a wrapper.
+    """
+    from tradingagents.pro.models import ModelBundle
+    from tradingagents.pro.observability import (
+        CostTrackingLLM,
+        MetricsRegistry,
+        supports_streaming,
+    )
+    from tradingagents.pro.pipeline.qa import EvidenceAnswer
+
+    metrics = MetricsRegistry()
+    inner = _StubLLM(
+        EvidenceAnswer(answerable=True, answer="x", cited_agent_ids=["rsi"]),
+        stream_chunks=["macd led ", "the call.", "\nSOURCES: macd"],
+    )
+    tracked = CostTrackingLLM(inner, metrics=metrics)
+    assert supports_streaming(tracked)
+    run, client = _run_with_llm(ModelBundle.single(tracked))
+
+    with client.stream("POST", f"/api/runs/{run.run_id}/ask/stream",
+                       json={"question": "why?"}) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+    assert "[stream interrupted" not in body
+    assert "macd led the call." in body
+    assert body.endswith("SOURCES: macd")
+    # streamed tokens still land in the cost report
+    assert tracked.report.by_schema["stream"] == 1
+    assert tracked.report.est_output_tokens > 0
+    assert metrics.counter("llm_calls_total", schema="stream") == 1
+
+
+def test_ask_run_stream_501_when_model_cannot_stream():
+    """A non-streaming model must produce a status the client can branch
+    on — not a 200 whose body is an error string (which made the
+    documented /ask fallback unreachable)."""
+    from tradingagents.pro.observability import supports_streaming
+    from tradingagents.pro.pipeline.qa import EvidenceAnswer
+
+    class _NoStreamLLM:
+        def with_structured_output(self, schema):
+            return _StubStructured(
+                EvidenceAnswer(answerable=True, answer="from /ask",
+                               cited_agent_ids=["rsi"]))
+
+    llm = _NoStreamLLM()
+    assert not supports_streaming(llm)
+    run, client = _run_with_llm(llm)
+
+    assert client.post(f"/api/runs/{run.run_id}/ask/stream",
+                       json={"question": "why?"}).status_code == 501
+    # ...and the fallback the client takes still works
+    resp = client.post(f"/api/runs/{run.run_id}/ask", json={"question": "why?"})
+    assert resp.status_code == 200
+    assert resp.json()["answer"] == "from /ask"
+
+
+def test_ask_run_stream_mid_stream_failure_emits_sentinel():
+    """Once bytes are on the wire there is no status left — the in-band
+    sentinel is what the client watches for to retry against /ask."""
+    from tradingagents.pro.dashboard.app import STREAM_INTERRUPTED
+    from tradingagents.pro.pipeline.qa import EvidenceAnswer
+
+    class _FailsMidStream(_StubLLM):
+        def stream(self, prompt):
+            yield _Chunk("partial ")
+            raise RuntimeError("connection reset")
+
+    run, client = _run_with_llm(_FailsMidStream(
+        EvidenceAnswer(answerable=True, answer="x", cited_agent_ids=["rsi"])))
+    with client.stream("POST", f"/api/runs/{run.run_id}/ask/stream",
+                       json={"question": "why?"}) as resp:
+        assert resp.status_code == 200  # headers already sent
+        body = "".join(resp.iter_text())
+    assert body.startswith("partial ")
+    assert STREAM_INTERRUPTED in body
+
+
 def test_ask_run_503_without_model():
     state = DashboardState(memory=ProMemory())
     run = state.recorder.record_run(
@@ -762,3 +856,69 @@ class TestRolesAndEntitlements:
         store.put_user("op@example.com", "operator")
         assert op.post("/api/watchlists",
                        json={"name": "w4", "symbols": []}).status_code == 200
+
+
+# --- P5-05 run diff endpoint --------------------------------------------------------
+
+class TestRunDiffEndpoint:
+    """GET /api/runs/{id}/diff?against=<run_id|previous>."""
+
+    def _state(self):
+        from tests.test_pro_dashboard_views import diff_evidence, diff_run
+        from tradingagents.contracts import Direction, TradeAction
+
+        state = DashboardState(memory=ProMemory())
+        state.recorder.runs = [
+            diff_run("gold-1", minutes=0, symbol="XAUUSD",
+                     action=TradeAction.BUY, confidence=62,
+                     evidence=[diff_evidence("rsi", Direction.BULLISH, 70)]),
+            diff_run("btc-1", minutes=30, symbol="BTCUSD"),
+            diff_run("gold-2", minutes=60, symbol="XAUUSD", action=None,
+                     rejection={"stage": "critic", "reasons": ["thin evidence"]},
+                     evidence=[diff_evidence("rsi", Direction.BEARISH, 40)]),
+        ]
+        return state
+
+    def test_default_against_previous_resolves_same_symbol(self):
+        client = TestClient(create_app(self._state()))
+        resp = client.get("/api/runs/gold-2/diff")
+        assert resp.status_code == 200
+        body = resp.json()
+        # the BTC run sits between them in time and must be skipped
+        assert body["earlier"]["run_id"] == "gold-1"
+        assert body["later"]["run_id"] == "gold-2"
+        assert body["symbol"] == "XAUUSD"
+        assert body["headline"] == "BUY 62 → rejected at critic"
+        assert body["headline_driver"] == "verdict"
+        assert body["evidence"]["flipped"][0]["agent_id"] == "rsi"
+
+    def test_explicit_against_run_id(self):
+        client = TestClient(create_app(self._state()))
+        body = client.get("/api/runs/gold-1/diff?against=gold-2").json()
+        assert body["earlier"]["run_id"] == "gold-1"  # always forward in time
+        assert body["later"]["run_id"] == "gold-2"
+
+    def test_cross_symbol_comparison_is_422_with_a_clear_message(self):
+        client = TestClient(create_app(self._state()))
+        resp = client.get("/api/runs/gold-2/diff?against=btc-1")
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "different symbols" in detail
+        assert "XAUUSD" in detail and "BTCUSD" in detail
+
+    def test_unknown_runs_and_first_run_are_404(self):
+        client = TestClient(create_app(self._state()))
+        assert client.get("/api/runs/nope/diff").status_code == 404
+        assert client.get(
+            "/api/runs/gold-2/diff?against=nope").status_code == 404
+        # gold-1 is the symbol's first run: no earlier run to compare against
+        first = client.get("/api/runs/gold-1/diff")
+        assert first.status_code == 404
+        assert "first recorded run" in first.json()["detail"]
+
+    def test_diff_is_auth_gated_like_every_run_view(self, monkeypatch):
+        monkeypatch.delenv("PRO_DASHBOARD_TOKEN", raising=False)
+        client = TestClient(create_app(self._state(), api_token="s3cret"))
+        assert client.get("/api/runs/gold-2/diff").status_code == 401
+        assert client.get("/api/runs/gold-2/diff",
+                          headers={"X-API-Key": "s3cret"}).status_code == 200

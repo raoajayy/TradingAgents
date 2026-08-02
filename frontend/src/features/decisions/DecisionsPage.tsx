@@ -2,7 +2,7 @@
  * header, gate waterfall, debate timeline, consensus, evidence with
  * provenance, persistent counterargument column, calibration, agent
  * leaderboard. Rejections are first-class citizens. */
-import { Play, ShieldAlert } from "lucide-react";
+import { Cpu, Play, ShieldAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
@@ -17,6 +17,7 @@ import { DirectionBadge } from "@/components/DirectionBadge";
 import { EmptyState } from "@/components/EmptyState";
 import { EvidencePanel } from "@/components/EvidencePanel";
 import { GateWaterfall } from "@/components/GateWaterfall";
+import { RunDiffPanel } from "@/components/RunDiffPanel";
 import { PipelineProgressChip } from "@/components/RunPipelineDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,10 +30,12 @@ import {
   useOverview,
   useRecommendation,
   useRunEvidence,
+  useRunDiff,
   useRunRecommendation,
   useRuns,
   useRunTimeline,
 } from "@/lib/api/queries";
+import { ApiError } from "@/lib/api/client";
 import { fmtDateCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useLiveStages } from "@/stores/pipelineLive";
@@ -154,6 +157,8 @@ export default function DecisionsPage() {
   // historical runs serve their persisted ticket (G8); latest keeps the
   // live recommendation hook (follow-latest behavior unchanged)
   const historicalTicket = useRunRecommendation(isLatest ? null : selected);
+  // P5-05: what changed vs the previous run for the same symbol
+  const runDiff = useRunDiff(selected);
 
   const missingFeeds = isLatest ? (overview.data?.missing_feeds ?? []) : [];
   const quarantinedRun =
@@ -271,6 +276,37 @@ export default function DecisionsPage() {
                 This run predates ticket persistence — the debate transcript
                 and evidence below are its complete record.
               </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* P5-05: the temporal explanation — what moved the machine's mind
+            since the previous decision on this symbol */}
+        <Card>
+          <CardHeader>
+            <CardTitle>What changed</CardTitle>
+            {runDiff.data?.versions.changed === true && (
+              <Badge variant="bear">
+                <Cpu size={12} /> different machine
+              </Badge>
+            )}
+          </CardHeader>
+          <CardContent>
+            {runDiff.isPending ? (
+              <SkeletonCard lines={4} />
+            ) : runDiff.data ? (
+              <RunDiffPanel diff={runDiff.data} />
+            ) : runDiff.error instanceof ApiError && runDiff.error.status === 404 ? (
+              <EmptyState
+                kind="empty"
+                title="Nothing to compare against"
+                detail={`This is the first recorded run for ${
+                  selectedRun?.symbol ?? "this symbol"
+                } — a diff needs an earlier decision.`}
+                className="py-4"
+              />
+            ) : (
+              <EmptyState kind="error" title="Diff unavailable" className="py-4" />
             )}
           </CardContent>
         </Card>
