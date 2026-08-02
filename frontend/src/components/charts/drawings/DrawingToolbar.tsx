@@ -191,7 +191,9 @@ export function DrawingToolbar({
   };
   return (
     <div
-      className="flex flex-col items-center gap-1 pt-1 max-md:hidden"
+      // shrink-0 + its own scroll: the chart row absorbs all shrinking, so
+      // a long tool rail must never squeeze the charts or overflow the card
+      className="flex min-h-0 shrink-0 flex-col items-center gap-1 overflow-y-auto pt-1 max-md:hidden"
       role="toolbar"
       aria-label="Drawing tools"
       data-testid="drawing-toolbar"

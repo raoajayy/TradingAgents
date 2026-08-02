@@ -1020,7 +1020,8 @@ function ResultPanel({
             curve={curve}
             monteCarlo={view.monte_carlo}
             showDrawdown
-            height={220}
+            // two panes need the room: at 220 the drawdown axis got ~55px
+            height={290}
           />
         )}
         {view.extended && (

@@ -114,6 +114,10 @@ class PaperTradingService:
         self.on_event = on_event
         # serializes pipeline executions (hourly loop vs on-demand trigger)
         self.run_lock = run_lock or threading.Lock()
+        # the pipeline nodes count their own abstentions against the same
+        # registry /metrics scrapes (an explicit kwarg still wins, e.g. a
+        # backtest isolating its counters)
+        pipeline_kwargs.setdefault("metrics", self.metrics)
         self.pipeline_kwargs = pipeline_kwargs
         self.open_positions: dict[str, OpenPosition] = {}
         # P3-01: entry coid -> {"rec", "arrival"} for live orders that were

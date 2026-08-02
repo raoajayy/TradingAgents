@@ -73,6 +73,21 @@ class CachingLLM:
         )
         return _CachingRunnable(self, schema, inner_runnable)
 
+    def __getattr__(self, name: str):
+        # pass through anything this wrapper does not itself implement —
+        # notably `stream`, which the dashboard's ask endpoint needs. Only
+        # exposed when the inner model has it, so `hasattr(llm, "stream")`
+        # stays an honest capability probe through a stack of wrappers.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            inner = object.__getattribute__(self, "inner")
+        except AttributeError:  # pre-__init__ / unpickling
+            raise AttributeError(name) from None
+        if inner is None:  # replay mode: nothing to delegate to
+            raise AttributeError(name)
+        return getattr(inner, name)
+
     def _invoke(self, schema, inner_runnable, prompt: str):
         key = self._key(schema, prompt)
         if self.mode != "record" and key in self._store:

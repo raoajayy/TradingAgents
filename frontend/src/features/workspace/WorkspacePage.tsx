@@ -3,7 +3,14 @@
  * replay (REPLAY badge, ticks suspended), full-screen.
  * Honestly cut: no fake DOM ladder, no manual order ticket. */
 import { Maximize2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 
 import { EmptyState } from "@/components/EmptyState";
@@ -15,7 +22,10 @@ import { Segment, Segmented } from "@/components/ui/segmented";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { ChartSyncProvider } from "@/components/charts/ChartSync";
 import {
+  OSCILLATOR_PANE_PX,
   PriceChart,
+  VOLUME_PANE_PX,
+  oscillatorPaneCount,
   type TradeMarker,
 } from "@/components/charts/PriceChart";
 import {
@@ -56,6 +66,7 @@ import {
 import { ReplayDecisionStrip } from "./ReplayDecisionStrip";
 import { countdownExpired, useCountdown } from "@/lib/useCountdown";
 import { useUiStore } from "@/stores/ui";
+import { cn } from "@/lib/utils";
 
 // tradeable pairs come from /api/symbols (server-driven, same set as the
 // run dialog); the registry's other symbols (DXY, US10Y, …) are
@@ -366,8 +377,22 @@ export default function WorkspacePage() {
   const nextRelease = nextMajor ?? calendar.data?.releases[0];
   const isLive = (spec?.live || symbol === "BTC-USD") && !replay.active;
 
+  // Minimum readable height for one tile, and the mechanism that replaced
+  // the old inline min-height on the chart itself: as a `minmax(floor,1fr)`
+  // grid track it tiles perfectly when the tiles fit and SCROLLS when they
+  // don't — instead of overflowing the card. The price pane's 400px target
+  // is negotiable once tiled; the fixed sub-panes never are.
+  const tileFloor =
+    (gridCells.length > 0 ? 160 : 400) +
+    (showVolume ? VOLUME_PANE_PX : 0) +
+    oscillatorPaneCount(visibleIndicators) * OSCILLATOR_PANE_PX;
+
   return (
-    <Card ref={chartCardRef} className="flex h-full flex-col bg-surface">
+    <Card
+      ref={chartCardRef}
+      data-testid="chart-card"
+      className="flex h-full flex-col bg-surface"
+    >
           <CardHeader>
             <CardTitle className="flex items-center gap-2 whitespace-nowrap !text-lg !font-extrabold !normal-case !tracking-normal !text-fg">
               <label htmlFor="trade-symbol" className="sr-only">
@@ -486,10 +511,12 @@ export default function WorkspacePage() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col">
+          {/* overflow-hidden: last line of defence. Nothing inside may
+              paint outside the card's rounded border again. */}
+          <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {alertToast && (
               <div
-                className="mb-2 flex items-center justify-between rounded-lg bg-accent-muted px-2.5 py-1.5 text-xs text-accent"
+                className="mb-2 flex shrink-0 items-center justify-between rounded-lg bg-accent-muted px-2.5 py-1.5 text-xs text-accent"
                 data-testid="alert-toast"
                 role="status"
               >
@@ -507,7 +534,7 @@ export default function WorkspacePage() {
                 )}
               </div>
             )}
-            <div className="mb-2 flex items-center justify-between no-print">
+            <div className="mb-2 flex shrink-0 items-center justify-between no-print">
               <div className="flex items-center gap-2">
                 <ReplayControls
                   replay={replay}
@@ -557,7 +584,7 @@ export default function WorkspacePage() {
               />
             ) : (
               <ChartSyncProvider>
-                <div className="flex min-h-0 flex-1 gap-2">
+                <div className="flex min-h-0 min-w-0 flex-1 gap-2 overflow-hidden">
                   <DrawingToolbar
                     mode={toolMode}
                     onModeChange={setToolMode}
@@ -572,7 +599,47 @@ export default function WorkspacePage() {
                     canUndo={canUndo}
                     canRedo={canRedo}
                   />
-                  <div className="relative flex min-h-0 min-w-0 grow flex-col">
+                  {/* the ONE place vertical overflow is allowed: when the
+                      tiles cannot all clear their floor the grid scrolls
+                      here instead of painting over the card. @container so
+                      the column count tracks the CARD's width — this card
+                      is fullscreen-able and sits beside a collapsible
+                      sidebar, so a viewport media query measures the wrong
+                      box. */}
+                  <div
+                    className="@container min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
+                    data-testid="chart-grid-scroll"
+                  >
+                    <div
+                      data-testid="chart-grid"
+                      data-grid-cells={gridCells.length}
+                      style={
+                        { "--tile-floor": `${tileFloor}px` } as CSSProperties
+                      }
+                      className={cn(
+                        "grid h-full min-h-0 min-w-0 grid-cols-1 gap-2",
+                        gridCells.length === 0 &&
+                          "grid-rows-[repeat(1,minmax(var(--tile-floor),1fr))]",
+                        gridCells.length === 1 &&
+                          "grid-rows-[repeat(2,minmax(var(--tile-floor),1fr))] @3xl:grid-cols-2 @3xl:grid-rows-[repeat(1,minmax(var(--tile-floor),1fr))]",
+                        gridCells.length === 3 &&
+                          "grid-rows-[repeat(4,minmax(var(--tile-floor),1fr))] @3xl:grid-cols-2 @3xl:grid-rows-[repeat(2,minmax(var(--tile-floor),1fr))]",
+                      )}
+                    >
+                      {/* tile 0 — the main chart is a real grid
+                          participant, which is what makes 2×1 / 2×2 tile
+                          rather than stack. `relative` WITHOUT
+                          overflow-hidden: the popovers below are anchored
+                          here and must be free to spill past the tile. */}
+                      <div
+                        className="relative min-h-0 min-w-0"
+                        data-testid="main-chart-tile"
+                      >
+                        {/* clip box for the canvas only. Both it and the
+                            chart are absolutely positioned, so the tile's
+                            min-content height stays 0 and can never push
+                            its grid track open. */}
+                        <div className="absolute inset-0 overflow-hidden rounded-lg">
                     <PriceChart
                       bars={visibleBars}
                       style="candles"
@@ -587,7 +654,13 @@ export default function WorkspacePage() {
                       toolMode={toolMode}
                       onToolModeChange={setToolMode}
                       onCreateAlert={createChartAlert}
+                      // fill mode: a pane-ratio seed, not pixels
                       height={400}
+                      // refit only on a genuinely new dataset — entering or
+                      // leaving replay reshapes it; stepping the cursor is
+                      // an append and must keep the user's zoom
+                      datasetKey={`${symbol}:${activeTf}:${replay.active ? "replay" : "live"}`}
+                      paneLayoutKey="workspace-main"
                       volumeProfile={showProfile ? (volumeProfile.data ?? null) : null}
                       annotations={visibleAnnotations}
                       onExplainRun={(runId, point) =>
@@ -603,6 +676,7 @@ export default function WorkspacePage() {
                       onContextMenu={(p) => setCtxMenu(p)}
                       levels={chartLevels}
                     />
+                        </div>
                     {openPosition?.unrealized_pnl != null && (
                       <div
                         data-testid="position-badge"
@@ -648,27 +722,25 @@ export default function WorkspacePage() {
                         }
                       />
                     )}
+                      </div>
+                      {gridCells.map((cell, i) => (
+                        <GridChartCell
+                          key={i}
+                          cell={cell}
+                          syncId="workspace"
+                          onChange={(next) => updateGridCell(i, next)}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
-                {gridCells.length > 0 && (
-                  <div
-                    className="mt-3 grid gap-2 border-t border-border pt-[10px] md:grid-cols-2"
-                    data-testid="chart-grid"
-                  >
-                    {gridCells.map((cell, i) => (
-                      <GridChartCell
-                        key={i}
-                        cell={cell}
-                        syncId="workspace"
-                        onChange={(next) => updateGridCell(i, next)}
-                      />
-                    ))}
-                  </div>
-                )}
               </ChartSyncProvider>
             )}
             {nextRelease && !replay.active && (
-              <p className="mt-[10px] text-xs text-fg-subtle" data-testid="event-strip">
+              <p
+                className="mt-[10px] shrink-0 text-xs text-fg-subtle"
+                data-testid="event-strip"
+              >
                 next macro event: <span className="text-fg-muted">{nextRelease.release}</span>
                 {nextMajor && !countdownExpired(nextMajorRemaining) ? (
                   <>

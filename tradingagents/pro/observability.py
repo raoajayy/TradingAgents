@@ -153,9 +153,27 @@ class _TrackedRunnable:
         self._inner = inner
 
     def invoke(self, prompt: str):
-        result = self._inner.invoke(prompt)
+        try:
+            result = self._inner.invoke(prompt)
+        except Exception:
+            # failures must be visible: llm_calls_total only moves on
+            # success, so without this a 100% structured-output failure
+            # rate is indistinguishable from zero traffic on /metrics
+            self._tracker._record_failure(self._schema.__name__)
+            raise
         self._tracker._record(self._schema.__name__, prompt, result)
         return result
+
+
+def supports_streaming(llm) -> bool:
+    """Can this model (through any stack of Pro wrappers) stream tokens?
+
+    The wrappers below expose ``stream`` only when their inner does, so a
+    plain ``hasattr`` walks the whole stack. Callers use this to fall back
+    to the structured path instead of discovering it via AttributeError
+    mid-response (which the dashboard's ask endpoint used to do).
+    """
+    return callable(getattr(llm, "stream", None))
 
 
 class CostTrackingLLM:
@@ -173,22 +191,74 @@ class CostTrackingLLM:
     def with_structured_output(self, schema):
         return _TrackedRunnable(self, schema, self.inner.with_structured_output(schema))
 
+    def __getattr__(self, name: str):
+        # only reached for attributes this class does not define. Streaming
+        # is the one that matters (the dashboard's ask endpoint); anything
+        # else the inner model offers passes through the same way rather
+        # than surfacing as an AttributeError from inside a response body.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            inner = object.__getattribute__(self, "inner")
+        except AttributeError:  # pre-__init__ / unpickling
+            raise AttributeError(name) from None
+        attr = getattr(inner, name)
+        if name == "stream":
+            return self._tracked_stream(attr)
+        return attr
+
+    def _tracked_stream(self, inner_stream):
+        """Wrap inner.stream so token cost still lands in the report."""
+
+        def stream(prompt, *args, **kwargs):
+            text: list[str] = []
+            ok = True
+            try:
+                for chunk in inner_stream(prompt, *args, **kwargs):
+                    piece = getattr(chunk, "content", None)
+                    if isinstance(piece, str):
+                        text.append(piece)
+                    yield chunk
+            except Exception:
+                ok = False
+                self._record_failure("stream")
+                raise
+            finally:
+                # cost is charged for whatever streamed, including a
+                # partial that then failed — but the CALL counter stays
+                # successes-only, so llm_calls_total keeps meaning what
+                # the structured path makes it mean
+                self._account("stream", len(str(prompt)),
+                              len("".join(text)), count_call=ok)
+
+        return stream
+
+    def _record_failure(self, schema_name: str) -> None:
+        if self.metrics is not None:
+            self.metrics.inc("llm_failures_total", schema=schema_name)
+
     def _record(self, schema_name: str, prompt: str, result) -> None:
-        input_tokens = max(1, len(prompt) // 4)
         output_chars = len(result.model_dump_json()) if result is not None else 0
+        self._account(schema_name, len(prompt), output_chars)
+
+    def _account(self, schema_name: str, prompt_chars: int, output_chars: int,
+                 count_call: bool = True) -> None:
+        input_tokens = max(1, prompt_chars // 4)
         output_tokens = max(0, output_chars // 4)
         cost = (
             input_tokens * self.price.input_per_mtok
             + output_tokens * self.price.output_per_mtok
         ) / 1_000_000
         with self._lock:
-            self.report.calls += 1
             self.report.est_input_tokens += input_tokens
             self.report.est_output_tokens += output_tokens
             self.report.est_cost_usd += cost
-            self.report.by_schema[schema_name] = (
-                self.report.by_schema.get(schema_name, 0) + 1
-            )
+            if count_call:
+                self.report.calls += 1
+                self.report.by_schema[schema_name] = (
+                    self.report.by_schema.get(schema_name, 0) + 1
+                )
         if self.metrics is not None:
-            self.metrics.inc("llm_calls_total", schema=schema_name)
+            if count_call:
+                self.metrics.inc("llm_calls_total", schema=schema_name)
             self.metrics.set_gauge("llm_est_cost_usd", self.report.est_cost_usd)

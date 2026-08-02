@@ -429,3 +429,55 @@ def test_critic_tie_fails_closed():
     state = run_pipeline(llm, config, pipeline_snapshot())
     assert state["rejection"]["stage"] == "critic"
     assert state["gate_results"]["critic"]["votes_pass"] == 1
+
+
+def test_debate_abstentions_are_counted_and_never_read_as_confidence_zero():
+    """A debate turn whose structured call fails must be recorded as an
+    abstention, not as a real confidence-0 vote.
+
+    Observed in live records: technical_bull/bear and macro_bull/bear
+    logged 'conf 0 (abstained: structured output failed)'. That string was
+    fed straight back into the judge's prompt as
+    'confidence 0: (abstained...)', which reads as a genuine
+    zero-conviction argument, and the UI could not tell the two apart.
+    """
+    from tradingagents.pro.observability import MetricsRegistry
+    from tradingagents.pro.pipeline import DebateTurn
+    from tradingagents.pro.pipeline.nodes import _debate_block
+
+    metrics = MetricsRegistry()
+    # every DebateTurn call raises -> retries exhausted -> abstain
+    llm = FakePipelineLLM(overrides={DebateTurn: RuntimeError("no parse")})
+    state = run_pipeline(llm, CONFIG, pipeline_snapshot(),
+                         llm_retries=0, metrics=metrics)
+
+    # the debater turns only — critic/reflection/judge use other schemas
+    # and still succeed, which is exactly the situation being tested
+    turns = [e for e in state["debate"]
+             if e["speaker"].endswith(("_bull", "_bear")) or e["speaker"] == "sentiment"]
+    assert turns, "the debate still runs; turns are recorded as abstentions"
+    assert all(e["abstained"] for e in turns)
+    # confidence is absent, not fabricated as 0
+    assert all(e["confidence"] is None for e in turns)
+    # counted where an operator can see it
+    assert metrics.counter("structured_output_failures_total",
+                           schema="DebateTurn") > 0
+    assert metrics.counter("debate_abstentions_total",
+                           speaker="technical_bull") == 1
+
+    # ...and the judge is told to disregard, not handed a phantom vote
+    block = _debate_block(turns)
+    assert "confidence 0" not in block
+    assert "disregard" in block
+
+
+def test_debate_block_still_renders_real_turns_with_confidence():
+    from tradingagents.pro.pipeline.nodes import _debate_block
+
+    block = _debate_block([
+        {"speaker": "technical_bull", "stance": "bull", "confidence": 71,
+         "argument": "trend intact", "cited": ["rsi"], "abstained": False},
+    ])
+    assert block == (
+        "technical_bull (bull, confidence 71): trend intact [cites: rsi]"
+    )

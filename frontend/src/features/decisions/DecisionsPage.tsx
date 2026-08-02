@@ -83,13 +83,22 @@ function RunRail({
           <EmptyState kind="empty" title="No runs match" className="py-4" />
         )}
         {items.map((run) => (
-          <li key={run.run_id}>
+          // content-visibility skips layout+paint for off-screen rows (the
+          // list is unwindowed and unpaginated, so an instant jump used to
+          // blank for a frame while every row relaid out); the reserved
+          // intrinsic size keeps the scrollbar honest meanwhile
+          <li
+            key={run.run_id}
+            className="[content-visibility:auto] [contain-intrinsic-size:auto_56px]"
+          >
             <button
               onClick={() => onSelect(run.run_id)}
               className={cn(
                 "w-full rounded-[14px] border px-3 py-2 text-left text-[11.5px] text-fg",
-                "transition-[transform,box-shadow] duration-200",
+                // hover-only devices: on a fast scroll these transitions
+                // fired across every row the cursor swept past
                 "hover:-translate-y-px hover:shadow-[var(--shadow-card)]",
+                "[@media(hover:hover)]:transition-[transform,box-shadow] [@media(hover:hover)]:duration-200",
                 selected === run.run_id
                   ? "border-accent bg-accent-muted"
                   : "border-border bg-transparent",

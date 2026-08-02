@@ -198,6 +198,32 @@ def test_ask_run_stream_mid_stream_failure_emits_sentinel():
     assert STREAM_INTERRUPTED in body
 
 
+def test_mid_stream_failure_charges_cost_but_not_the_call_counter():
+    """llm_calls_total means 'successful calls' on the structured path;
+    the stream path must not quietly redefine it. Partial tokens were
+    still billed, so cost is charged either way."""
+    from tradingagents.pro.observability import CostTrackingLLM, MetricsRegistry
+    from tradingagents.pro.pipeline.qa import EvidenceAnswer
+
+    class _FailsMidStream(_StubLLM):
+        def stream(self, prompt):
+            yield _Chunk("partial ")
+            raise RuntimeError("connection reset")
+
+    metrics = MetricsRegistry()
+    tracked = CostTrackingLLM(
+        _FailsMidStream(EvidenceAnswer(answerable=True, answer="x",
+                                       cited_agent_ids=["rsi"])),
+        metrics=metrics)
+    with pytest.raises(RuntimeError):
+        list(tracked.stream("why?"))
+    assert metrics.counter("llm_failures_total", schema="stream") == 1
+    assert metrics.counter("llm_calls_total", schema="stream") == 0
+    assert tracked.report.calls == 0
+    assert tracked.report.est_output_tokens >= 0
+    assert tracked.report.est_input_tokens > 0
+
+
 def test_ask_run_503_without_model():
     state = DashboardState(memory=ProMemory())
     run = state.recorder.record_run(

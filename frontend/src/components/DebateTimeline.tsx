@@ -36,11 +36,28 @@ export function DebateTimeline({ timeline }: { timeline: Timeline }) {
             <DirectionBadge value={entry.stance} showWord={false} />
             <span className="font-bold">{entry.speaker}</span>
             <span className="text-[11px] text-fg-subtle">
-              {entry.stance ?? ""} · conf {entry.confidence ?? "–"}
+              {entry.stance ?? ""}
+              {/* an abstention is a missing turn, not a zero-conviction
+                  one — showing "conf 0" reads as a real bearish-neutral
+                  vote the model never cast */}
+              {entry.abstained ? (
+                <span className="ml-1 text-stale italic">· abstained</span>
+              ) : (
+                <> · conf {entry.confidence ?? "–"}</>
+              )}
             </span>
           </div>
-          <p className="mt-[3px] text-[13px] text-fg-muted">
-            <Emphasis text={entry.argument} />
+          <p
+            className={cn(
+              "mt-[3px] text-[13px]",
+              entry.abstained ? "text-stale italic" : "text-fg-muted",
+            )}
+          >
+            {entry.abstained ? (
+              "No argument — the model call failed for this turn."
+            ) : (
+              <Emphasis text={entry.argument} />
+            )}
           </p>
           {entry.cited.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">

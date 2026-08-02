@@ -356,6 +356,42 @@ def _build_alert_sinks(broadcaster, prefs=None):
     return sinks
 
 
+def mirror_alert_feed(state, runs) -> int:
+    """Mirror runs' operational alerts into the bell. Returns the number
+    of NEW notifications written.
+
+    The dashboard's Alerts panel derives its entries on the fly from run
+    records (service.alert_feed) and persists nothing, while the bell reads
+    the persisted notification ring — so the bell sat empty at "No
+    notifications yet" while the Alerts panel showed a long list of the
+    same events. Same events, two stores, no bridge.
+
+    Reuses alert_feed's own severity mapping and consecutive-event
+    coalescing rather than restating the rules. Idempotent via a per-alert
+    key, so it is safe to call both per completed run and as a startup
+    backfill over history.
+    """
+    from tradingagents.pro.dashboard import service as dashboard_service
+
+    before = len(state.prefs.notifications())
+    for alert in dashboard_service.alert_feed(list(runs))["alerts"]:
+        count = alert.get("count", 1)
+        suffix = f" (×{count})" if count > 1 else ""
+        text = f"{alert['text']}{suffix}"
+        state.prefs.add_notification(
+            severity=alert["severity"], event="alert", text=text,
+            time=alert["time"],
+            key=f"alert:{alert.get('run_id')}:{alert['severity']}:{text}",
+        )
+    return len(state.prefs.notifications()) - before
+
+
+def _bell_alerts_for_run(state, run_id: str) -> None:
+    run = next((r for r in getattr(state, "runs", ()) if r.run_id == run_id), None)
+    if run is not None:
+        mirror_alert_feed(state, [run])
+
+
 def _bell_on_event(state):
     """SSE publish + bell persistence for run outcomes (review P1.4).
 
@@ -379,6 +415,12 @@ def _bell_on_event(state):
             )
         except Exception:
             logger.exception("bell notification for run event failed")
+        try:
+            run_id = data.get("run_id")
+            if run_id:
+                _bell_alerts_for_run(state, run_id)
+        except Exception:
+            logger.exception("bell alert mirror for run event failed")
     return on_event
 
 
@@ -650,6 +692,16 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     state.metrics = service.metrics  # /metrics scrape target
     service.alerts.metrics = service.metrics  # count deliveries + failures
     state.alerts = service.alerts    # emergency-flatten alerting
+    # backfill the bell from runs already on disk: without this the bridge
+    # only ever covers runs completed after this process started, and the
+    # bell stays empty next to a full Alerts panel. Idempotent (keyed), so
+    # restarts re-offer the same alerts as no-ops.
+    try:
+        added = mirror_alert_feed(state, state.runs)
+        if added:
+            logger.info("mirrored %d historical alerts into the bell", added)
+    except Exception:
+        logger.exception("bell backfill from the alert feed failed")
     _wire_staged_routing(state, router, service, data_path)
     return service, state
 

@@ -27,7 +27,7 @@ export function ReplayDecisionStrip({
   return (
     <div
       data-testid="replay-decision-strip"
-      className="mt-2 rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-xs"
+      className="mt-2 shrink-0 rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-xs"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-semibold text-fg">

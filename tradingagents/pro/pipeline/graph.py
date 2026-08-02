@@ -110,6 +110,7 @@ def build_pro_pipeline(
     agent_workers: int = 1,
     calendar_fn=None,
     factor_store=None,
+    metrics=None,
 ):
     """Compile the debate pipeline.
 
@@ -127,7 +128,7 @@ def build_pro_pipeline(
     nodes = PipelineNodes(
         llm, config, equity, memory=memory, advisor=advisor,
         llm_retries=llm_retries, agent_workers=agent_workers,
-        calendar_fn=calendar_fn, factor_store=factor_store,
+        calendar_fn=calendar_fn, factor_store=factor_store, metrics=metrics,
     )
     graph = StateGraph(PipelineState)
 

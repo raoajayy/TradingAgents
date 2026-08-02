@@ -94,15 +94,40 @@ def _evidence_block(evidence: list[AgentEvidence]) -> str:
     )
 
 
+ABSTAINED_ARGUMENT = "(abstained: structured output failed)"
+
+
+def _debate_entry(speaker: str, stance: str, turn) -> dict:
+    """One debate record. A failed structured call abstains — and says so
+    as an abstention rather than as confidence 0, which downstream readers
+    (the judge's prompt, the UI) cannot tell from genuine low conviction."""
+    if turn is None:
+        return {"speaker": speaker, "stance": stance,
+                "argument": ABSTAINED_ARGUMENT, "cited": [],
+                "confidence": None, "abstained": True}
+    return {"speaker": speaker, "stance": stance, "argument": turn.argument,
+            "cited": list(turn.cited_agent_ids), "confidence": turn.confidence,
+            "abstained": False}
+
+
 def _debate_block(debate: list[dict]) -> str:
     if not debate:
         return "(debate has not started)"
     lines = []
     for entry in debate:
+        speaker = f"{entry['speaker']} ({entry.get('stance', '-')}"
+        # never hand the judge a fabricated "confidence 0" for a turn that
+        # simply failed to parse — it reads as a real zero-conviction vote
+        if entry.get("abstained") or entry.get("confidence") is None:
+            lines.append(
+                f"{speaker}): no argument — the model call failed; disregard "
+                "this turn rather than reading it as low conviction"
+            )
+            continue
         cited = f" [cites: {', '.join(entry['cited'])}]" if entry.get("cited") else ""
         lines.append(
-            f"{entry['speaker']} ({entry.get('stance', '-')}, "
-            f"confidence {entry.get('confidence', '-')}): {entry['argument']}{cited}"
+            f"{speaker}, confidence {entry['confidence']}): "
+            f"{entry['argument']}{cited}"
         )
     return "\n".join(lines)
 
@@ -169,9 +194,14 @@ class PipelineNodes:
         agent_workers: int = 1,
         calendar_fn=None,
         factor_store=None,
+        metrics=None,
     ):
         if llm_retries < 0 or agent_workers < 1:
             raise ValueError("llm_retries must be >= 0 and agent_workers >= 1")
+        # optional MetricsRegistry: abstentions (retries exhausted) are
+        # otherwise invisible — /metrics counts successful calls only, so a
+        # pipeline whose every structured call fails looks like idle traffic
+        self.metrics = metrics
         self.models = ModelBundle.coerce(llm)
         self.config = config
         self.equity = equity
@@ -217,6 +247,12 @@ class PipelineNodes:
                 if attempt < self.llm_retries:
                     # exponential backoff so a 429 storm is not amplified
                     self._sleep(self.retry_base_seconds * (2 ** attempt))
+        # every retry burned: the caller will abstain. Count it — this is
+        # the only signal that separates "the model is failing" from "the
+        # agents genuinely had nothing to say".
+        if self.metrics is not None:
+            self.metrics.inc("structured_output_failures_total",
+                             schema=schema.__name__)
         return None
 
     # --- prepare -> parallel teams -> join ------------------------------------
@@ -383,13 +419,12 @@ class PipelineNodes:
             debate_block=_debate_block(state["debate"]),
         )
         turn = self._invoke(DebateTurn, prompt)
-        entry = {
-            "speaker": f"{team.value}_{stance}",
-            "stance": stance,
-            "argument": turn.argument if turn else "(abstained: structured output failed)",
-            "cited": list(turn.cited_agent_ids) if turn else [],
-            "confidence": turn.confidence if turn else 0,
-        }
+        entry = _debate_entry(f"{team.value}_{stance}", stance, turn)
+        if turn is None:
+            logger.warning("debate turn abstained: %s", entry["speaker"])
+            if self.metrics is not None:
+                self.metrics.inc("debate_abstentions_total",
+                                 speaker=entry["speaker"])
         return {"debate": [*state["debate"], entry]}
 
     def technical_bull(self, state: dict) -> dict:
@@ -417,13 +452,11 @@ class PipelineNodes:
             debate_block=_debate_block(state["debate"]),
         )
         turn = self._invoke(DebateTurn, prompt)
-        entry = {
-            "speaker": "sentiment",
-            "stance": "rapporteur",
-            "argument": turn.argument if turn else "(abstained: structured output failed)",
-            "cited": list(turn.cited_agent_ids) if turn else [],
-            "confidence": turn.confidence if turn else 0,
-        }
+        entry = _debate_entry("sentiment", "rapporteur", turn)
+        if turn is None:
+            logger.warning("debate turn abstained: sentiment")
+            if self.metrics is not None:
+                self.metrics.inc("debate_abstentions_total", speaker="sentiment")
         return {"debate": [*state["debate"], entry]}
 
     # --- gates and judgment ------------------------------------------------------

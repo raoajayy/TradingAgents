@@ -111,7 +111,8 @@ export default function PortfolioPage() {
                   curve={backtest.data.equity_curve}
                   monteCarlo={backtest.data.monte_carlo ?? null}
                   showDrawdown={showDrawdown}
-                  height={170}
+                  // the second pane needs room for its own axis labels
+                  height={showDrawdown ? 230 : 170}
                 />
                 {backtest.data.report && (
                   <div className="mt-2 flex flex-wrap gap-x-[18px] text-xs text-fg-muted tabular">

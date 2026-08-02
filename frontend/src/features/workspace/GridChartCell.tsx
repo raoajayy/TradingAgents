@@ -25,11 +25,13 @@ export function GridChartCell({
   const bars = useBars(cell.symbol, activeTf, 300);
 
   return (
+    // a grid item defaults to min-height:auto (min-content) and would
+    // overflow its track; min-h-0 + overflow-hidden keep it in its tile
     <div
-      className="rounded-xl border border-border p-2"
+      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border p-2"
       data-testid="grid-chart-cell"
     >
-      <div className="mb-1 flex items-center gap-2 text-xs">
+      <div className="mb-1 flex shrink-0 items-center gap-2 text-xs">
         <select
           value={cell.symbol}
           onChange={(e) => onChange({ symbol: e.target.value })}
@@ -55,18 +57,28 @@ export function GridChartCell({
           ))}
         </select>
       </div>
-      {bars.data ? (
-        <PriceChart
-          bars={bars.data}
-          style="candles"
-          liveSymbol={cell.symbol}
-          showVolume
-          syncId={syncId}
-          height={210}
-        />
-      ) : (
-        <SkeletonCard lines={4} />
-      )}
+      {/* the chart fills this box absolutely, so the box owns the height */}
+      <div className="relative min-h-0 flex-1">
+        {bars.data ? (
+          <PriceChart
+            bars={bars.data}
+            style="candles"
+            liveSymbol={cell.symbol}
+            showVolume
+            syncId={syncId}
+            fill
+            // no longer pixels — only the price:volume pane ratio. 210:78
+            // keeps volume readable at ~27% of a small tile (400:78 would
+            // squeeze it to 16%).
+            height={210}
+            datasetKey={`${cell.symbol}:${activeTf}`}
+            // cells are interchangeable, so they share one saved layout
+            paneLayoutKey="workspace-grid"
+          />
+        ) : (
+          <SkeletonCard lines={4} />
+        )}
+      </div>
     </div>
   );
 }

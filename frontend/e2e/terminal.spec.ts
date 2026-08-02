@@ -1,6 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+type BoundingBox = { x: number; y: number; width: number; height: number };
 
 const TOKEN = "e2e-token";
+
+/** The Trade page's primary chart. Scoped to its tile because the main
+ * chart is now grid participant #0 — an unscoped price-chart lookup
+ * resolves to 2-4 elements whenever `gridCells` (persisted in
+ * localStorage) leaks in from another test, which is a strict-mode
+ * violation rather than a clean failure. */
+const mainChart = (page: Page): Locator =>
+  page.getByTestId("main-chart-tile").getByTestId("price-chart");
 
 async function unlock(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -101,7 +111,7 @@ test.describe("terminal", () => {
 
   test("workspace renders a chart for gold", async ({ page }) => {
     await page.goto("/trade/XAUUSD");
-    await expect(page.getByTestId("price-chart").locator("canvas").first()).toBeVisible({
+    await expect(mainChart(page).locator("canvas").first()).toBeVisible({
       timeout: 20_000,
     });
     await expect(page.getByText("EOD data")).toBeVisible();
@@ -114,7 +124,7 @@ test.describe("terminal", () => {
     await expect(page.getByTestId("symbol-select")).toHaveValue("BTC-USD");
     await page.getByTestId("symbol-select").selectOption("XAUUSD");
     await expect(page).toHaveURL(/\/trade\/XAUUSD/);
-    await expect(page.getByTestId("price-chart").locator("canvas").first()).toBeVisible({
+    await expect(mainChart(page).locator("canvas").first()).toBeVisible({
       timeout: 20_000,
     });
     await page.getByTestId("symbol-select").selectOption("BTC-USD");
@@ -149,7 +159,7 @@ test.describe("terminal", () => {
     // itself renders; the yfinance-fallback spec (live=false, D1-only) is
     // what the honest "EOD data" badge asserts
     await expect(
-      page.getByTestId("price-chart").locator("canvas").first(),
+      mainChart(page).locator("canvas").first(),
     ).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("EOD data")).toBeVisible();
     expect(pageErrors).toEqual([]);
@@ -172,7 +182,7 @@ test.describe("terminal", () => {
     await page.keyboard.press("g");
     await page.keyboard.press("t");
     await expect(page).toHaveURL(/\/trade\/XAUUSD/);
-    const canvas = page.getByTestId("price-chart").locator("canvas").first();
+    const canvas = mainChart(page).locator("canvas").first();
     await expect(canvas).toBeVisible({ timeout: 20_000 });
 
     // portfolio must mount (and later unmount) its EquityCurve chart —
@@ -236,6 +246,26 @@ test.describe("terminal", () => {
     });
     expect(status.ok).toBe(true);
     expect(status.type).toContain("text/event-stream");
+  });
+
+  test("the bell reflects the dashboard's alert feed", async ({ page }) => {
+    // these were two unbridged stores: the Alerts panel derives entries
+    // from run records and persists nothing, the bell reads the persisted
+    // notification ring. The bell read "No notifications yet" next to a
+    // full Alerts panel.
+    await page.goto("/");
+    const alerts = await page.evaluate(async () => {
+      const r = await fetch("/api/alerts", { credentials: "include" });
+      return (await r.json()) as { alerts: { text: string }[] };
+    });
+    expect(alerts.alerts.length).toBeGreaterThan(0);
+
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    const center = page.getByTestId("notification-center");
+    await expect(center).toBeVisible();
+    for (const alert of alerts.alerts) {
+      await expect(center).toContainText(alert.text);
+    }
   });
 });
 
@@ -329,7 +359,7 @@ test.describe("v2 features", () => {
   test("replay mode isolates history from live", async ({ page }) => {
     await page.goto("/trade/XAUUSD");
     await expect(
-      page.getByTestId("price-chart").locator("canvas").first(),
+      mainChart(page).locator("canvas").first(),
     ).toBeVisible({ timeout: 20_000 });
     await page.getByRole("button", { name: /Replay/ }).click();
     await expect(page.getByTestId("replay-badge")).toContainText("REPLAY");
@@ -341,52 +371,93 @@ test.describe("v2 features", () => {
   test("indicator picker adds a pane", async ({ page }) => {
     await page.goto("/trade/XAUUSD");
     await expect(
-      page.getByTestId("price-chart").locator("canvas").first(),
+      mainChart(page).locator("canvas").first(),
     ).toBeVisible({ timeout: 20_000 });
-    const before = await page
-      .getByTestId("price-chart")
-      .locator("table canvas")
-      .count();
+    const before = await mainChart(page).locator("table canvas").count();
     await page.getByTestId("indicator-picker").click();
     await page.getByText("RSI", { exact: true }).click();
     await page.keyboard.press("Escape");
     await expect
       .poll(
         async () =>
-          page.getByTestId("price-chart").locator("table canvas").count(),
+          mainChart(page).locator("table canvas").count(),
         { timeout: 15_000 },
       )
       .toBeGreaterThan(before);
   });
 
-  test("multi-chart grid adds and removes synced cells", async ({
+  test("multi-chart grid tiles instead of overlapping", async ({
     page,
     isMobile,
   }) => {
     test.skip(isMobile, "the chart grid is a desktop layout");
     await page.goto("/trade/XAUUSD");
-    await expect(
-      page.getByTestId("price-chart").locator("canvas").first(),
-    ).toBeVisible({ timeout: 20_000 });
-    const gridSwitch = page.getByTestId("grid-switch");
     const grid = page.getByTestId("chart-grid");
+    const gridSwitch = page.getByTestId("grid-switch");
+    const tiles = page
+      .getByTestId("main-chart-tile")
+      .or(page.getByTestId("grid-chart-cell"));
+    await expect(grid.getByTestId("price-chart").first().locator("canvas").first())
+      .toBeVisible({ timeout: 20_000 });
 
-    // 2×2 = main chart + 3 extra crosshair-synced cells stacked below
+    const boxes = async (locator: Locator) => {
+      const all = await locator.all();
+      const out = [];
+      for (const item of all) out.push((await item.boundingBox())!);
+      return out;
+    };
+    /** intersection area; >4px² is a real overlap, not sub-pixel rounding */
+    const overlap = (a: BoundingBox, b: BoundingBox) =>
+      Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
+      Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+    const distinct = (values: number[]) =>
+      new Set(values.map((v) => Math.round(v))).size;
+
+    // 2×2 = the main chart + 3 cells, tiled 2 across and 2 down. The main
+    // chart is grid participant #0, not a full-width chart sitting above.
     await gridSwitch.getByRole("button", { name: "2×2" }).click();
-    await expect(grid).toBeVisible({ timeout: 10_000 });
-    await expect(grid.getByTestId("price-chart")).toHaveCount(3);
-    // each cell is a real chart with its own symbol + timeframe selectors
-    await expect(
-      grid.locator("canvas").first(),
-    ).toBeVisible();
+    await expect(page.getByTestId("grid-chart-cell")).toHaveCount(3);
+    await expect(grid.getByTestId("price-chart")).toHaveCount(4);
 
-    // 2×1 = main + 1 extra cell
+    const charts = await boxes(grid.getByTestId("price-chart"));
+    // THE regression: the main chart's inline min-height (>=478px) could not
+    // shrink and nothing in the chain clipped, so it painted straight over
+    // the 288px cells below — hundreds of px² of intersection.
+    for (let i = 0; i < charts.length; i++) {
+      for (let j = i + 1; j < charts.length; j++) {
+        expect(overlap(charts[i]!, charts[j]!)).toBeLessThan(4);
+      }
+    }
+
+    // nothing paints outside the card
+    const card = (await page.getByTestId("chart-card").boundingBox())!;
+    for (const b of charts) {
+      expect(b.y + b.height).toBeLessThanOrEqual(card.y + card.height + 1);
+      expect(b.x + b.width).toBeLessThanOrEqual(card.x + card.width + 1);
+    }
+
+    // ...and they are genuinely tiled, not stacked-and-clipped
+    const grid2x2 = await boxes(tiles);
+    expect(grid2x2).toHaveLength(4);
+    expect(distinct(grid2x2.map((b) => b.x))).toBe(2); // 2 columns
+    expect(distinct(grid2x2.map((b) => b.y))).toBe(2); // 2 rows
+    const heights = grid2x2.map((b) => b.height);
+    expect(Math.min(...heights)).toBeGreaterThan(120);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(8);
+
+    // 2×1 = main + 1 cell, side by side on one row
     await gridSwitch.getByRole("button", { name: "2×1" }).click();
-    await expect(grid.getByTestId("price-chart")).toHaveCount(1);
+    await expect(page.getByTestId("grid-chart-cell")).toHaveCount(1);
+    const grid2x1 = await boxes(tiles);
+    expect(grid2x1).toHaveLength(2);
+    expect(overlap(grid2x1[0]!, grid2x1[1]!)).toBeLessThan(4);
+    expect(Math.abs(grid2x1[0]!.y - grid2x1[1]!.y)).toBeLessThan(2); // one row
+    expect(distinct(grid2x1.map((b) => b.x))).toBe(2); // two columns
 
-    // back to 1 = grid gone
+    // back to 1 = the main chart alone, still inside the grid
     await gridSwitch.getByRole("button", { name: "1", exact: true }).click();
-    await expect(grid).toHaveCount(0);
+    await expect(page.getByTestId("grid-chart-cell")).toHaveCount(0);
+    await expect(grid.getByTestId("price-chart")).toHaveCount(1);
   });
 
   test("watchlist add and remove persists", async ({ page, isMobile }) => {
@@ -450,7 +521,7 @@ test.describe("v3 drawing tools", () => {
     tool: RegExp,
     points: [number, number][],
   ) {
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     const before = Number(await chart.getAttribute("data-drawings"));
     for (let attempt = 0; attempt < 3; attempt++) {
       await page.getByRole("button", { name: tool }).click();
@@ -472,7 +543,7 @@ test.describe("v3 drawing tools", () => {
   }) => {
     test.skip(isMobile, "drawing tools are desktop-only by design");
     await page.goto("/trade/XAUUSD");
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart.locator("canvas").first()).toBeVisible({
       timeout: 20_000,
     });
@@ -486,11 +557,11 @@ test.describe("v3 drawing tools", () => {
 
     await page.reload();
     await expect(
-      page.getByTestId("price-chart"),
+      mainChart(page),
     ).toHaveAttribute("data-drawings", "1", { timeout: 20_000 });
 
     await page.getByRole("button", { name: /Erase/ }).click();
-    const box2 = (await page.getByTestId("price-chart").boundingBox())!;
+    const box2 = (await mainChart(page).boundingBox())!;
     // scan a short vertical line through the segment midpoint — autoscale
     // can shift the re-projected segment a few px between sessions
     await expect(async () => {
@@ -512,7 +583,7 @@ test.describe("v3 drawing tools", () => {
   }) => {
     test.skip(isMobile, "drawing tools are desktop-only by design");
     await page.goto("/trade/XAUUSD");
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart.locator("canvas").first()).toBeVisible({
       timeout: 20_000,
     });
@@ -605,7 +676,7 @@ test.describe("chart phase 1: AI annotations", () => {
     test.skip(isMobile, "canvas hit-targets are desktop UX");
     await unlock(page);
     await page.goto("/trade/XAUUSD");
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart.locator("canvas").first()).toBeVisible({
       timeout: 15_000,
     });
@@ -654,7 +725,7 @@ test.describe("chart phase 1: AI annotations", () => {
     test.skip(isMobile, "replay controls are desktop UX");
     await unlock(page);
     await page.goto("/trade/XAUUSD");
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart).toHaveAttribute("data-annotations", /^[1-9]/, {
       timeout: 15_000,
     });
@@ -676,7 +747,7 @@ test.describe("chart phase 2: drawing kinds", () => {
     test.skip(isMobile, "drawing toolbar is desktop-only");
     await unlock(page);
     await page.goto("/trade/XAUUSD");
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart.locator("canvas").first()).toBeVisible({
       timeout: 15_000,
     });
@@ -727,7 +798,7 @@ test.describe("P2-09 evidence level chips", () => {
 
     // lands on the run's Trade page carrying the level in the URL
     await expect(page).toHaveURL(/\/trade\/[A-Z0-9-]+\?.*label=/);
-    const chart = page.getByTestId("price-chart");
+    const chart = mainChart(page);
     await expect(chart.locator("canvas").first()).toBeVisible({
       timeout: 20_000,
     });

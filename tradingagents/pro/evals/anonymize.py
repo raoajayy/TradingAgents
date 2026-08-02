@@ -204,6 +204,27 @@ class AnonymizingLLM:
                else _MaskedRunnable)
         return cls(runnable, self.masker)
 
+    def __getattr__(self, name: str):
+        # pass through anything this wrapper does not implement — notably
+        # `stream`, which the dashboard's ask endpoint needs. Resolved off
+        # the inner, so `hasattr(llm, "stream")` stays an honest capability
+        # probe through a stack of wrappers.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            inner = object.__getattribute__(self, "inner")
+        except AttributeError:  # pre-__init__ / unpickling
+            raise AttributeError(name) from None
+        attr = getattr(inner, name)
+        if name == "stream":
+            masker = object.__getattribute__(self, "masker")
+
+            def stream(prompt, *args, **kwargs):
+                return attr(masker.mask(str(prompt)), *args, **kwargs)
+
+            return stream
+        return attr
+
 
 def anonymize_llm(llm_or_bundle, masker: Anonymizer):
     """Wrap a model (or a whole ModelBundle) so all prompts are masked."""

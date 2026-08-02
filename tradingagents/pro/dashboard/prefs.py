@@ -49,6 +49,11 @@ class Notification(_Mutable):
     text: str = ""
     time: str = ""
     read: bool = False
+    # optional stable identity for idempotent inserts. Notifications
+    # mirrored from a derived source (the run-record alert feed) can be
+    # re-offered on every restart; a key makes re-offering a no-op instead
+    # of a duplicate. Empty = always insert (the original behavior).
+    key: str = ""
 
 
 class PriceAlert(_Mutable):
@@ -315,9 +320,17 @@ class PrefsStore:
     # --- notifications -----------------------------------------------------------
 
     def add_notification(self, severity: str, event: str, text: str,
-                         time: str = "") -> dict:
-        note = Notification(severity=severity, event=event, text=text, time=time)
+                         time: str = "", key: str = "") -> dict:
+        note = Notification(severity=severity, event=event, text=text,
+                            time=time, key=key)
         with self._lock:
+            if key:
+                existing = next(
+                    (n for n in self._document.notifications if n.key == key),
+                    None,
+                )
+                if existing is not None:  # already mirrored; do not duplicate
+                    return existing.model_dump()
             self._document.notifications.append(note)
             del self._document.notifications[:-MAX_NOTIFICATIONS]
             self._write()

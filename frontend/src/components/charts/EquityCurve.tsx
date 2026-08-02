@@ -68,7 +68,10 @@ export function EquityCurve({
           bottomColor: hexToRgba(colors.bear, 0.25),
           lineWidth: 1,
           priceLineVisible: false,
-          priceFormat: { type: "percent" },
+          // 2 decimals at 11px in a ~55px pane crowds the axis until
+          // adjacent labels ("-0.1%" / "-1.0%") collide. One decimal is
+          // all the precision a drawdown sparkline can honestly show.
+          priceFormat: { type: "percent", precision: 1, minMove: 0.1 },
         },
         1, // own pane under the equity curve
       );
@@ -78,6 +81,17 @@ export function EquityCurve({
           value: value * 100,
         })),
       );
+      // the drawdown pane took whatever share LWC's default gave it, with
+      // no scale margins — so its labels had no room to breathe. 3:1 keeps
+      // equity the hero and leaves the drawdown axis legible.
+      const panes = chart.panes();
+      if (panes.length > 1) {
+        panes[0]!.setStretchFactor(3);
+        panes[1]!.setStretchFactor(1);
+      }
+      drawdownSeries
+        .priceScale()
+        .applyOptions({ scaleMargins: { top: 0.12, bottom: 0.12 } });
     }
     chart.timeScale().fitContent();
     return () => {

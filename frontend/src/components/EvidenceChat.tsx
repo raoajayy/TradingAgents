@@ -23,6 +23,12 @@ interface Turn {
   streaming: boolean;
 }
 
+/** Backend sentinel for a stream that died after bytes were already sent
+ * (see STREAM_INTERRUPTED in dashboard/app.py). It arrives inside a 200,
+ * so only the body can reveal it — treat it as a failure and fall back to
+ * the structured endpoint rather than rendering it as the answer. */
+const STREAM_INTERRUPTED = "[stream interrupted:";
+
 /** Split a streamed reply into prose + citation tags at the trailing
  * "SOURCES: id1, id2" line the stream prompt asks for. */
 function splitSources(text: string): { prose: string; cited: string[] } {
@@ -69,6 +75,9 @@ export function EvidenceChat({ runId }: { runId: string | null }) {
         // render prose live, hiding the SOURCES trailer until it completes
         patch({ answer: splitSources(raw).prose });
       });
+      if (!raw.trim() || raw.includes(STREAM_INTERRUPTED)) {
+        throw new Error("stream produced no usable answer");
+      }
       const { prose, cited } = splitSources(raw);
       patch({ answer: prose, cited, streaming: false });
     } catch (streamErr) {

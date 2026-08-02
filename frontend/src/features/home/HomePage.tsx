@@ -311,7 +311,11 @@ function PriceRibbon() {
                 {row.tick && (
                   <span className="size-[5px] animate-pulse rounded-full bg-bull" aria-hidden />
                 )}
-                {row.tick ? "LIVE" : "EOD"}
+                {/* "EOD" is a claim that a daily close exists. With no tick
+                    AND no daily bar we know nothing yet — say so with a
+                    neutral dash instead of asserting stale data we don't
+                    have (the tile read "EOD / waiting for first tick"). */}
+                {row.tick ? "LIVE" : price != null ? "EOD" : "—"}
               </span>
             </div>
             <div className="font-mono text-[17.5px] font-bold tracking-[-0.01em] tabular">{fmtPrice(price)}</div>

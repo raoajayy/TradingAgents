@@ -130,6 +130,83 @@ class TestBellOnEvent:
         _bell_on_event(state)("status", {"equity": 1.0})
         assert state.prefs.notifications() == []
 
+    def test_alert_feed_entries_reach_the_bell(self, tmp_path):
+        """The dashboard's Alerts panel derives entries from run records and
+        persists nothing; the bell reads the persisted ring. They were two
+        stores with no bridge, so the bell showed 'No notifications yet'
+        while the Alerts panel had a long list of the same events."""
+        from tradingagents.pro.dashboard import service as dashboard_service
+        from tradingagents.pro.main import _bell_on_event
+
+        class _Run:
+            run_id = "r1"
+            rejection = {"stage": "risk_gate", "reasons": ["stop too wide"]}
+            state = {}
+
+            class started_at:  # noqa: N801 - stub for .isoformat()
+                @staticmethod
+                def isoformat():
+                    return "2026-08-02T10:00:00+00:00"
+
+        state = self._state(tmp_path)
+        state.runs = [_Run()]
+        # the panel and the bell must agree on what happened
+        (panel_alert,) = dashboard_service.alert_feed([_Run()])["alerts"]
+
+        _bell_on_event(state)("run", {"symbol": "XAUUSD", "action": None,
+                                      "rejected_at": "risk_gate",
+                                      "run_id": "r1"})
+        notes = state.prefs.notifications()
+        mirrored = [n for n in notes if n["event"] == "alert"]
+        assert len(mirrored) == 1
+        assert mirrored[0]["severity"] == panel_alert["severity"] == "warning"
+        assert mirrored[0]["text"] == panel_alert["text"]
+        assert "stop too wide" in mirrored[0]["text"]
+        # the run-completion note is still there alongside it
+        assert any(n["event"] == "run_complete" for n in notes)
+
+    def test_mirroring_is_idempotent(self, tmp_path):
+        """The startup backfill re-offers every historical alert on every
+        restart; keyed inserts make that a no-op instead of a duplicate."""
+        from tradingagents.pro.main import mirror_alert_feed
+
+        class _Run:
+            run_id = "r1"
+            rejection = {"stage": "risk_gate", "reasons": ["stop too wide"]}
+            state = {}
+
+            class started_at:  # noqa: N801
+                @staticmethod
+                def isoformat():
+                    return "2026-08-02T10:00:00+00:00"
+
+        state = self._state(tmp_path)
+        runs = [_Run()]
+        assert mirror_alert_feed(state, runs) == 1
+        assert mirror_alert_feed(state, runs) == 0  # restart: no duplicates
+        assert mirror_alert_feed(state, runs) == 0
+        assert len(state.prefs.notifications()) == 1
+
+    def test_a_run_with_no_alerts_adds_no_alert_notes(self, tmp_path):
+        from tradingagents.pro.main import _bell_on_event
+
+        class _Run:
+            run_id = "r1"
+            rejection = None
+            state = {}
+
+            class started_at:  # noqa: N801
+                @staticmethod
+                def isoformat():
+                    return "2026-08-02T10:00:00+00:00"
+
+        state = self._state(tmp_path)
+        state.runs = [_Run()]
+        _bell_on_event(state)("run", {"symbol": "XAUUSD", "action": "BUY",
+                                      "run_id": "r1"})
+        notes = state.prefs.notifications()
+        assert [n["event"] for n in notes] == ["run_complete"]
+
 
 class TestLiveHealth:
     def _state(self, tmp_path, missing=(), last_run_age=0.0):

@@ -22,6 +22,7 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { chartColors, useLightweightChart, hexToRgba } from "./useLightweightChart";
 import { loadPaneFactors, savePaneFactors } from "./paneLayout";
+import { countPrepended, nextViewport, type BarsMeta } from "./viewport";
 import { toHeikinAshi } from "./transform";
 import { useChartSync } from "./ChartSync";
 import { DrawingsPrimitive } from "./drawings/primitive";
@@ -82,8 +83,16 @@ function isOverlayIndicator(name: string): boolean {
 // add SHORT panes BELOW it (mockup: price ~400px, panes ~90px) rather than
 // dividing a fixed total. Pane stretch factors are set to these px so LWC
 // renders each pane at ~its target within the grown container.
-const VOLUME_PANE_PX = 78;
-const OSCILLATOR_PANE_PX = 104;
+export const VOLUME_PANE_PX = 78;
+export const OSCILLATOR_PANE_PX = 104;
+
+/** How many indicators need their own pane below price. Exported so a
+ * parent laying charts out in a grid can size its tracks off the same
+ * arithmetic instead of duplicating the constants. */
+export function oscillatorPaneCount(indicators?: IndicatorSeries): number {
+  return Object.keys(indicators ?? {}).filter((n) => !isOverlayIndicator(n))
+    .length;
+}
 
 /** theme-resolved per-line colors (review finding: hardcoded dark-theme
  * hexes washed out on light backgrounds) */
@@ -125,6 +134,8 @@ export function PriceChart({
   showPlan = true,
   onContextMenu,
   levels = null,
+  datasetKey,
+  paneLayoutKey = "default",
 }: {
   bars: Bar[];
   style?: SeriesStyle;
@@ -143,12 +154,17 @@ export function PriceChart({
   onToolModeChange?: (mode: ToolMode) => void;
   /** A2: click-to-alert callback; receives the clicked price */
   onCreateAlert?: (price: number) => void;
-  /** price-pane height in px. In `fill` mode this is only the floor. */
+  /** price-pane height in px in fixed mode. In `fill` mode it sets NO
+   * pixels at all — it is only the seed for the price pane's stretch
+   * factor relative to the volume/oscillator panes. */
   height?: number;
-  /** grow to fill the parent's height (chart-only Trade page) instead of
-   * sitting at a fixed height. `height` (+ panes) becomes a min-height so
-   * an oscillator stack still expands past the viewport rather than
-   * squishing. The parent must be a flex column with a definite height. */
+  /** fill the nearest positioned ancestor (`position: absolute; inset: 0`)
+   * instead of sitting at a fixed height. The PARENT owns the height, so
+   * this box contributes nothing to any flex/grid min-content size and can
+   * never push a track open — which is what used to make the multi-chart
+   * grid overlap. The parent must be `relative` with a resolved height.
+   * Callers that need an oscillator stack to keep a readable floor should
+   * put a min-height on that parent (see WorkspacePage's --tile-floor). */
   fill?: boolean;
   /** server-computed fixed-range profile (review P2.4); null hides it */
   volumeProfile?: VolumeProfile | null;
@@ -184,6 +200,14 @@ export function PriceChart({
   /** evidence-chip price levels (P2-09): reference lines / zones plotted
    * on the price pane, same createPriceLine path as the AI ticket */
   levels?: RefLevel[] | null;
+  /** identity of the plotted dataset, e.g. "BTC-USD:1h:live". The chart
+   * refits only when this changes — a live append, a paged prepend, or a
+   * rebuild from toggling an indicator/theme must not reset the zoom. */
+  datasetKey?: string;
+  /** which chart surface owns the persisted pane proportions. Keying by
+   * pane count alone made the main chart and the small grid cells (both
+   * 2-pane) overwrite each other. */
+  paneLayoutKey?: string;
 }) {
   const seriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const extraSeriesRef = useRef<ISeriesApi<SeriesType>[]>([]);
@@ -192,7 +216,7 @@ export function PriceChart({
   styleRef.current = style;
 
   const { containerRef, chartRef } = useLightweightChart(() => undefined);
-  useChartSync(syncId, chartRef);
+  const isSyncing = useChartSync(syncId, chartRef);
 
   // --- user drawings (annotations; pure geometry) ------------------------------
   const primitiveRef = useRef<DrawingsPrimitive | null>(null);
@@ -217,7 +241,14 @@ export function PriceChart({
   // continuously so a prepend of older bars can restore the viewport
   // (shifted) instead of fitContent() snapping the whole history in.
   const visibleRangeRef = useRef<{ from: number; to: number } | null>(null);
-  const prevBarsMetaRef = useRef<{ lastTime: number; len: number } | null>(null);
+  const prevBarsMetaRef = useRef<BarsMeta | null>(null);
+  const prevDatasetKeyRef = useRef<string | undefined>(undefined);
+  /** true while we are moving the range ourselves; the load-older trigger
+   * must not read our own fit/shift as a user scroll into pre-history */
+  const programmaticRangeRef = useRef(false);
+  const lastLoadOlderAtRef = useRef(0);
+  /** the factors we applied, to tell a real separator drag from a click */
+  const appliedFactorsRef = useRef<number[] | null>(null);
   const barsByTimeRef = useRef<Map<number, Bar>>(new Map());
   barsByTimeRef.current = useMemo(
     () => new Map(bars.map((b) => [b.time, b])),
@@ -406,7 +437,7 @@ export function PriceChart({
     // count) win; otherwise price=3, volume=0.8, each oscillator=1.
     const panes = chart.panes();
     if (panes.length > 1) {
-      const saved = loadPaneFactors(panes.length);
+      const saved = loadPaneFactors(paneLayoutKey, panes.length);
       panes.forEach((pane, i) => {
         // px-scaled factors: price = full height, volume/oscillators = their
         // short target px. With the container grown to the sum (below), LWC
@@ -419,38 +450,63 @@ export function PriceChart({
               : OSCILLATOR_PANE_PX;
         pane.setStretchFactor(saved?.[i] ?? fallback);
       });
+      appliedFactorsRef.current = panes.map((p) => p.getStretchFactor());
     }
     // persist proportions when a separator drag ends
     const container = containerRef.current;
     const persistFactors = () => {
       if (chartRef.current !== chart) return;
       const current = chart.panes();
-      if (current.length > 1)
-        savePaneFactors(current.length, current.map((p) => p.getStretchFactor()));
+      if (current.length < 2) return;
+      const next = current.map((p) => p.getStretchFactor());
+      // this fires on ANY pointerup on the chart, not just a separator
+      // drag. Writing unchanged factors back is how a stray click near the
+      // price/volume boundary cemented a collapsed pane into localStorage.
+      const applied = appliedFactorsRef.current;
+      if (
+        applied &&
+        applied.length === next.length &&
+        applied.every((f, i) => Math.abs(f - next[i]!) < 0.5)
+      )
+        return;
+      appliedFactorsRef.current = next;
+      savePaneFactors(paneLayoutKey, current.length, next);
     };
     container?.addEventListener("pointerup", persistFactors);
 
-    // PB.1: preserve the viewport when older bars are prepended (same
-    // last bar, longer array). Otherwise (symbol/timeframe change, live
-    // append) fit the content as before.
-    const meta = prevBarsMetaRef.current;
-    const lastTime = bars.length ? bars[bars.length - 1]!.time : 0;
-    const prepended =
-      meta != null &&
-      meta.lastTime === lastTime &&
-      bars.length > meta.len &&
-      visibleRangeRef.current != null;
-    if (prepended) {
-      const delta = bars.length - meta!.len;
-      const r = visibleRangeRef.current!;
-      chart.timeScale().setVisibleLogicalRange({
-        from: r.from + delta,
-        to: r.to + delta,
+    // Viewport policy (see viewport.ts): refit ONLY on a new dataset.
+    // A live append, a paged prepend, or a rebuild triggered by toggling
+    // an indicator/theme all keep the user where they were.
+    const prev = prevBarsMetaRef.current;
+    const action = nextViewport({
+      key: datasetKey,
+      prevKey: prevDatasetKeyRef.current,
+      prev,
+      len: bars.length,
+      leading: countPrepended(bars, prev),
+      range: visibleRangeRef.current,
+    });
+    programmaticRangeRef.current = true;
+    try {
+      if (action.kind === "fit") chart.timeScale().fitContent();
+      else
+        chart.timeScale().setVisibleLogicalRange({
+          from: action.from,
+          to: action.to,
+        });
+    } finally {
+      // LWC dispatches the range callback synchronously; release after a
+      // frame so the echo is still attributed to us
+      requestAnimationFrame(() => {
+        programmaticRangeRef.current = false;
       });
-    } else {
-      chart.timeScale().fitContent();
     }
-    prevBarsMetaRef.current = { lastTime, len: bars.length };
+    prevBarsMetaRef.current = {
+      firstTime: bars.length ? bars[0]!.time : 0,
+      lastTime: bars.length ? bars[bars.length - 1]!.time : 0,
+      len: bars.length,
+    };
+    prevDatasetKeyRef.current = datasetKey;
 
     return () => {
       container?.removeEventListener("pointerup", persistFactors);
@@ -470,7 +526,8 @@ export function PriceChart({
       profileRef.current = null;
       annotationsRef.current = null;
     };
-  }, [bars, style, indicators, showVolume, drawingsSymbol, theme, height, chartRef, containerRef]);
+  }, [bars, style, indicators, showVolume, drawingsSymbol, theme, height,
+      datasetKey, paneLayoutKey, chartRef, containerRef]);
 
   // recommendation levels as price lines (the AI's active plan)
   useEffect(() => {
@@ -570,8 +627,7 @@ export function PriceChart({
   // and oscillators add short panes below (mockup layout), instead of
   // dividing a fixed total and cramping price.
   const oscillatorCount = useMemo(
-    () =>
-      Object.keys(indicators ?? {}).filter((n) => !isOverlayIndicator(n)).length,
+    () => oscillatorPaneCount(indicators),
     [indicators],
   );
   const chartHeight =
@@ -1033,16 +1089,32 @@ export function PriceChart({
   // series rebuilds that a prepend triggers.
   const onLoadOlderRef = useRef(onLoadOlder);
   onLoadOlderRef.current = onLoadOlder;
+  const isSyncingRef = useRef(isSyncing);
+  isSyncingRef.current = isSyncing;
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     const onRange = (range: { from: number; to: number } | null) => {
       if (!range) return;
       visibleRangeRef.current = { from: range.from, to: range.to };
+      // our own fit/shift echoes back through this callback — paging on it
+      // would make every rebuild fetch another 300 bars
+      if (programmaticRangeRef.current) return;
+      // a synced peer pushed this range; only the chart the user actually
+      // scrolled should page in history
+      if (isSyncingRef.current?.()) return;
       // only when the user scrolls PAST the first bar into the pre-history
       // whitespace (negative logical index) — fitContent sits at from≈0, so
       // a positive threshold would auto-page on mount and churn the chart.
-      if (range.from < -5) onLoadOlderRef.current?.();
+      // 10 bars of deliberate whitespace reads as intent; 5 was close
+      // enough that a click-with-a-few-px-of-drag paged the chart.
+      if (range.from >= -10) return;
+      // loadOlder only blocks CONCURRENT fetches, so a continuous drag
+      // pages unboundedly — one page per gesture is enough
+      const now = Date.now();
+      if (now - lastLoadOlderAtRef.current < 750) return;
+      lastLoadOlderAtRef.current = now;
+      onLoadOlderRef.current?.();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
     return () => {
@@ -1105,12 +1177,15 @@ export function PriceChart({
   return (
     <div
       ref={containerRef}
-      className={fill ? "relative min-h-0 flex-1" : "relative"}
+      className={fill ? "absolute inset-0" : "relative"}
       style={{
-        // fill mode: grow to the parent, floored at the pane-sum so
-        // oscillator stacks expand instead of squishing. fixed mode: the
-        // exact pane-sum (grid cells, other embeds).
-        ...(fill ? { minHeight: chartHeight } : { height: chartHeight }),
+        // fill mode sets NO height: the box is out of flow and takes the
+        // parent's, so it contributes nothing to a flex/grid min-content
+        // size. The old inline minHeight (>=478px) overrode the min-h-0
+        // class, could not shrink, and so overflowed a card that never
+        // clips — which is how the multi-chart grid ended up overlapping.
+        // fixed mode: the exact pane-sum (other embeds).
+        ...(fill ? null : { height: chartHeight }),
         cursor: toolMode !== "select" ? "crosshair" : undefined,
       }}
       role="img"

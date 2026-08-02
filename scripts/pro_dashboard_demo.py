@@ -152,11 +152,18 @@ def build_state() -> DashboardState:
     from tradingagents.pro.main import PipelineTrigger
     from tradingagents.pro.service import PaperTradingService
 
+    from tradingagents.pro.main import _bell_on_event, mirror_alert_feed
+
     service = PaperTradingService(
         FakePipelineLLM(), paper_config, pipeline_snapshot,
         router=state.router, memory=state.memory, dashboard_state=state,
-        on_event=state.broadcaster.publish,
+        # same bell wiring as production, so the notification bell reflects
+        # the Alerts panel here too (they used to be unbridged stores)
+        on_event=_bell_on_event(state),
     )
+    # the seeded run predates the service, so mirror its alerts the way
+    # main.py's startup backfill does
+    mirror_alert_feed(state, state.runs)
 
     class DemoTrigger(PipelineTrigger):
         def _build_snapshot(self, symbol, asset, tf):  # no vendors in demo
