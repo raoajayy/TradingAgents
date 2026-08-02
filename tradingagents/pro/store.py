@@ -13,6 +13,10 @@ switch backends without changing their public APIs:
   sha256-hex, label, scopes csv, created_at, revoked_at nullable). Only
   the hash is ever stored — the raw token is returned ONCE at creation;
   additive CREATE TABLE IF NOT EXISTS
+- ``listings`` — P4-03 marketplace listings (strategy configs / prompt
+  bundles) with the published graded record in ``calibration_json``;
+  status ∈ {draft, published, delisted}; additive CREATE TABLE IF NOT
+  EXISTS
 - ``vintages`` — P3-02 point-in-time metric observations
   (name, value, observed_at, as_of, source); additive CREATE TABLE IF NOT
   EXISTS, so existing P2-01 databases upgrade in place on open
@@ -80,6 +84,20 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS listings (
+    id               TEXT PRIMARY KEY,
+    owner_email      TEXT NOT NULL,
+    kind             TEXT NOT NULL CHECK (kind IN ('strategy','prompt')),
+    title            TEXT NOT NULL,
+    description      TEXT NOT NULL DEFAULT '',
+    config_json      TEXT NOT NULL,
+    calibration_json TEXT,
+    status           TEXT NOT NULL DEFAULT 'draft'
+                     CHECK (status IN ('draft','published','delisted')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS listings_status ON listings (status);
 CREATE TABLE IF NOT EXISTS vintages (
     name        TEXT NOT NULL,
     value       REAL NOT NULL,
@@ -346,6 +364,167 @@ class EventStore:
             return None
         return {"token_hash": row[0], "label": row[1],
                 "scopes": [s for s in row[2].split(",") if s]}
+
+    # --- listings (P4-03 calibration-gated marketplace) --------------------
+    # config_json is the paid artifact (the strategy config or prompt
+    # bundle) and NEVER leaves the operator surface; calibration_json is
+    # the published graded record (n_graded, win_rate, avg_r, brier,
+    # corpus/versions stamp) that the publish gate in
+    # dashboard.service.listing_gate validates. Status transitions are the
+    # app's job — the store only enforces the vocabulary.
+    LISTING_KINDS = ("strategy", "prompt")
+    LISTING_STATUSES = ("draft", "published", "delisted")
+
+    _LISTING_COLUMNS = ("id, owner_email, kind, title, description, "
+                        "config_json, calibration_json, status, "
+                        "created_at, updated_at")
+
+    @staticmethod
+    def _listing_row(row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "owner_email": row[1],
+            "kind": row[2],
+            "title": row[3],
+            "description": row[4],
+            "config": json.loads(row[5]),
+            "calibration": json.loads(row[6]) if row[6] is not None else None,
+            "status": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+
+    def create_listing(self, owner_email: str, kind: str, title: str,
+                       description: str = "", config: dict | None = None,
+                       calibration: dict | None = None) -> dict:
+        """Insert one draft listing; returns the stored row. Validation
+        mirrors the CHECK constraints so callers get ValueError, not
+        sqlite3.IntegrityError."""
+        import uuid as _uuid
+
+        owner_email = (owner_email or "").strip().lower()
+        if not owner_email:
+            raise ValueError("owner_email is required")
+        if kind not in self.LISTING_KINDS:
+            raise ValueError(
+                f"invalid kind {kind!r}; use one of {list(self.LISTING_KINDS)}")
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title is required")
+        if calibration is not None and not isinstance(calibration, dict):
+            raise ValueError("calibration must be an object or null")
+        listing_id = _uuid.uuid4().hex
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO listings (id, owner_email, kind, title, "
+                "description, config_json, calibration_json) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (listing_id, owner_email, kind, title, description or "",
+                 json.dumps(config or {}),
+                 json.dumps(calibration) if calibration is not None else None),
+            )
+            row = self._conn.execute(
+                f"SELECT {self._LISTING_COLUMNS} FROM listings WHERE id=?",
+                (listing_id,),
+            ).fetchone()
+        return self._listing_row(row)
+
+    def get_listing(self, listing_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {self._LISTING_COLUMNS} FROM listings WHERE id=?",
+                (listing_id,),
+            ).fetchone()
+        return self._listing_row(row) if row else None
+
+    def list_listings(self, status: str | None = None) -> list[dict]:
+        sql = f"SELECT {self._LISTING_COLUMNS} FROM listings"
+        args: tuple = ()
+        if status is not None:
+            if status not in self.LISTING_STATUSES:
+                raise ValueError(
+                    f"invalid status {status!r}; use one of "
+                    f"{list(self.LISTING_STATUSES)}")
+            sql += " WHERE status=?"
+            args = (status,)
+        sql += " ORDER BY created_at, id"
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [self._listing_row(r) for r in rows]
+
+    def update_listing(self, listing_id: str, *, title: str | None = None,
+                       description: str | None = None,
+                       config: dict | None = None,
+                       calibration: dict | None = None) -> dict | None:
+        """Patch the mutable fields (None = leave unchanged); returns the
+        updated row or None for an unknown id. Changing ``config`` or
+        ``calibration`` on a PUBLISHED listing demotes it back to draft —
+        the published graded record and artifact must be exactly what the
+        publish gate approved, so any edit re-enters the gate."""
+        sets, args = ["updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"], []
+        if title is not None:
+            title = title.strip()
+            if not title:
+                raise ValueError("title cannot be blank")
+            sets.append("title=?")
+            args.append(title)
+        if description is not None:
+            sets.append("description=?")
+            args.append(description)
+        if config is not None:
+            if not isinstance(config, dict):
+                raise ValueError("config must be an object")
+            sets.append("config_json=?")
+            args.append(json.dumps(config))
+        if calibration is not None:
+            if not isinstance(calibration, dict):
+                raise ValueError("calibration must be an object")
+            sets.append("calibration_json=?")
+            args.append(json.dumps(calibration))
+        if config is not None or calibration is not None:
+            sets.append("status=CASE WHEN status='published' "
+                        "THEN 'draft' ELSE status END")
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"UPDATE listings SET {', '.join(sets)} WHERE id=?",
+                (*args, listing_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                f"SELECT {self._LISTING_COLUMNS} FROM listings WHERE id=?",
+                (listing_id,),
+            ).fetchone()
+        return self._listing_row(row)
+
+    def set_listing_status(self, listing_id: str, status: str) -> dict | None:
+        """Move a listing to ``status`` (the caller — the app's publish
+        gate — owns the transition rules). None for an unknown id."""
+        if status not in self.LISTING_STATUSES:
+            raise ValueError(
+                f"invalid status {status!r}; use one of "
+                f"{list(self.LISTING_STATUSES)}")
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE listings SET status=?, "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+                (status, listing_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                f"SELECT {self._LISTING_COLUMNS} FROM listings WHERE id=?",
+                (listing_id,),
+            ).fetchone()
+        return self._listing_row(row)
+
+    def delete_listing(self, listing_id: str) -> bool:
+        """Hard delete (drafts/mistakes). The app's DELETE endpoint
+        delists instead — once published, the record soft-retires."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM listings WHERE id=?", (listing_id,))
+            return cur.rowcount > 0
 
     # --- vintages (P3-02 point-in-time metric history) --------------------
     # Every metric observation is appended as (name, value, observed_at,

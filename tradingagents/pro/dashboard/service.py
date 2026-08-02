@@ -772,6 +772,79 @@ def _realized_r(trade, outcome) -> float | None:
     return sign * (exit_price - entry) / risk
 
 
+LISTING_MIN_GRADED_ENV = "PRO_LISTING_MIN_GRADED"
+LISTING_MIN_GRADED_DEFAULT = 30
+
+
+def listing_min_graded() -> int:
+    """Publish-gate sample-size floor: $PRO_LISTING_MIN_GRADED, default
+    30 (roughly where a win rate stops being pure noise). Malformed or
+    non-positive values fall back to the default — the gate never opens
+    by configuration accident."""
+    import os
+
+    raw = os.environ.get(LISTING_MIN_GRADED_ENV, "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return LISTING_MIN_GRADED_DEFAULT
+    return value if value > 0 else LISTING_MIN_GRADED_DEFAULT
+
+
+def listing_gate(calibration: dict | None,
+                 min_graded: int | None = None) -> list[str]:
+    """P4-03 publish gate: the reasons a listing's graded record may NOT
+    be published (empty list = pass). Same honesty ethos as
+    public_track_record — a marketplace listing IS a performance claim,
+    so the claim must carry a real graded sample:
+
+    - ``n_graded`` present and >= the minimum (default 30,
+      $PRO_LISTING_MIN_GRADED);
+    - ``brier`` present and numeric — null is "never measured", and a
+      null must not be dressed as a zero (a perfect score);
+    - ``win_rate`` present, numeric, in [0, 1], WITH its own sample size
+      ``win_rate_n`` >= 1 — a rate without an n is marketing, not a
+      record.
+
+    Every failure is a specific human-readable sentence; the publish
+    endpoint returns them verbatim in its 422.
+    """
+    floor = min_graded if min_graded is not None else listing_min_graded()
+    if not isinstance(calibration, dict) or not calibration:
+        return ["no calibration record attached: publishing requires a "
+                "graded record (n_graded, win_rate, brier)"]
+    reasons: list[str] = []
+
+    n_graded = calibration.get("n_graded")
+    if not isinstance(n_graded, int) or isinstance(n_graded, bool):
+        reasons.append("n_graded is missing or not an integer — the gate "
+                       "cannot verify the sample size")
+    elif n_graded < floor:
+        reasons.append(f"n_graded={n_graded} is below the minimum of "
+                       f"{floor} graded outcomes")
+
+    brier = calibration.get("brier")
+    if brier is None:
+        reasons.append("brier is missing or null — an unmeasured brier "
+                       "must not be dressed as a (perfect) zero")
+    elif not isinstance(brier, (int, float)) or isinstance(brier, bool):
+        reasons.append(f"brier={brier!r} is not a number")
+
+    win_rate = calibration.get("win_rate")
+    if win_rate is None:
+        reasons.append("win_rate is missing or null")
+    elif (not isinstance(win_rate, (int, float)) or isinstance(win_rate, bool)
+          or not 0.0 <= float(win_rate) <= 1.0):
+        reasons.append(f"win_rate={win_rate!r} is not a fraction in [0, 1]")
+    else:
+        win_rate_n = calibration.get("win_rate_n")
+        if (not isinstance(win_rate_n, int) or isinstance(win_rate_n, bool)
+                or win_rate_n < 1):
+            reasons.append("win_rate carries no sample size — win_rate_n "
+                           "must be a positive integer")
+    return reasons
+
+
 def agent_performance(runs: Sequence[RunRecord], memory: ProMemory) -> dict:
     """Per-agent activity plus outcome-scored accuracy.
 

@@ -1352,6 +1352,92 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                                 detail=f"no webhook {hook_id}")
         return {"enabled": hook_id}
 
+    # --- P4-03 listings (calibration-gated marketplace foundations) ---------
+    # CRUD over the event store's listings table. Mutations are operator-
+    # only via the blanket middleware rule (POST/PUT/DELETE under /api);
+    # GETs stay viewer-readable — a listing is catalogue data, not
+    # administration. The publish transition is THE point of P4-03: it
+    # runs service.listing_gate over calibration_json and 422s with the
+    # specific failures, so nothing reaches "published" without a real
+    # graded record. DELETE delists (soft) — a listing that was ever
+    # published soft-retires rather than vanishing.
+
+    def _listing_or_404(listing_id: str) -> dict:
+        listing = _event_store_or_503("listings") \
+            .get_listing(listing_id)
+        if listing is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no listing {listing_id}")
+        return listing
+
+    @app.get("/api/listings")
+    def list_listings(request: Request, status: str | None = None) -> dict:
+        try:
+            return {"listings": _event_store_or_503("listings")
+                    .list_listings(status=status)}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.post("/api/listings")
+    async def create_listing(request: Request) -> dict:
+        # POST => the middleware already enforced role=operator
+        body = await request.json()
+        # the seller of record: the signed-in identity, or the deployment
+        # operator for X-API-Key / dev-mode requests
+        owner = _request_identity(request) or "operator@deployment"
+        try:
+            return _event_store_or_503("listings").create_listing(
+                owner_email=str(body.get("owner_email") or owner),
+                kind=str(body.get("kind") or ""),
+                title=str(body.get("title") or ""),
+                description=str(body.get("description") or ""),
+                config=body.get("config") or {},
+                calibration=body.get("calibration"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.get("/api/listings/{listing_id}")
+    def get_listing(listing_id: str, request: Request) -> dict:
+        return _listing_or_404(listing_id)
+
+    @app.put("/api/listings/{listing_id}")
+    async def update_listing(listing_id: str, request: Request) -> dict:
+        body = await request.json()
+        _listing_or_404(listing_id)
+        try:
+            # store-level rule: touching config/calibration on a published
+            # listing demotes it to draft — edits re-enter the publish gate
+            updated = _event_store_or_503("listings").update_listing(
+                listing_id,
+                title=body.get("title"),
+                description=body.get("description"),
+                config=body.get("config"),
+                calibration=body.get("calibration"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return updated
+
+    @app.delete("/api/listings/{listing_id}")
+    def delist_listing(listing_id: str, request: Request) -> dict:
+        _listing_or_404(listing_id)
+        return _event_store_or_503("listings") \
+            .set_listing_status(listing_id, "delisted")
+
+    @app.post("/api/listings/{listing_id}/publish")
+    def publish_listing(listing_id: str, request: Request) -> dict:
+        # POST => operator (middleware). The calibration gate — the whole
+        # point of P4-03: no graded record, no marketplace.
+        listing = _listing_or_404(listing_id)
+        failures = service.listing_gate(listing.get("calibration"))
+        if failures:
+            raise HTTPException(
+                status_code=422,
+                detail={"published": False,
+                        "listing_id": listing_id,
+                        "failures": failures})
+        return _event_store_or_503("listings") \
+            .set_listing_status(listing_id, "published")
+
     # --- P3-11 public read-only API (/public/v1, Bearer-token gated) --------
     # Mounted OUTSIDE /api on purpose: the session middleware matches
     # request paths on startswith("/api"), so /public/v1 never sees the
@@ -1487,6 +1573,35 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         limit = max(1, min(int(limit), 500))
         return service.public_track_record(
             state.runs, state.memory, limit=limit)
+
+    # P4-03 public marketplace catalogue: PUBLISHED listings only — a row
+    # exists here only because it passed service.listing_gate. Exposes the
+    # graded record (calibration) + its provenance stamp; NEVER
+    # config_json (the paid strategy/prompt artifact stays private) and
+    # never the owner's email (a public identity surface is a later
+    # slice). Same Bearer+scope+rate-limit mechanics as the other public
+    # endpoints (scope read:decisions).
+    @app.get("/public/v1/listings")
+    async def public_listings(request: Request) -> dict:
+        _public_auth(request, "read:decisions")
+        store = getattr(state.prefs, "store", None)  # non-None post-auth
+        rows = []
+        for listing in store.list_listings(status="published"):
+            calibration = listing.get("calibration") or {}
+            rows.append({
+                "id": listing["id"],
+                "kind": listing["kind"],
+                "title": listing["title"],
+                "description": listing["description"],
+                "calibration": calibration,
+                # P3-07-style provenance: the versions/corpus stamp the
+                # graded record was published under
+                "versions": calibration.get("versions"),
+                "corpus": calibration.get("corpus"),
+                "created_at": listing["created_at"],
+                "updated_at": listing["updated_at"],
+            })
+        return {"listings": rows}
 
     @app.get("/api/journal")
     def journal() -> dict:
