@@ -10,6 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Store,
   Trophy,
   Wallet,
 } from "lucide-react";
@@ -27,6 +28,7 @@ export const NAV_ITEMS = [
   { to: "/backtest", label: "Backtest", icon: FlaskConical, key: "b" },
   { to: "/track-record", label: "Record", icon: Trophy, key: "r" },
   { to: "/intel", label: "Intel", icon: Globe, key: "i" },
+  { to: "/listings", label: "Listings", icon: Store, key: "l" },
 ] as const;
 
 const SYSTEM_ITEMS = [

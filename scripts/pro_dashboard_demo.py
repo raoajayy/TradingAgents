@@ -101,6 +101,14 @@ class _DemoMarket(md.MarketDataService):
 
 def build_state() -> DashboardState:
     state = DashboardState(memory=ProMemory())
+    # P4-03: back prefs with the SQLite event store so the store-gated
+    # surfaces (listings CRUD + publish gate, API tokens) are exercisable
+    # in the demo/e2e — the DB lands in TRADINGAGENTS_PRO_DATA, which the
+    # Playwright config points at a throwaway temp dir.
+    from tradingagents.pro.dashboard.prefs import PrefsStore
+    from tradingagents.pro.store import EventStore
+
+    state.prefs = PrefsStore(store=EventStore())
     state.marketdata = _DemoMarket()
     config = ProConfig(asset=AssetClass.GOLD, mode=TradingMode.BACKTEST)
 

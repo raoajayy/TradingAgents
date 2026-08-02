@@ -126,8 +126,11 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
 
 /** Exchange a Firebase ID token for the HttpOnly session cookie. The server
  * verifies the token and enforces its email allowlist (403 = signed in with
- * a Google account that isn't authorized). */
-export async function establishGoogleSession(idToken: string): Promise<void> {
+ * a Google account that isn't authorized). Returns the session info — the
+ * `role` claim gates read-only rendering client-side (P4-03 listings). */
+export async function establishGoogleSession(
+  idToken: string,
+): Promise<SessionInfo> {
   const response = await fetch("/api/session", {
     method: "POST",
     headers: { Authorization: `Bearer ${idToken}` },
@@ -142,4 +145,5 @@ export async function establishGoogleSession(idToken: string): Promise<void> {
     }
     throw new ApiError(response.status, detail, "/api/session");
   }
+  return (await response.json()) as SessionInfo;
 }

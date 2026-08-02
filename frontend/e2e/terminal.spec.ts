@@ -824,3 +824,57 @@ test.describe("backtesting", () => {
     ).toHaveCount(0, { timeout: 10_000 });
   });
 });
+
+test.describe("P4-03 marketplace listings", () => {
+  test.beforeEach(async ({ page }) => unlock(page));
+
+  test("create draft → publish blocked with visible reasons → delist", async ({
+    page,
+  }, testInfo) => {
+    // the two projects (desktop/mobile) share one demo server + store,
+    // so each run works on its own uniquely-titled listing
+    const title = `E2E listing ${testInfo.project.name} ${Date.now()}`;
+
+    await page.goto("/listings");
+    await expect(page.getByTestId("listings-page")).toBeVisible();
+
+    // the demo authenticates via PRO_DASHBOARD_TOKEN → API-key sessions
+    // are operator by design, so the mutation controls must be present
+    await expect(page.getByTestId("listing-create")).toBeVisible();
+
+    // create a draft (kind select + title + config JSON)
+    await page.getByTestId("listing-kind").selectOption("strategy");
+    await page.getByTestId("listing-title").fill(title);
+    await page
+      .getByTestId("listing-description")
+      .fill("created by the e2e suite");
+    await page
+      .getByTestId("listing-config")
+      .fill('{"strategy_id": "sma_cross", "fast": 10, "slow": 30}');
+    await page.getByTestId("listing-create").click();
+
+    const row = page.getByTestId("listing-row").filter({ hasText: title });
+    await expect(row).toHaveCount(1);
+    await expect(row.getByTestId("listing-status")).toHaveText("draft");
+    await expect(row.getByTestId("listing-calibration")).toHaveText(
+      "no graded record",
+    );
+
+    // publish is blocked: a fresh draft has no graded record, and the
+    // gate's 422 reasons render VERBATIM in the row (the honest-gate UX)
+    await row.getByTestId("listing-publish").click();
+    await expect(row.getByTestId("listing-publish-failures")).toContainText(
+      "no calibration record attached: publishing requires a graded " +
+        "record (n_graded, win_rate, brier)",
+    );
+    await expect(row.getByTestId("listing-status")).toHaveText("draft");
+
+    // delist is soft and requires an explicit confirm click
+    await row.getByTestId("listing-delist").click();
+    await row.getByTestId("listing-delist-confirm").click();
+    await expect(row.getByTestId("listing-status")).toHaveText("delisted");
+    // delisted rows stay visible (soft retire) but lose publish/delist
+    await expect(row.getByTestId("listing-publish")).toHaveCount(0);
+    await expect(row.getByTestId("listing-delist")).toHaveCount(0);
+  });
+});

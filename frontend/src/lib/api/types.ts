@@ -970,3 +970,34 @@ export const WatchlistSchema = z.object({
 });
 export type Watchlist = z.infer<typeof WatchlistSchema>;
 export const WatchlistsSchema = z.array(WatchlistSchema);
+
+// --- P4-03 marketplace listings ---------------------------------------------
+// Mirrors tradingagents/pro/store.py EventStore._listing_row. `config` is
+// the paid artifact (operator surface only); `calibration` is the graded
+// record the publish gate (dashboard.service.listing_gate) validates —
+// honest nulls throughout: a missing brier is "never measured", not 0.
+export const ListingCalibrationSchema = z
+  .object({
+    n_graded: z.number().nullable().optional(),
+    brier: z.number().nullable().optional(),
+    win_rate: z.number().nullable().optional(),
+    win_rate_n: z.number().nullable().optional(),
+    avg_r: z.number().nullable().optional(),
+  })
+  .passthrough();
+export type ListingCalibration = z.infer<typeof ListingCalibrationSchema>;
+
+export const ListingSchema = z.object({
+  id: z.string(),
+  owner_email: z.string(),
+  kind: z.enum(["strategy", "prompt"]),
+  title: z.string(),
+  description: z.string(),
+  config: z.record(z.unknown()),
+  calibration: ListingCalibrationSchema.nullable(),
+  status: z.enum(["draft", "published", "delisted"]),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type Listing = z.infer<typeof ListingSchema>;
+export const ListingsSchema = z.object({ listings: z.array(ListingSchema) });

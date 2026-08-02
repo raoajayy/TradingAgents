@@ -62,6 +62,7 @@ export function CommandPalette() {
             ["Portfolio", "/portfolio", "g p"],
             ["Track Record", "/track-record", "g r"],
             ["Market Intelligence", "/intel", "g i"],
+            ["Marketplace Listings", "/listings", "g l"],
             ["Settings", "/settings", "g s"],
             ["Monthly report (print/PDF)", "/report", ""],
           ].map(([label, to, keys]) => (

@@ -105,6 +105,7 @@ function Wiring() {
             p: "/portfolio",
             b: "/backtest",
             i: "/intel",
+            l: "/listings",
             s: "/settings",
           };
           if (map[key]) navigate(map[key]);

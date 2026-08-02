@@ -48,6 +48,9 @@ import {
   ConditionAlertListSchema,
   RegimeSchema,
   ChartAnnotationsSchema,
+  ListingsSchema,
+  ListingSchema,
+  type Listing,
 } from "./types";
 
 export const qk = {
@@ -97,6 +100,7 @@ export const qk = {
   notifications: ["notifications"] as const,
   prefs: ["prefs"] as const,
   watchlists: ["watchlists"] as const,
+  listings: ["listings"] as const,
 };
 
 function fetchParsed<S extends z.ZodTypeAny>(url: string, schema: S) {
@@ -819,6 +823,111 @@ export async function deleteWatchlist(client: QueryClient, name: string) {
     method: "DELETE",
   });
   await client.invalidateQueries({ queryKey: qk.watchlists });
+}
+
+// --- P4-03 marketplace listings ---------------------------------------------
+
+/** Operator catalogue: drafts + published + delisted (soft-retired rows
+ * stay visible — a listing that was ever published never just vanishes). */
+export const useListings = () =>
+  useQuery({
+    queryKey: qk.listings,
+    queryFn: fetchParsed("/api/listings", ListingsSchema),
+    staleTime: 10_000,
+  });
+
+export async function createListing(
+  client: QueryClient,
+  listing: {
+    kind: "strategy" | "prompt";
+    title: string;
+    description?: string;
+    config: Record<string, unknown>;
+  },
+): Promise<Listing> {
+  const created = ListingSchema.parse(
+    await apiFetch("/api/listings", {
+      method: "POST",
+      body: JSON.stringify(listing),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  await client.invalidateQueries({ queryKey: qk.listings });
+  return created;
+}
+
+/** Patch title/description/config (undefined = leave unchanged). Backend
+ * rule surfaced in the UI: touching `config` on a PUBLISHED listing
+ * demotes it back to draft — the artifact must be exactly what the
+ * publish gate approved, so any edit re-enters the gate. */
+export async function updateListing(
+  client: QueryClient,
+  id: string,
+  patch: {
+    title?: string;
+    description?: string;
+    config?: Record<string, unknown>;
+  },
+): Promise<Listing> {
+  const updated = ListingSchema.parse(
+    await apiFetch(`/api/listings/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  await client.invalidateQueries({ queryKey: qk.listings });
+  return updated;
+}
+
+/** The publish gate said no. `failures` are the gate's own sentences,
+ * verbatim from the 422 (e.g. "n_graded=0 is below the minimum of 30
+ * graded outcomes") — the UI renders them untouched; hiding or
+ * paraphrasing them would defeat the honest-gate design. */
+export class ListingPublishBlocked extends Error {
+  constructor(readonly failures: string[]) {
+    super("publish blocked by the calibration gate");
+  }
+}
+
+/** Publish a draft (POST /api/listings/{id}/publish). A 422 carries
+ * {failures: [...]} — rethrown as ListingPublishBlocked so callers can
+ * show the reasons verbatim next to the row. */
+export async function publishListing(
+  client: QueryClient,
+  id: string,
+): Promise<Listing> {
+  try {
+    const published = ListingSchema.parse(
+      await apiFetch(`/api/listings/${id}/publish`, { method: "POST" }),
+    );
+    await client.invalidateQueries({ queryKey: qk.listings });
+    return published;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 422) {
+      try {
+        const detail = JSON.parse(err.detail) as { failures?: unknown };
+        if (Array.isArray(detail?.failures)) {
+          throw new ListingPublishBlocked(detail.failures.map(String));
+        }
+      } catch (parseErr) {
+        if (parseErr instanceof ListingPublishBlocked) throw parseErr;
+      }
+    }
+    throw err;
+  }
+}
+
+/** Soft-retire (DELETE = status "delisted", never a hard delete). */
+export async function delistListing(
+  client: QueryClient,
+  id: string,
+): Promise<Listing> {
+  const delisted = ListingSchema.parse(
+    await apiFetch(`/api/listings/${id}`, { method: "DELETE" }),
+  );
+  await client.invalidateQueries({ queryKey: qk.listings });
+  return delisted;
 }
 
 export async function markNotificationsRead(client: QueryClient, ids?: string[]) {

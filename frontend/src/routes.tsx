@@ -18,6 +18,8 @@ const PublicTrackRecordPage = lazy(
   () => import("./features/track-record/PublicTrackRecordPage"),
 );
 const IntelPage = lazy(() => import("./features/intelligence/IntelPage"));
+// P4-03: operator-facing marketplace listings (calibration-gated publish)
+const ListingsPage = lazy(() => import("./features/listings/ListingsPage"));
 const SettingsPage = lazy(() => import("./features/settings/SettingsPage"));
 const ReportPage = lazy(() => import("./features/report/ReportPage"));
 const BacktestPage = lazy(() => import("./features/backtest/BacktestPage"));
@@ -45,6 +47,7 @@ export const router = createBrowserRouter([
       { path: "backtest", element: page(<BacktestPage />) },
       { path: "track-record", element: page(<TrackRecordPage />) },
       { path: "intel", element: page(<IntelPage />) },
+      { path: "listings", element: page(<ListingsPage />) },
       { path: "settings", element: page(<SettingsPage />) },
       { path: "report", element: page(<ReportPage />) },
       { path: "*", element: <Navigate to="/" replace /> },

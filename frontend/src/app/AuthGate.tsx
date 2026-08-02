@@ -21,6 +21,7 @@ import {
   registerUnauthorizedHandler,
   setToken,
 } from "@/lib/api/client";
+import { useSessionStore } from "@/stores/session";
 
 type Phase = "checking" | "need-login" | "ready";
 
@@ -45,7 +46,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   const attempt = useCallback(async () => {
     try {
-      await establishSession();
+      // stash {identity, role} so viewer sessions render read-only
+      // surfaces (P3-05 roles / P4-03 listings page)
+      useSessionStore.getState().setSession(await establishSession());
       setPhase("ready");
       setError(null);
     } catch {
@@ -71,7 +74,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     try {
       const { signInWithGoogle } = await import("@/lib/googleSignIn");
       const idToken = await signInWithGoogle(config.firebase);
-      await establishGoogleSession(idToken);
+      useSessionStore
+        .getState()
+        .setSession(await establishGoogleSession(idToken));
       setPhase("ready");
     } catch (err) {
       const detail =
