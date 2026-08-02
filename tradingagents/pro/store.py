@@ -10,9 +10,11 @@ switch backends without changing their public APIs:
 - ``users``    — P3-05 multi-tenant identities: (email PK, role, created_at)
   with role ∈ {viewer, operator}; additive CREATE TABLE IF NOT EXISTS
 - ``api_tokens`` — P3-11 public read-only API tokens: (token_hash PK
-  sha256-hex, label, scopes csv, created_at, revoked_at nullable). Only
-  the hash is ever stored — the raw token is returned ONCE at creation;
-  additive CREATE TABLE IF NOT EXISTS
+  sha256-hex, label, scopes csv, created_at, revoked_at nullable,
+  expires_at nullable). Only the hash is ever stored — the raw token is
+  returned ONCE at creation; additive CREATE TABLE IF NOT EXISTS, and
+  ``expires_at`` is retrofitted onto pre-existing databases via a
+  guarded ALTER TABLE on open
 - ``listings`` — P4-03 marketplace listings (strategy configs / prompt
   bundles) with the published graded record in ``calibration_json``;
   status ∈ {draft, published, delisted}; additive CREATE TABLE IF NOT
@@ -82,7 +84,8 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     label      TEXT NOT NULL,
     scopes     TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    revoked_at TEXT
+    revoked_at TEXT,
+    expires_at TEXT
 );
 CREATE TABLE IF NOT EXISTS listings (
     id               TEXT PRIMARY KEY,
@@ -155,6 +158,17 @@ class EventStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
+            # additive column upgrades for pre-existing databases: CREATE
+            # TABLE IF NOT EXISTS never touches an existing table, so new
+            # columns need a guarded ALTER (SQLite has no ADD COLUMN IF
+            # NOT EXISTS — a duplicate column raises OperationalError,
+            # which is exactly the "already upgraded" signal)
+            import contextlib
+
+            with contextlib.suppress(sqlite3.OperationalError):
+                # duplicate column = already upgraded (or fresh schema)
+                self._conn.execute(
+                    "ALTER TABLE api_tokens ADD COLUMN expires_at TEXT")
             self._conn.commit()
 
     def close(self) -> None:
@@ -291,10 +305,14 @@ class EventStore:
 
         return hashlib.sha256(raw_token.encode()).hexdigest()
 
-    def create_api_token(self, label: str, scopes) -> dict:
+    def create_api_token(self, label: str, scopes,
+                         expires_days: float | int | None = None) -> dict:
         """Mint one public-API token. ``scopes`` is an iterable (or csv
-        string) drawn from PUBLIC_API_SCOPES; returns the record INCLUDING
-        the raw ``token`` — the only time it is ever visible."""
+        string) drawn from PUBLIC_API_SCOPES; ``expires_days`` (optional,
+        > 0) sets an ``expires_at`` timestamp after which the token is
+        rejected — None keeps the pre-expiry behavior (lives until
+        revoked). Returns the record INCLUDING the raw ``token`` — the
+        only time it is ever visible."""
         import secrets as _secrets
 
         label = (label or "").strip()
@@ -308,32 +326,49 @@ class EventStore:
             raise ValueError(
                 f"scopes must be a non-empty subset of "
                 f"{list(self.PUBLIC_API_SCOPES)}; got {invalid or cleaned}")
+        expires_at = None
+        if expires_days is not None:
+            try:
+                days = float(expires_days)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"expires_days must be a positive number; "
+                    f"got {expires_days!r}") from None
+            if days <= 0:
+                raise ValueError(
+                    f"expires_days must be a positive number; got {days}")
+            from datetime import timedelta
+
+            expires_at = _iso_utc(datetime.now(timezone.utc)
+                                  + timedelta(days=days))
         raw = _secrets.token_urlsafe(32)
         token_hash = self._hash_token(raw)
         scopes_csv = ",".join(cleaned)
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO api_tokens (token_hash, label, scopes) "
-                "VALUES (?,?,?)",
-                (token_hash, label, scopes_csv),
+                "INSERT INTO api_tokens (token_hash, label, scopes, "
+                "expires_at) VALUES (?,?,?,?)",
+                (token_hash, label, scopes_csv, expires_at),
             )
             row = self._conn.execute(
                 "SELECT created_at FROM api_tokens WHERE token_hash=?",
                 (token_hash,),
             ).fetchone()
         return {"token": raw, "token_hash": token_hash, "label": label,
-                "scopes": cleaned, "created_at": row[0]}
+                "scopes": cleaned, "created_at": row[0],
+                "expires_at": expires_at}
 
     def list_api_tokens(self) -> list[dict]:
         """Every token's metadata (hash, never the raw token)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT token_hash, label, scopes, created_at, revoked_at "
-                "FROM api_tokens ORDER BY created_at, token_hash"
+                "SELECT token_hash, label, scopes, created_at, revoked_at, "
+                "expires_at FROM api_tokens ORDER BY created_at, token_hash"
             ).fetchall()
         return [{"token_hash": r[0], "label": r[1],
                  "scopes": [s for s in r[2].split(",") if s],
-                 "created_at": r[3], "revoked_at": r[4]} for r in rows]
+                 "created_at": r[3], "revoked_at": r[4],
+                 "expires_at": r[5]} for r in rows]
 
     def revoke_api_token(self, token_hash: str) -> bool:
         """Revoke by hash (idempotent once revoked). False = unknown hash."""
@@ -353,17 +388,33 @@ class EventStore:
 
     def resolve_api_token(self, raw_token: str) -> dict | None:
         """The live (non-revoked) token record matching a presented raw
-        token, or None — the public API's auth check."""
+        token, or None — the public API's auth check. An EXPIRED token is
+        rejected too, but distinguishably: the returned record carries
+        ``expired: True`` and an empty scope list (so a caller that
+        forgets to check still cannot pass any scope gate), letting the
+        API answer 401 "token expired" instead of "invalid"."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT token_hash, label, scopes FROM api_tokens "
+                "SELECT token_hash, label, scopes, expires_at FROM api_tokens "
                 "WHERE token_hash=? AND revoked_at IS NULL",
                 (self._hash_token(raw_token),),
             ).fetchone()
         if row is None:
             return None
+        expires_at = row[3]
+        if expires_at is not None:
+            try:
+                expired = (datetime.fromisoformat(expires_at)
+                           <= datetime.now(timezone.utc))
+            except ValueError:
+                expired = True  # unparseable expiry: fail closed
+            if expired:
+                return {"token_hash": row[0], "label": row[1],
+                        "scopes": [], "expires_at": expires_at,
+                        "expired": True}
         return {"token_hash": row[0], "label": row[1],
-                "scopes": [s for s in row[2].split(",") if s]}
+                "scopes": [s for s in row[2].split(",") if s],
+                "expires_at": expires_at}
 
     # --- listings (P4-03 calibration-gated marketplace) --------------------
     # config_json is the paid artifact (the strategy config or prompt

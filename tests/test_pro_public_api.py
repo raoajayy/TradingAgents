@@ -131,6 +131,108 @@ class TestTokenLifecycle:
         store.close()
 
 
+class TestTokenExpiry:
+    """P3-11 hardening: optional expires_days -> expires_at column; an
+    expired token 401s with detail "token expired"; the column is an
+    additive upgrade on pre-existing databases."""
+
+    def test_expires_days_sets_expiry_and_token_still_works(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        client, state, store, run = _build(tmp_path)
+        created = client.post("/api/tokens", headers=OPERATOR, json={
+            "label": "partner", "scopes": ["read:decisions"],
+            "expires_days": 30})
+        assert created.status_code == 200
+        body = created.json()
+        expires_at = datetime.fromisoformat(body["expires_at"])
+        delta = expires_at - datetime.now(timezone.utc)
+        assert timedelta(days=29) < delta < timedelta(days=31)
+
+        # unexpired token passes
+        assert client.get("/public/v1/decisions",
+                          headers=_bearer(body["token"])).status_code == 200
+
+        # the list surfaces the expiry
+        listed = client.get("/api/tokens", headers=OPERATOR).json()["tokens"]
+        assert listed[0]["expires_at"] == body["expires_at"]
+
+    def test_no_expiry_stays_null_and_lives_forever(self, tmp_path):
+        client, state, store, run = _build(tmp_path)
+        body = client.post("/api/tokens", headers=OPERATOR, json={
+            "label": "legacy", "scopes": ["read:decisions"]}).json()
+        assert body["expires_at"] is None
+        listed = client.get("/api/tokens", headers=OPERATOR).json()["tokens"]
+        assert listed[0]["expires_at"] is None
+        assert client.get("/public/v1/decisions",
+                          headers=_bearer(body["token"])).status_code == 200
+
+    def test_expired_token_401s_with_token_expired(self, tmp_path):
+        client, state, store, run = _build(tmp_path)
+        body = client.post("/api/tokens", headers=OPERATOR, json={
+            "label": "short", "scopes": ["read:decisions"],
+            "expires_days": 1}).json()
+        # push the expiry into the past (deterministic — no sleeping)
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE api_tokens SET expires_at=? WHERE token_hash=?",
+                ("2020-01-01T00:00:00+00:00", body["token_hash"]))
+        denied = client.get("/public/v1/decisions",
+                            headers=_bearer(body["token"]))
+        assert denied.status_code == 401
+        assert denied.json()["detail"] == "token expired"
+        # store-level: an expired record resolves with zero scopes
+        resolved = store.resolve_api_token(body["token"])
+        assert resolved["expired"] is True and resolved["scopes"] == []
+
+    def test_expires_days_validation(self, tmp_path):
+        client, *_ = _build(tmp_path)
+        for bad in (0, -3, "soon"):
+            resp = client.post("/api/tokens", headers=OPERATOR, json={
+                "label": "x", "scopes": ["read:decisions"],
+                "expires_days": bad})
+            assert resp.status_code == 422, bad
+
+    def test_additive_column_upgrade_on_preexisting_db(self, tmp_path):
+        """A database created BEFORE the expires_at column (the shipped
+        prod shape) upgrades in place on open and keeps its tokens."""
+        import hashlib
+        import sqlite3
+
+        db = tmp_path / "old.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE api_tokens ("
+            "token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, "
+            "scopes TEXT NOT NULL, "
+            "created_at TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ','now')), revoked_at TEXT)")
+        old_raw = "pre-upgrade-token"
+        conn.execute(
+            "INSERT INTO api_tokens (token_hash, label, scopes) "
+            "VALUES (?,?,?)",
+            (hashlib.sha256(old_raw.encode()).hexdigest(), "old",
+             "read:decisions"))
+        conn.commit()
+        conn.close()
+
+        store = EventStore(db)  # open runs the guarded ALTER
+        listed = store.list_api_tokens()
+        assert listed[0]["label"] == "old"
+        assert listed[0]["expires_at"] is None  # additive default
+        resolved = store.resolve_api_token(old_raw)
+        assert resolved is not None and not resolved.get("expired")
+        # new mints on the upgraded DB can carry an expiry
+        created = store.create_api_token("new", ["read:decisions"],
+                                         expires_days=7)
+        assert created["expires_at"] is not None
+        # reopening (another boot) is idempotent — the ALTER is guarded
+        store.close()
+        again = EventStore(db)
+        assert len(again.list_api_tokens()) == 2
+        again.close()
+
+
 class TestScopesAndAuth:
     def test_scope_enforced_per_endpoint(self, tmp_path):
         client, state, store, run = _build(tmp_path)

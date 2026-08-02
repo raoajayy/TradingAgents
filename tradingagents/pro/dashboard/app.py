@@ -28,7 +28,10 @@ single deployment-level operator token (one secret, one holder — there is
 no second identity to demote), and demoting it would brick the CLI/curl
 admin path that predates Google sign-in. Mutating verbs (POST/PUT/DELETE)
 under ``/api`` require the operator role — viewers get a 403 with a clear
-detail; every GET stays viewer-readable. Per-user preference isolation:
+detail; every GET stays viewer-readable. Mutations re-resolve the role
+from the users table on every request (a demotion bites immediately);
+reads trust the signed JWT claim until the session re-establishes — an
+accepted, documented lag (docs/CONTROLS.md §1). Per-user preference isolation:
 Google identities read/write ``dashboard_prefs:<email>`` kv documents;
 token auth keeps the legacy shared ``dashboard_prefs`` document.
 
@@ -37,7 +40,9 @@ middleware but always requires ``Authorization: Bearer <api-token>`` —
 tokens live hashed (sha256) in the event store's ``api_tokens`` table
 with csv scopes (``read:decisions``, ``read:calibration``) and are
 operator-managed via POST/GET/DELETE ``/api/tokens`` (the raw token is
-returned once, at creation). Requests are rate-limited per token by an
+returned once, at creation; an optional ``expires_days`` sets an
+``expires_at`` after which the token 401s "token expired").
+Requests are rate-limited per token by an
 in-process token bucket (``PRO_PUBLIC_RATE_LIMIT`` req/min, default 60;
 honest under the deployment's max-instances=1 invariant). Webhook
 registrations (``/api/webhooks``, operator-only) fire signed
@@ -179,9 +184,11 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         now = int(_time.time())
         header = _b64url(_json.dumps(
             {"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
-        # P3-05: the role rides in the signed payload so the authorization
-        # middleware stays stateless (no per-request users-table read).
-        # Role changes take effect on the next session re-establish.
+        # P3-05: the role rides in the signed payload so READ authorization
+        # stays stateless (no per-request users-table read). Mutating verbs
+        # re-resolve the role from the users table per request (see the
+        # middleware), so the cached claim only ever affects reads; a read
+        # under a stale claim lags until the next session re-establish.
         payload = _b64url(_json.dumps(
             {"iss": "tradingagents-pro", "sub": identity or "api-token",
              "role": role, "iat": now, "exp": now + SESSION_TTL_SECONDS},
@@ -263,12 +270,19 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         sub = claims.get("sub")
         return None if sub in (None, "api-token") else str(sub)
 
-    def _request_role(request: Request) -> str:
+    def _request_role(request: Request, fresh: bool = False) -> str:
         """Role of an already-authenticated request. X-API-Key is full
         operator by design (see module docstring: it is the single
         deployment-level operator secret). Cookies carry the signed role
         claim; pre-P3-05 cookies (no role claim) re-resolve from the
-        users table so an upgrade never silently promotes anyone."""
+        users table so an upgrade never silently promotes anyone.
+
+        ``fresh=True`` (the mutation path) ignores the cached role claim
+        for per-user sessions and re-resolves from the users table on
+        THIS request, so a demoted operator loses mutation rights
+        immediately — not after the 7-day JWT finally expires. Reads keep
+        the fast stateless-claim path; that read-path lag is a documented
+        accepted risk (docs/CONTROLS.md §1)."""
         if not token:
             return "operator"  # open dev mode: no identities exist
         if hmac.compare_digest(request.headers.get("x-api-key", ""), token):
@@ -276,10 +290,12 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         claims = _session_claims(request.cookies.get(SESSION_COOKIE, ""))
         if claims is None:
             return "viewer"  # unauthenticated: fail closed (middleware 401s first)
+        sub = claims.get("sub")
+        if fresh and sub not in (None, "api-token"):
+            return _role_for(str(sub))
         role = claims.get("role")
         if role in ("viewer", "operator"):
             return str(role)
-        sub = claims.get("sub")
         if sub in (None, "api-token"):
             return "operator"
         return _role_for(str(sub))
@@ -452,9 +468,13 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
             if not _authenticated(request):
                 return JSONResponse({"detail": "missing or invalid X-API-Key"},
                                     status_code=401)
+            # fresh=True: mutations re-resolve the role from the users
+            # table per request (role-demotion takes effect immediately);
+            # reads keep the fast signed-claim path (accepted lag, §1 of
+            # docs/CONTROLS.md)
             if (request.method in _MUTATING_METHODS
                     and path not in _MUTATION_EXEMPT
-                    and _request_role(request) != "operator"):
+                    and _request_role(request, fresh=True) != "operator"):
                 return JSONResponse(
                     {"detail": "your role (viewer) cannot perform this "
                                "action; ask an operator"},
@@ -1293,9 +1313,11 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         # POST => the middleware already enforced role=operator
         body = await request.json()
         label, scopes = body.get("label"), body.get("scopes")
+        expires_days = body.get("expires_days")  # optional; None = no expiry
         try:
             created = _event_store_or_503("token management") \
-                .create_api_token(label or "", scopes or [])
+                .create_api_token(label or "", scopes or [],
+                                  expires_days=expires_days)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         # the ONE response that carries the raw token — store only the hash
@@ -1494,6 +1516,8 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         if record is None:
             raise HTTPException(status_code=401,
                                 detail="invalid or revoked API token")
+        if record.get("expired"):
+            raise HTTPException(status_code=401, detail="token expired")
         if scope not in record["scopes"]:
             raise HTTPException(
                 status_code=403,

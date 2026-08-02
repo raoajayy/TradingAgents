@@ -45,14 +45,15 @@ class ScriptedSnapshots:
         return base.model_copy(update={"bars": [*base.bars, extra_bar]})
 
 
-def make_service(closes, memory=None, metrics=None) -> PaperTradingService:
+def make_service(closes, memory=None, metrics=None,
+                 audit=None) -> PaperTradingService:
     memory = memory if memory is not None else ProMemory()
     router = ExecutionRouter(
         adapter=PaperVenueAdapter(VENUES["mt5"], starting_cash=100_000.0),
         limits=LIMITS,
         kill_switch=KillSwitch(),
         breaker=CircuitBreaker(LIMITS, equity_base=100_000.0),
-        audit=AuditLog(),
+        audit=audit if audit is not None else AuditLog(),
     )
     return PaperTradingService(
         FakePipelineLLM(), CONFIG, ScriptedSnapshots(closes),
@@ -280,6 +281,68 @@ class TestEndToEnd:
         assert state["n"] == 3  # error swallowed, loop continued
         assert service.metrics.counter("iteration_errors_total") == 1
         assert len(calls) == 2  # sleeps between iterations only
+
+
+class TestAuditVerifySchedule:
+    """CONTROLS §2: the loop verifies the on-disk audit chain daily —
+    success maintains the last_audit_verify_ts gauge; a tampered file
+    raises a CRITICAL audit_integrity alert + audit_verify_failures_total."""
+
+    def test_verify_pass_updates_gauge_and_never_alerts(self, tmp_path):
+        import json
+
+        audit_path = tmp_path / "audit.jsonl"
+        metrics = MetricsRegistry()
+        service = make_service([130.0, 131.0], metrics=metrics,
+                               audit=AuditLog(audit_path))
+        service.run_once()
+        assert metrics.gauge("last_audit_verify_ts") > 0
+        assert metrics.counter("audit_verify_failures_total") == 0
+        assert metrics.counter("alerts_total", severity="critical",
+                               event="audit_integrity") == 0
+        # the on-disk file exists and was what got verified
+        assert [json.loads(line)["event"]
+                for line in audit_path.read_text().splitlines()]
+
+    def test_tampered_log_fires_critical_alert_and_metric(self, tmp_path):
+        import json
+
+        audit_path = tmp_path / "audit.jsonl"
+        metrics = MetricsRegistry()
+        service = make_service([130.0, 131.0], metrics=metrics,
+                               audit=AuditLog(audit_path))
+        service.run_once()  # first pass verifies clean and writes entries
+
+        # tamper in place: rewrite one payload without re-hashing the chain
+        lines = audit_path.read_text().splitlines()
+        entry = json.loads(lines[0])
+        entry["payload"] = {**entry["payload"], "injected": "evil"}
+        lines[0] = json.dumps(entry, sort_keys=True)
+        audit_path.write_text("\n".join(lines) + "\n")
+
+        service._last_audit_verify_day = None  # next iteration = "next day"
+        before_ts = metrics.gauge("last_audit_verify_ts")
+        service.run_once()
+        assert metrics.counter("audit_verify_failures_total") == 1
+        assert metrics.counter("alerts_total", severity="critical",
+                               event="audit_integrity") == 1
+        # a failed pass must not refresh the evidence gauge
+        assert metrics.gauge("last_audit_verify_ts") == before_ts
+
+    def test_check_is_daily_throttled(self, tmp_path):
+        audit_path = tmp_path / "audit.jsonl"
+        metrics = MetricsRegistry()
+        service = make_service([130.0, 131.0, 132.0], metrics=metrics,
+                               audit=AuditLog(audit_path))
+        service.run_once()
+        # corrupt the file outright; same-day iterations must NOT re-check
+        audit_path.write_text("not json\n")
+        service.run_once()
+        assert metrics.counter("audit_verify_failures_total") == 0
+        # but the next day's iteration catches it (unparseable = violation)
+        service._last_audit_verify_day = None
+        service.run_once()
+        assert metrics.counter("audit_verify_failures_total") == 1
 
 
 class _CaptureSink:

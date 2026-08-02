@@ -224,6 +224,37 @@ def generate_self_assessment(recorder_runs, memory, audit_path,
     if audit_path is not None and not Path(audit_path).is_file():
         risks.append(f"- audit log {audit_path} does not exist — safety "
                      "events in this period, if any, were not captured.")
+    # audit-chain verification evidence: the service loop runs a daily
+    # in-process verify() (CONTROLS §2) that maintains a
+    # last_audit_verify_ts gauge and an audit_verify_failures_total
+    # counter — cite the real evidence rather than assuming
+    if metrics is not None:
+        failures = metrics.counter("audit_verify_failures_total")
+        verified_ts = metrics.gauge("last_audit_verify_ts")
+        if failures:
+            risks.append(
+                f"- audit chain integrity verification FAILED "
+                f"{int(failures)} time(s) (audit_verify_failures_total) — "
+                "the hash chain did not verify; treat audit-derived "
+                "evidence in this document as suspect.")
+        elif verified_ts:
+            verified_at = datetime.fromtimestamp(
+                verified_ts, tz=timezone.utc).isoformat(timespec="seconds")
+            lines.append(
+                f"Audit chain integrity: last in-process verify() passed at "
+                f"{verified_at} (last_audit_verify_ts gauge; "
+                "audit_verify_failures_total=0).")
+            lines.append("")
+        else:
+            risks.append(
+                "- audit chain integrity has not been verified by this "
+                "process yet (last_audit_verify_ts gauge unset) — the "
+                "scheduled daily check has not completed a pass.")
+    elif audit_path is not None and Path(audit_path).is_file():
+        risks.append(
+            "- audit chain verification evidence unavailable (no metrics "
+            "registry attached): check last_audit_verify_ts / "
+            "audit_verify_failures_total on the live /metrics endpoint.")
     if not safety and runs:
         risks.append("- no kill-switch or circuit-breaker activity was "
                      "recorded this period: confirm the kill switch was "

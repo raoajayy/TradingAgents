@@ -317,6 +317,11 @@ class PaperTradingService:
         # heartbeat for /health/live + the dead-man switch (go-live Phase 5)
         self.metrics.set_gauge("last_run_ts", utc_now().timestamp())
 
+        # scheduled audit-chain integrity check (CONTROLS §2): once per UTC
+        # day, piggybacked on the loop like the P2-06 pattern — verify()
+        # must not live only in tests
+        self._maybe_verify_audit()
+
         reconciliation = self.router.reconcile()
         if not reconciliation.in_sync:
             self.metrics.inc("reconciliation_failures_total")
@@ -718,6 +723,46 @@ class PaperTradingService:
             f"daily summary: {journal['n_trades']} closed trades, realized "
             f"P&L {journal['total_pnl']:+.2f}"
             + (f", equity {equity:,.2f}" if equity is not None else ""),
+        )
+
+    # --- scheduled audit-chain integrity check ----------------------------------
+
+    def _maybe_verify_audit(self) -> None:
+        """Daily in-process integrity check over the hash-chained audit log
+        (docs/CONTROLS.md §2: ``verify()`` must not run only in tests).
+        Re-reads the JSONL from disk — the in-memory copy would mask
+        on-disk tampering — and re-verifies the whole chain. Failure (or
+        an unreadable/corrupt file) raises a CRITICAL alert and counts
+        ``audit_verify_failures_total``; success refreshes the
+        ``last_audit_verify_ts`` gauge, the evidence /metrics and the
+        P3-08 self-assessment cite. Throttled to once per UTC day so the
+        O(n) re-hash never taxes the hourly loop."""
+        today = utc_now().date().isoformat()
+        if getattr(self, "_last_audit_verify_day", None) == today:
+            return
+        self._last_audit_verify_day = today
+        try:
+            audit = self.router.audit
+            path = getattr(audit, "_path", None)
+            if path is not None and path.exists():
+                from tradingagents.pro.execution.audit import AuditLog
+
+                audit = AuditLog(path)  # fresh read: verify what's on disk
+            ok = audit.verify()
+        except Exception:
+            # an unloadable audit file IS an integrity failure, not an
+            # infrastructure hiccup to fail open on
+            logger.exception("audit chain verification errored")
+            ok = False
+        if ok:
+            self.metrics.set_gauge("last_audit_verify_ts",
+                                   utc_now().timestamp())
+            return
+        self.metrics.inc("audit_verify_failures_total")
+        self.alerts.emit(
+            "critical", "audit_integrity",
+            "audit chain integrity violation: verify() failed over the "
+            "on-disk audit log — treat every downstream record as suspect",
         )
 
     def run_forever(

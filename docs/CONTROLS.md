@@ -29,16 +29,34 @@ created_at)` with a CHECK constraint on role (`tradingagents/pro/store.py:71-74,
 217-262`). Allowlist emails are seeded as operators once, when the table is empty
 (`app.py:223-244`); an allowlisted email *absent* from the table defaults to
 operator (`app.py:234-244`) — a deliberate but permissive default. Mutating verbs (POST/PUT/DELETE) under `/api` require operator;
-viewers get 403; every GET stays viewer-readable (`app.py:29-31`). Role changes take
-effect on the next session re-establish, not instantly (`app.py:176-178`).
+viewers get 403; every GET stays viewer-readable (`app.py:29-31`). **Role
+demotion is immediate on the mutation path**: the auth middleware re-resolves
+the role from the `users` table on every mutating request
+(`app.py::_request_role(fresh=True)`, called from `require_api_key`), so a
+demoted operator loses POST/PUT/DELETE rights on their very next request even
+with a still-valid 7-day session JWT
+(`tests/test_pro_dashboard_app.py::test_demoted_operator_loses_mutations_immediately`).
+**Accepted read-path lag:** GETs keep the fast stateless path — they trust the
+signed `role` claim until the session re-establishes (at most the 7-day JWT
+TTL). This is deliberate: reads are viewer-grade anyway, so a stale operator
+claim grants nothing a viewer would not already have.
 
 **Public API tokens (P3-11).** `/public/v1/*` uses separate bearer tokens, minted
 by operators via `/api/tokens` (`app.py:39-41`). Only the sha256 hash is stored
-(`api_tokens` table: token_hash PK, label, scopes csv, created_at, revoked_at —
-`store.py:76-81, 264-299`); the raw token is returned exactly once at creation.
-Scopes are an allowlist of `read:decisions`, `read:calibration` (`store.py:268`),
-enforced per endpoint; revocation is a `revoked_at` timestamp — there is **no
-expiry column**: tokens live until explicitly revoked. Requests are
+(`api_tokens` table: token_hash PK, label, scopes csv, created_at, revoked_at,
+expires_at — `store.py::_SCHEMA`, `store.py::create_api_token`); the raw token
+is returned exactly once at creation. Scopes are an allowlist of
+`read:decisions`, `read:calibration`, enforced per endpoint; revocation is a
+`revoked_at` timestamp. **Expiry:** `POST /api/tokens` accepts an optional
+`expires_days` (> 0) that stamps a nullable `expires_at`; an expired token is
+rejected with 401 "token expired" (`store.py::resolve_api_token` returns it
+with `expired: True` and zero scopes; `app.py::_public_auth` maps that to the
+401) and the expiry shows in the token list. Tokens minted without
+`expires_days` keep the old semantics (live until revoked). The column is an
+additive upgrade — a guarded `ALTER TABLE api_tokens ADD COLUMN expires_at`
+runs on every store open, so pre-existing production DBs upgrade in place
+(`store.py::EventStore.__init__`;
+`tests/test_pro_public_api.py::TestTokenExpiry`). Requests are
 rate-limited per token by an in-process token bucket (`PRO_PUBLIC_RATE_LIMIT`
 req/min, default 60; `app.py:39-41, 1348-1404`). Public tokens never grant `/api`
 access and session cookies never grant `/public/v1` access.
@@ -62,8 +80,9 @@ privilege must be evidenced from GCP console/audit, not from this codebase.
 
 **What this does not cover:** no MFA enforcement (delegated to Google); no session
 revocation list — session JWTs (7-day TTL, `app.py:154`) can only be invalidated by
-rotating `PRO_DASHBOARD_TOKEN`, so a role demotion takes effect only on the next
-session re-establish; no per-user API keys. Cloud Run itself is deployed
+rotating `PRO_DASHBOARD_TOKEN` (though a role demotion now revokes mutation
+rights immediately — only read access rides out the cookie, see Roles above);
+no per-user API keys. Cloud Run itself is deployed
 `--allow-unauthenticated` (`deploy_cloud_run.sh:190`) — the app-level token is the
 sole perimeter.
 
@@ -114,8 +133,16 @@ every hash and checks seq ordering and prev-hash linkage (`audit.py:59-69`). It
 detect**: truncation from the end (a shorter chain is still valid — no external
 length anchor), wholesale rewrite (the chain is unsigned; anyone with write access
 can regenerate it from genesis — it is tamper-*evident*, not tamper-proof), or
-deletion of the whole file. `verify()` is currently invoked only by tests — there
-is no scheduled production integrity check (see Gaps). The go-live readiness
+deletion of the whole file. **Scheduled integrity check:** the service loop
+re-reads the audit JSONL from disk and runs `verify()` once per UTC day
+(`tradingagents/pro/service.py::_maybe_verify_audit`, called from `_run_once`).
+A failure — or an unreadable/corrupt file — raises a CRITICAL
+`audit_integrity` alert ("audit chain integrity violation") and increments
+`audit_verify_failures_total`; a pass refreshes the `last_audit_verify_ts`
+gauge, both visible on `/metrics`. The P3-08 self-assessment cites this
+evidence in its open-risks section
+(`evals/self_assessment.py`). Proven by
+`tests/test_pro_e2e_service.py::TestAuditVerifySchedule`. The go-live readiness
 report, arming ceremonies, reconciliation passes, dead-man trips and emergency
 flattens are all written into this chain (`preflight.py:163-179`, `arming.py:57-61`,
 `router.py:310-315`, `deadman.py:116`, `flatten.py:63`).
@@ -200,6 +227,12 @@ Deterministic, zero-LLM; empty periods say "no activity"
 
 ## 5. Known gaps (honest list)
 
+Three former gaps are now controls (see §1 and §2): scheduled audit-chain
+verification (daily in-loop `verify()` with CRITICAL alert + metrics), public
+API token expiry (`expires_at` + `expires_days`, 401 "token expired"), and
+immediate role demotion on mutating requests (per-request users-table
+re-resolution; the read-path lag is documented as accepted in §1).
+
 1. **The operator token is not per-person attributable.** `X-API-Key` is one shared
    secret with full operator rights; audit events from it cannot be tied to a human.
    Google sign-in adds identity for dashboard users, but the token path remains.
@@ -217,7 +250,9 @@ Deterministic, zero-LLM; empty periods say "no activity"
    cannot restore them. Mitigated by the image pin and drill-script warning; the
    pin is a floating `0.3` tag, not a digest.
 6. **Audit chain limits**: unsigned (tamper-evident only), end-truncation is
-   undetectable, and `verify()` runs only in tests — no scheduled production check.
+   undetectable. (`verify()` no longer runs only in tests — the service loop
+   verifies the on-disk chain daily; see §2. The unsigned/truncation
+   weaknesses remain.)
 7. **`git_sha` in production stamps is likely `"unknown"`** — the build does not
    inject `GIT_SHA` (see §2).
 8. **Deploys are operator-run** with no approval workflow, no rollback automation,
@@ -231,8 +266,11 @@ Deterministic, zero-LLM; empty periods say "no activity"
 |---|---|---|
 | X-API-Key auth on `/api/*` | `dashboard/app.py:7-11, 249-258` | `tests/test_pro_dashboard_app.py::test_token_auth_unchanged_full_operator` (:695) |
 | Google sign-in, fail-closed allowlist | `dashboard/app.py:80-84, 212-221` | `tests/test_pro_dashboard_app.py:603-655` (allowlist seeding, role claim) |
-| Viewer/operator role gate | `dashboard/app.py:169-181, 260-279`; `store.py:71-74, 217-262` | `test_pro_dashboard_app.py::test_viewer_reads_but_cannot_mutate` (:631), `::test_operator_passes_the_mutation_gate` (:655), `::test_role_change_lands_on_session_reestablish` (:735); `tests/test_pro_store.py::TestUsers` (:235) |
+| Viewer/operator role gate | `dashboard/app.py:169-181, 260-279`; `store.py:71-74, 217-262` | `test_pro_dashboard_app.py::test_viewer_reads_but_cannot_mutate` (:631), `::test_operator_passes_the_mutation_gate` (:655), `::test_demoted_operator_loses_mutations_immediately` (:735); `tests/test_pro_store.py::TestUsers` (:235) |
 | Public tokens: hash-only, scopes, revocation, per-token rate limit | `store.py:76-81, 264-299`; `dashboard/app.py:1348-1425` | `tests/test_pro_public_api.py` :71, :107, :116, :135, :154, :168, :251, :263 |
+| Public token expiry (`expires_days` → `expires_at`, 401 "token expired", additive column upgrade) | `store.py::create_api_token/resolve_api_token/EventStore.__init__`; `dashboard/app.py::create_api_token/_public_auth` | `tests/test_pro_public_api.py::TestTokenExpiry` |
+| Immediate role demotion on mutations (per-request users-table re-resolution) | `dashboard/app.py::_request_role(fresh=True)` + `require_api_key` middleware | `tests/test_pro_dashboard_app.py::test_demoted_operator_loses_mutations_immediately` |
+| Scheduled audit-chain verification (daily in-loop, CRITICAL alert + `audit_verify_failures_total` / `last_audit_verify_ts`) | `pro/service.py::_maybe_verify_audit`; evidence cited by `evals/self_assessment.py` | `tests/test_pro_e2e_service.py::TestAuditVerifySchedule` |
 | Secrets resolution (file/env, no logging) | `pro/secrets.py`; `scripts/deploy_cloud_run.sh:189` | `tests/test_api_key_env.py` (provider-key mapping) |
 | Version stamps on runs/orders | `pro/versioning.py:36-119`; `recorder.py:296-303`; `execution/router.py:84-88` | `tests/test_pro_versioning.py` (13 tests: stamp shape, hash sensitivity, run/order stamping, legacy parse) |
 | CI gates | `.github/workflows/pro-ci.yml` (5 jobs) | CI run history (GitHub-side) |

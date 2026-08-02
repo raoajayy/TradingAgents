@@ -732,18 +732,33 @@ class TestRolesAndEntitlements:
         assert op.post("/api/users", json={
             "email": None, "role": "viewer"}).status_code == 422
 
-    def test_role_change_lands_on_session_reestablish(self, tmp_path,
-                                                      monkeypatch):
+    def test_demoted_operator_loses_mutations_immediately(self, tmp_path,
+                                                          monkeypatch):
+        """CONTROLS §1: mutating verbs re-resolve the role from the users
+        table per request — a demotion bites on the very next mutation,
+        even though the 7-day session JWT still carries role=operator.
+        Reads keep the fast signed-claim path (accepted, documented lag)."""
         app, state, store = self._setup(tmp_path, monkeypatch)
         op, _ = self._login(app, "op@example.com")
         assert op.post("/api/watchlists",
                        json={"name": "w", "symbols": []}).status_code == 200
         store.put_user("op@example.com", "viewer")  # demotion
-        # the outstanding cookie still says operator (stateless JWT)…
-        assert op.post("/api/watchlists",
-                       json={"name": "w2", "symbols": []}).status_code == 200
-        # …but the next page load re-establishes and picks up the new role
+        # the outstanding cookie still says operator (stateless JWT), but
+        # the mutation gate checks the users table NOW: 403 immediately
+        denied = op.post("/api/watchlists",
+                         json={"name": "w2", "symbols": []})
+        assert denied.status_code == 403
+        assert "viewer" in denied.json()["detail"]
+        assert op.put("/api/prefs", json={}).status_code == 403
+        # reads keep working under the stale claim (accepted read-path lag)
+        assert op.get("/api/overview").status_code == 200
+        assert op.get("/api/watchlists").status_code == 200
+        # the next page load re-establishes and mints an honest viewer cookie
         again = op.post("/api/session")
         assert again.json()["role"] == "viewer"
         assert op.post("/api/watchlists",
                        json={"name": "w3", "symbols": []}).status_code == 403
+        # and a promotion is picked up just as immediately
+        store.put_user("op@example.com", "operator")
+        assert op.post("/api/watchlists",
+                       json={"name": "w4", "symbols": []}).status_code == 200
