@@ -72,6 +72,11 @@ export default defineConfig({
         target: process.env.PRO_API_TARGET ?? "http://127.0.0.1:8600",
         changeOrigin: false,
       },
+      // P4-02: the public track-record page fetches /public/v1/*
+      "/public/v1": {
+        target: process.env.PRO_API_TARGET ?? "http://127.0.0.1:8600",
+        changeOrigin: false,
+      },
     },
   },
   resolve: {

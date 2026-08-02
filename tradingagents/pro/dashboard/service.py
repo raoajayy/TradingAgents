@@ -654,6 +654,124 @@ def calibration_report(memory: ProMemory) -> dict:
     return {**brier_summary(memory), "buckets": buckets}
 
 
+def public_track_record(runs: Sequence[RunRecord], memory: ProMemory,
+                        limit: int = 100) -> dict:
+    """P4-02 public live track record: the pre-registered decisions ledger
+    plus honest aggregates. Contamination-proof by construction — each row
+    carries ``started_at`` (the pre-registration timestamp) and the P3-07
+    ``versions`` stamp (git_sha/prompt_hash existed BEFORE the outcome), so
+    a reader can verify the decision could not have been fitted to what
+    happened next.
+
+    Honesty rules (non-negotiable, tested):
+    - outcomes come ONLY from the trade journal (mode != "retro"; never a
+      retro-adjusted grade, never a recomputed number);
+    - open positions appear as ``open: true`` rows — no survivorship
+      trimming while a trade is still in flight;
+    - rejected runs stay in the ledger (``rejected_at`` names the gate) —
+      a rejection IS a decision;
+    - every aggregate ships its own sample size, and reports null rather
+      than an invented value below n=1.
+    """
+    trades_by_rec: dict[str, object] = {}
+    for record in memory.records(MemoryKind.TRADE):
+        rec_id = record.payload.get("recommendation_id")
+        if rec_id:
+            trades_by_rec[rec_id] = record
+    # journal outcomes only: retro-scored grades feed calibration, never
+    # this ledger (same rule as trade_journal)
+    outcomes_by_trade = {
+        o.ref_id: o for o in memory.records(MemoryKind.OUTCOME)
+        if o.payload.get("mode", "paper") != "retro"
+    }
+
+    ledger = []
+    graded: list[dict] = []       # {won, r} rows for the aggregates
+    n_rejected = n_open = 0
+    for run in reversed(runs[-max(1, int(limit)):]):
+        rec = run.recommendation
+        trade = trades_by_rec.get(rec.id) if rec else None
+        outcome = outcomes_by_trade.get(trade.id) if trade else None
+        rejected_at = run.rejection and run.rejection.get("stage")
+        is_open = trade is not None and outcome is None
+        row = {
+            "run_id": run.run_id,
+            "symbol": run.symbol,
+            "started_at": run.started_at.isoformat(),
+            "action": rec.action.value if rec else None,
+            "confidence": rec.confidence if rec else None,
+            # the contamination proof: stamped at run time, pre-outcome
+            "versions": run.versions,
+            "rejected_at": rejected_at,
+            "open": is_open,
+            "outcome": None,
+        }
+        if rejected_at:
+            n_rejected += 1
+        if is_open:
+            n_open += 1
+        if outcome is not None:
+            row["outcome"] = {
+                "pnl": outcome.payload.get("pnl"),
+                "won": outcome.payload.get("won"),
+                "closed_at": outcome.payload.get(
+                    "closed_at", outcome.created_at.isoformat()),
+            }
+            graded.append({
+                "won": bool(outcome.payload.get("won")),
+                "r": _realized_r(trade, outcome),
+            })
+        ledger.append(row)
+
+    wins = sum(1 for g in graded if g["won"])
+    r_values = [g["r"] for g in graded if g["r"] is not None]
+    return {
+        "ledger": ledger,
+        "aggregates": {
+            "n_decisions": len(ledger),
+            "n_rejected": n_rejected,
+            "n_open": n_open,
+            "n_graded": len(graded),
+            "win_rate": (wins / len(graded)) if graded else None,
+            "win_rate_n": len(graded),
+            "avg_r": (sum(r_values) / len(r_values)) if r_values else None,
+            "avg_r_n": len(r_values),
+            # reuses the P3-11 calibration view verbatim (brier + buckets,
+            # each bucket with its own n; empty buckets report p_win null)
+            "calibration": calibration_report(memory),
+        },
+        "methodology": {
+            "pre_registered": "every decision is timestamped and version-"
+                              "stamped (git_sha, prompt_hash) at run time, "
+                              "before its outcome exists",
+            "graded_post_hoc": "outcomes come only from the trade journal "
+                               "as positions close; never retro-adjusted",
+            "rejections_included": "runs rejected by a gate stay in the "
+                                   "ledger and the decision count",
+            "open_positions_shown": "still-open trades are listed as open; "
+                                    "no survivorship trimming",
+        },
+    }
+
+
+def _realized_r(trade, outcome) -> float | None:
+    """Price-space realized R multiple: (exit - entry) / (entry - stop),
+    signed by direction. Null — never invented — when any input (actual
+    fill prices from the outcome, the pre-registered stop from the trade)
+    is missing or the risk denominator is zero."""
+    entry = outcome.payload.get("entry_price")
+    exit_price = outcome.payload.get("fill_price")
+    stop = trade.payload.get("stop_loss")
+    action = trade.payload.get("action")
+    if entry is None or exit_price is None or stop is None or action is None:
+        return None
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return None
+    sign = 1.0 if action == "BUY" else -1.0
+    return sign * (exit_price - entry) / risk
+
+
 def agent_performance(runs: Sequence[RunRecord], memory: ProMemory) -> dict:
     """Per-agent activity plus outcome-scored accuracy.
 

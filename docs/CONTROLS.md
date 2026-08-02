@@ -43,6 +43,13 @@ rate-limited per token by an in-process token bucket (`PRO_PUBLIC_RATE_LIMIT`
 req/min, default 60; `app.py:39-41, 1348-1404`). Public tokens never grant `/api`
 access and session cookies never grant `/public/v1` access.
 
+**Public track record (P4-02).** `/public/v1/track-record` (scope
+`read:decisions`) and its pre-auth SPA page `/public/track-record` are
+feature-flagged **off by default pending legal counsel**: both 404 unless
+`PRO_PUBLIC_TRACK_RECORD=1` is set at startup (`dashboard/app.py`). The page
+authenticates with an operator-issued `read:decisions` token supplied as
+`?token=` or baked in at build time via `VITE_TRACK_RECORD_TOKEN`.
+
 **Secrets.** Runtime resolution is `NAME_FILE` (mounted file) then `NAME` env var
 (`tradingagents/pro/secrets.py:1-40`); secrets are never logged (`describe_source`
 reports origin without the value). In the Cloud Run deployment, secrets live in

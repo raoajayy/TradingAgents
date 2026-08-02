@@ -44,6 +44,12 @@ registrations (``/api/webhooks``, operator-only) fire signed
 ``run_complete`` POSTs from the service loop — see
 ``tradingagents.pro.webhooks``.
 
+Public track record (P4-02): ``/public/v1/track-record`` (scope
+``read:decisions``) serves the pre-registered decisions ledger + honest
+aggregates for the public track-record page. It is feature-flagged and
+DEFAULT OFF pending legal counsel: the route 404s unless
+``PRO_PUBLIC_TRACK_RECORD=1`` is set at startup.
+
 Run locally:
     uvicorn --factory tradingagents.pro.dashboard.app:create_default_app
 """
@@ -1460,6 +1466,28 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         _public_auth(request, "read:calibration")
         return service.calibration_report(state.memory)
 
+    # P4-02 public live track record. Feature-flagged OFF by default:
+    # publishing a live performance record has legal exposure (marketing
+    # of trading results), so the route only exists when the operator sets
+    # PRO_PUBLIC_TRACK_RECORD=1 AFTER counsel signs off — otherwise it
+    # 404s before auth, indistinguishable from a route that was never
+    # shipped. Same Bearer+scope mechanics as the other public endpoints
+    # (scope read:decisions). Payload honesty rules live in (and are
+    # tested against) service.public_track_record.
+    track_record_enabled = (
+        os.environ.get("PRO_PUBLIC_TRACK_RECORD", "0") == "1")
+
+    @app.get("/public/v1/track-record")
+    async def public_track_record(request: Request,
+                                  limit: int = 100) -> dict:
+        if not track_record_enabled:
+            # flag off = the page does not exist, not "forbidden"
+            raise HTTPException(status_code=404, detail="Not Found")
+        _public_auth(request, "read:decisions")
+        limit = max(1, min(int(limit), 500))
+        return service.public_track_record(
+            state.runs, state.memory, limit=limit)
+
     @app.get("/api/journal")
     def journal() -> dict:
         return service.trade_journal(state.memory)
@@ -2004,7 +2032,13 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
 
         from fastapi.responses import Response
 
-        if (path.startswith(("api/", "public/"))
+        # P4-02: /public/track-record is the ONE /public path that serves
+        # the SPA shell (the pre-auth page lives outside AuthGate) — and
+        # only while the track-record flag is on; every other /public path
+        # keeps 404ing so unknown API probes never receive HTML.
+        if path == "public/track-record" and track_record_enabled:
+            pass
+        elif (path.startswith(("api/", "public/"))
                 or path in ("api", "public", "healthz", "metrics")):
             raise HTTPException(status_code=404, detail=f"no route /{path}")
         if has_spa and path and ".." not in path:

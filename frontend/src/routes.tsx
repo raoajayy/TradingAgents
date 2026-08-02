@@ -11,6 +11,12 @@ const PortfolioPage = lazy(() => import("./features/portfolio/PortfolioPage"));
 const TrackRecordPage = lazy(
   () => import("./features/track-record/TrackRecordPage"),
 );
+// P4-02: the PUBLIC track record renders OUTSIDE AppShell (and therefore
+// outside AuthGate) — visitors reach the ledger without ever seeing the
+// login screen. /track-record stays the operator's in-app view.
+const PublicTrackRecordPage = lazy(
+  () => import("./features/track-record/PublicTrackRecordPage"),
+);
 const IntelPage = lazy(() => import("./features/intelligence/IntelPage"));
 const SettingsPage = lazy(() => import("./features/settings/SettingsPage"));
 const ReportPage = lazy(() => import("./features/report/ReportPage"));
@@ -21,6 +27,11 @@ const page = (element: React.ReactNode) => (
 );
 
 export const router = createBrowserRouter([
+  {
+    // pre-auth public route: NOT a child of AppShell, so no AuthGate
+    path: "/public/track-record",
+    element: page(<PublicTrackRecordPage />),
+  },
   {
     path: "/",
     element: <AppShell />,
