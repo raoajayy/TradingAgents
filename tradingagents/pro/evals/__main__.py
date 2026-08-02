@@ -44,7 +44,14 @@ def main() -> int:
                         help="P1-02: pipeline vs single strong model on "
                              "historical cut points, retro-scored")
     parser.add_argument("--points", type=int, default=5,
-                        help="historical cut points for --ablation (default 5)")
+                        help="historical cut points for --ablation / "
+                             "--crowding-study (default 5)")
+    parser.add_argument("--crowding-study", action="store_true",
+                        help="P5-04: crowding study — our pipeline vs a "
+                             "population of generic LLM traders (3 "
+                             "documented prompt styles) reading the SAME "
+                             "evidence pack; reports agreement, Cohen's "
+                             "kappa, crowding score and rolling drift")
     parser.add_argument("--memorization-audit", action="store_true",
                         help="P2-03: re-run the frozen stability snapshots "
                              "named vs anonymized (tickers/dates masked) and "
@@ -240,6 +247,8 @@ def main() -> int:
         n_runs = args.iterations  # one proposal call per round
     elif args.memorization_audit:
         n_runs = len(DEFAULT_CASE_NAMES) * args.samples * 2  # named + anon arms
+    elif args.crowding_study:
+        n_runs = args.points  # one pipeline run per cut; baselines are single calls
     else:
         n_runs = len(cases) * args.samples
     price_scale = price_for(routing.llm_provider).input_per_mtok / 3.0
@@ -253,6 +262,19 @@ def main() -> int:
         print(f"ablation: {args.points} historical cut points x 2 arms "
               f"(~${args.points * EST_COST_PER_CASE_RUN * price_scale:.2f} "
               f"estimated at {routing.llm_provider} rates)\n")
+    elif args.crowding_study:
+        from tradingagents.pro.analytics.crowding import MIN_OVERLAP
+        from tradingagents.pro.evals.crowding_study import baseline_prompts
+
+        n_styles = len(baseline_prompts())
+        print(f"crowding study: {args.points} historical cut points x "
+              f"(1 pipeline run + {n_styles} baseline calls on the same "
+              f"evidence pack) (~${est:.2f} estimated at "
+              f"{routing.llm_provider} rates; the pipeline run dominates, "
+              f"a baseline is one call)\n"
+              f"  note: the crowding score needs >= {MIN_OVERLAP} "
+              f"DIRECTIONAL (non-HOLD) decisions of ours to report a "
+              f"number at all — it stays null on a short study\n")
     elif args.factor_mine:
         print(f"factor mining: {args.iterations} proposal rounds "
               f"(~${est:.2f} estimated at {routing.llm_provider} rates; "
@@ -401,6 +423,61 @@ def main() -> int:
                       f"conf={a['confidence']} rejected={a['rejected']} "
                       f"pnl={a['pnl']} exit={a['exit_reason']}")
         print(f"\nwrote {out}")
+        return 0
+
+    if args.crowding_study:
+        import json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from tradingagents.contracts import AssetClass as AC
+        from tradingagents.pro.evals.crowding_study import (
+            historical_snapshots,
+            study,
+        )
+
+        crowd_config = ProConfig(asset=AC.BITCOIN, max_debate_rounds=1,
+                                 models=routing)
+        snapshots = historical_snapshots(points=args.points, symbol="BTC-USD",
+                                         asset=AC.BITCOIN)
+        report = study(bundle, crowd_config, snapshots, agent_workers=8)
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "provider": routing.llm_provider,
+            "quick": routing.quick_think_llm,
+            "deep": routing.deep_think_llm,
+            **report,
+        }
+        out_dir = Path("docs/evals")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = out_dir / f"crowding_{stamp}.json"
+        out.write_text(json.dumps(payload, indent=2, default=str) + "\n")
+        crowding = report["crowding"]
+        print(f"points={report['n_points']} aligned={crowding['n_aligned']} "
+              f"directional={crowding['n_directional']} "
+              f"scored={crowding['n_scored']} "
+              f"no_consensus={crowding['n_no_consensus']}")
+        for pair in report["agreement"]["pairs"]:
+            agree = ("n/a" if pair["agreement"] is None
+                     else f"{pair['agreement']:.0%}")
+            kappa = "n/a" if pair["kappa"] is None else f"{pair['kappa']:+.2f}"
+            print(f"  {pair['a']:>20} vs {pair['b']:<20} n={pair['n']:<4} "
+                  f"agree={agree:<6} kappa={kappa}")
+        if crowding["crowding"] is None:
+            print("  crowding: n/a — too few scorable directional decisions "
+                  "(honest hole, not zero)")
+        else:
+            kappa_consensus = crowding["kappa_vs_consensus"]
+            kappa_text = ("n/a" if kappa_consensus is None
+                          else f"{kappa_consensus:+.2f}")
+            print(f"  crowding={crowding['crowding']:.0%} "
+                  f"distinctiveness={crowding['distinctiveness']:.0%} "
+                  f"kappa_vs_consensus={kappa_text}")
+        deep_report = bundle.deep.report
+        print(f"\ndeep-model calls: {deep_report.calls}, "
+              f"est cost ${deep_report.est_cost_usd:.2f}")
+        print(f"wrote {out}")
         return 0
 
     if args.stability:

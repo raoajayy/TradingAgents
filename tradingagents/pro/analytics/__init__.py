@@ -4,6 +4,14 @@ Everything here is pure, typed Python — the numeric ground truth that
 quant- and risk-team agents explain but never compute (Constraint 2).
 """
 
+from tradingagents.pro.analytics.crowding import (
+    agreement_matrix,
+    cohens_kappa,
+    crowding_score,
+    decision_series,
+    rolling_crowding,
+    signal_for_action,
+)
 from tradingagents.pro.analytics.factors import (
     FactorExpr,
     evaluate_factor_oos,
@@ -36,6 +44,12 @@ from tradingagents.pro.analytics.risk import (
 )
 
 __all__ = [
+    "agreement_matrix",
+    "cohens_kappa",
+    "crowding_score",
+    "decision_series",
+    "rolling_crowding",
+    "signal_for_action",
     "FactorExpr",
     "evaluate_factor_oos",
     "factor_ic",
