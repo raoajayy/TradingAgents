@@ -73,7 +73,72 @@ def main() -> int:
     parser.add_argument("--end", default=None,
                         help="period end YYYY-MM-DD, inclusive "
                              "(--self-assessment)")
+    parser.add_argument("--build-corpus", action="store_true",
+                        help="P4-01: build the graded-outcome training "
+                             "corpus from the event store (no model "
+                             "calls) and print the fine-tune gate "
+                             "verdict (>=200 graded outcomes). Reads the "
+                             "store exactly like --self-assessment; "
+                             "against PROD data restore the Litestream "
+                             "replica first and point TRADINGAGENTS_PRO_DB "
+                             "at the restored DB.")
+    parser.add_argument("--include-rejections", action="store_true",
+                        help="also emit rejected runs as outcome-less, "
+                             "reward-0 abstention examples "
+                             "(--build-corpus)")
+    parser.add_argument("--out", default=None,
+                        help="output JSONL path (--build-corpus; default "
+                             "docs/evals/corpus_<stamp>.jsonl)")
     args = parser.parse_args()
+
+    if args.build_corpus:
+        # zero-LLM: same store resolution as --self-assessment — the P2-01
+        # SQLite event store when its DB exists, else the legacy file layout
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from tradingagents.pro.dashboard.prefs import default_data_dir
+        from tradingagents.pro.dashboard.recorder import PipelineRecorder
+        from tradingagents.pro.evals.corpus import (
+            bars_from_runs,
+            build_training_corpus,
+            corpus_summary,
+            gate_verdict,
+            write_corpus_jsonl,
+        )
+        from tradingagents.pro.memory import ProMemory
+        from tradingagents.pro.store import SqliteMemoryStore, default_db_path
+
+        data = default_data_dir()
+        if default_db_path().exists():
+            from tradingagents.pro.store import EventStore
+
+            store = EventStore()
+            recorder_runs = PipelineRecorder(store=store).runs
+            memory = ProMemory(store=SqliteMemoryStore(store))
+        else:
+            memory_path = data / "memory.jsonl"
+            memory = (ProMemory(store_path=memory_path)
+                      if memory_path.exists() else ProMemory())
+            recorder_runs = PipelineRecorder(store_dir=data / "runs").runs
+        examples = build_training_corpus(
+            recorder_runs, memory, bars_from_runs(recorder_runs),
+            include_rejections=args.include_rejections)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = (Path(args.out) if args.out
+               else Path("docs/evals") / f"corpus_{stamp}.jsonl")
+        write_corpus_jsonl(examples, out)
+        summary = corpus_summary(examples)
+        print(f"corpus: {summary['total']} example(s) from "
+              f"{len(recorder_runs)} stored run(s) "
+              f"({summary['graded']} graded, {summary['ungraded']} ungraded)")
+        for symbol, count in sorted(summary["by_symbol"].items()):
+            print(f"  {symbol}: {count}")
+        for klass, count in sorted(summary["by_outcome"].items()):
+            print(f"  outcome {klass}: {count}")
+        print(gate_verdict(summary["graded"]))
+        print(f"wrote {out}")
+        return 0
 
     if args.self_assessment:
         # zero-LLM: reads the shared /data volume like the operator CLI —
