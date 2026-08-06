@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 
+from tradingagents.pro.execution.safety import cancel_for_safety
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +40,8 @@ def emergency_flatten(router, arming=None, *, operator: str,
         for order in list(oms.orders.values()):
             if order.sent and not order.state.terminal:
                 try:
-                    oms._apply(order, adapter.cancel_order(order.client_order_id))
+                    oms._apply(order, cancel_for_safety(
+                        adapter, order.client_order_id))
                     summary["cancelled"].append(order.client_order_id)
                 except Exception as exc:
                     logger.exception("flatten: cancel failed")

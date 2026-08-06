@@ -13,7 +13,9 @@ Checks:
 - venue key scope: verified Trading-scope by a harmless authenticated
   read; Delta India API keys have no withdrawal scope at all — recorded
   as evidence, not assumed
-- secrets file permissions (no group/other access)
+- secrets file permissions (no group/other access) for the credential
+  names the SELECTED venue actually reads (PRO_LIVE_EXCHANGE: DELTA_* or
+  BINANCE_TESTNET_*/BINANCE_*)
 - .env hygiene: production keys should come from _FILE/SOPS, not
   plaintext .env (WARN)
 - host: Docker Desktop / macOS laptop is not an acceptable armed-live
@@ -103,9 +105,31 @@ def check_key_scope(report: ReadinessReport, adapter) -> None:
                    f"authenticated venue read failed: {exc}")
 
 
+DELTA_SECRET_ENV = ("DELTA_API_KEY", "DELTA_API_SECRET")
+
+
+def venue_secret_names(exchange: str | None = None,
+                       testnet: bool = True) -> tuple[str, ...]:
+    """The credential env-var names the *selected* venue actually reads.
+
+    ``PRO_LIVE_EXCHANGE`` picks the venue (default ``delta``); Binance
+    deliberately uses different names per network so a testnet drill can
+    never sign against mainnet. Checking the wrong pair is how a correctly
+    configured Binance pilot got reported NOT READY."""
+    if exchange is None:
+        exchange = os.environ.get("PRO_LIVE_EXCHANGE", "delta")
+    if (exchange or "delta").strip().lower() == "binance":
+        from tradingagents.pro.execution.adapters.binance_auth import (
+            MAINNET_ENV,
+            TESTNET_ENV,
+        )
+
+        return TESTNET_ENV if testnet else MAINNET_ENV
+    return DELTA_SECRET_ENV
+
+
 def check_secrets_hygiene(report: ReadinessReport,
-                          names: tuple[str, ...] = (
-                              "DELTA_API_KEY", "DELTA_API_SECRET")) -> None:
+                          names: tuple[str, ...] = DELTA_SECRET_ENV) -> None:
     from tradingagents.pro.secrets import file_permissions_ok
 
     for name in names:
@@ -160,10 +184,14 @@ def check_ip_whitelist_reminder(report: ReadinessReport) -> None:
                "IP-whitelisted in the Delta dashboard before arming")
 
 
-def go_live_readiness(adapter=None, audit=None) -> ReadinessReport:
+def go_live_readiness(adapter=None, audit=None, *,
+                      exchange: str | None = None,
+                      testnet: bool = True) -> ReadinessReport:
     """Full self-check. ``adapter`` = the live venue adapter (skipping it
-    marks the venue checks failed — no adapter, no arming). Appends the
-    signed report to the audit chain when provided."""
+    marks the venue checks failed — no adapter, no arming). ``exchange``
+    /``testnet`` select which credential env vars the secrets-hygiene
+    check looks for (default: ``PRO_LIVE_EXCHANGE``, testnet names).
+    Appends the signed report to the audit chain when provided."""
     report = ReadinessReport()
     check_auth(report)
     if adapter is not None:
@@ -172,7 +200,7 @@ def go_live_readiness(adapter=None, audit=None) -> ReadinessReport:
     else:
         report.add("clock_skew", "fail", "no venue adapter supplied")
         report.add("venue_key_scope", "fail", "no venue adapter supplied")
-    check_secrets_hygiene(report)
+    check_secrets_hygiene(report, venue_secret_names(exchange, testnet))
     check_host(report)
     check_ip_whitelist_reminder(report)
     if audit is not None:

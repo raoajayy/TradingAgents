@@ -22,6 +22,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from tradingagents.contracts import LiveRiskLimits
+from tradingagents.pro.execution.safety import cancel_for_safety
 
 logger = logging.getLogger(__name__)
 
@@ -298,8 +299,8 @@ def breach_response(oms, kill_switch, positions_fn, reference_prices):
         for order in list(oms.orders.values()):
             if order.sent and not order.state.terminal:
                 try:
-                    oms._apply(order,
-                               oms.adapter.cancel_order(order.client_order_id))
+                    oms._apply(order, cancel_for_safety(
+                        oms.adapter, order.client_order_id))
                 except Exception:
                     logger.exception("cancel during breach response failed")
         for position in positions_fn():

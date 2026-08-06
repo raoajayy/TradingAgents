@@ -19,6 +19,8 @@ import logging
 import threading
 import time
 
+from tradingagents.pro.execution.safety import cancel_for_safety
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,8 +109,8 @@ def cancel_resting_orders(router):
             for order in list(oms.orders.values()):
                 if order.sent and not order.state.terminal:
                     try:
-                        oms._apply(order, router.adapter.cancel_order(
-                            order.client_order_id))
+                        oms._apply(order, cancel_for_safety(
+                            router.adapter, order.client_order_id))
                         cancelled.append(order.client_order_id)
                     except Exception:
                         logger.exception("dead-man cancel failed")

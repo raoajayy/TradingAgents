@@ -4,11 +4,19 @@ The dust-pilot venue: minimum-size orders on testnet.binancefuture.com,
 graduating (owner sign-off only) to mainnet dust. Design points on top of
 the Delta adapter's transport discipline:
 
-- **Inert unless armed.** The adapter takes an ``armed_fn`` (wired to the
-  ArmingStore ceremony); when it is absent or returns False EVERY
-  operation — reads included — raises ``ExecutionNotEnabled``. No arming
-  ceremony, no venue traffic. This is defense in depth under the router's
-  own per-pair tier gate.
+- **Arming gates ORDERS, not eyesight.** The adapter takes an
+  ``armed_fn`` (wired to the ArmingStore ceremony); when it is absent or
+  returns False every *state-changing* operation — new entries and
+  cancels — raises ``ExecutionNotEnabled``. Read-only operations
+  (account, positions, open orders, order lookup, clock, mark price,
+  instrument facts) and every *reduce-only* path (protective stops, TP
+  legs, ``close_position``/flatten) keep working whenever credentials
+  exist. Gating reads behind arming was a defect: it deadlocked the
+  runbook (readiness must pass BEFORE arming) and, worse, blinded the
+  operator to positions still open on the venue after a TTL demotion or
+  a drill disarm. The operator must always be able to SEE and FLATTEN
+  the book; only opening new risk requires the ceremony. This is defense
+  in depth under the router's own per-pair tier gate.
 - **Entry without a resting venue stop is impossible** (roadmap risk #48:
   an LLM/app outage must never leave a naked position). A non-reduce-only
   order without a ``BracketSpec`` is REJECTED before any network call.
@@ -49,6 +57,7 @@ from tradingagents.pro.execution.adapters.binance_auth import (
     redact,
     signed_query,
 )
+from tradingagents.pro.execution.adapters.delta_auth import MAX_CLOCK_SKEW_SECONDS
 from tradingagents.pro.execution.instruments import InstrumentInfo, InstrumentService
 from tradingagents.pro.execution.interface import (
     AccountState,
@@ -174,24 +183,35 @@ class BinanceFuturesAdapter:
 
     # --- arming gate ---------------------------------------------------------------
 
-    def _require_armed(self) -> None:
+    def _require_armed(self, operation: str = "this order") -> None:
+        """Gate for RISK-INCREASING writes only.
+
+        Reads and reduce-only/flatten writes never call this: an operator
+        whose arming lapsed (TTL demotion) or who just ran a disarm drill
+        must still be able to see the book and close it.
+        """
         if self._armed_fn is None or not self._armed_fn():
             raise ExecutionNotEnabled(
                 f"{self.name}: no pair is armed at a live tier — the "
                 "arming ceremony (tradingagents-pro arm-live) is the only "
-                "path to venue traffic"
+                f"path to {operation}. Reads and reduce-only flattens "
+                "remain available while disarmed."
             )
 
     # --- transport -------------------------------------------------------------------
 
     def _request(self, method: str, path: str, params: dict | None = None, *,
-                 signed: bool = True, retryable: bool = True) -> dict | list:
-        self._require_armed()
+                 signed: bool = True, retryable: bool = True,
+                 credentials: bool = True) -> dict | list:
+        # NOTE: no arming check here — the gate lives at the risk-
+        # increasing entry points (place_order for non-reduce-only specs,
+        # cancel_order) so that reads and flattens survive a disarm.
         attempts = (1 + self._max_read_retries) if retryable else 1
         last_error: Exception | None = None
         for attempt in range(attempts):
             # credentials read per attempt, at call time (never cached)
-            key, secret = read_credentials(testnet=self.testnet)
+            key, secret = (read_credentials(testnet=self.testnet)
+                           if credentials else ("", ""))
             if signed:
                 body = dict(params or {})
                 body["recvWindow"] = self._recv_window
@@ -204,7 +224,8 @@ class BinanceFuturesAdapter:
             url = f"{self._base}{path}" + (f"?{query}" if query else "")
             try:
                 response = self._http.request(
-                    method, url, headers={"X-MBX-APIKEY": key})
+                    method, url,
+                    headers={"X-MBX-APIKEY": key} if key else {})
             except Exception as exc:  # network layer
                 last_error = AdapterError(
                     redact(f"{method} {path}: {exc}", key, secret))
@@ -233,6 +254,37 @@ class BinanceFuturesAdapter:
     @staticmethod
     def _sleep_backoff(attempt: int) -> None:
         time.sleep(min(0.25 * (2 ** attempt), 4.0) * (0.5 + random.random()))
+
+    # --- clock -----------------------------------------------------------------------
+
+    def clock_skew_seconds(self) -> float:
+        """Local-minus-venue clock skew in seconds (positive = we are
+        ahead), from the public ``GET /fapi/v1/time`` endpoint. Unsigned
+        and credential-free by design: readiness must be able to probe
+        the clock before any key or arming ceremony exists."""
+        payload = self._request("GET", "/fapi/v1/time", signed=False,
+                                credentials=False)
+        server_ms = payload.get("serverTime") if isinstance(payload, dict) else None
+        if not server_ms:
+            raise AdapterError(
+                "GET /fapi/v1/time returned no serverTime — cannot verify "
+                "the local clock against the venue")
+        return time.time() - float(server_ms) / 1000.0
+
+    def check_clock(self) -> None:
+        """Boot-time skew check — same contract as the Delta adapter:
+        returns None when the clock is inside the signing budget, raises
+        ``AdapterError`` otherwise (preflight's ``clock_skew`` check turns
+        the raise into a FAIL). Binance rejects requests whose timestamp
+        is outside ``recvWindow``; the shared 2s budget is the ceiling."""
+        skew = self.clock_skew_seconds()
+        if abs(skew) > MAX_CLOCK_SKEW_SECONDS:
+            raise AdapterError(
+                f"local/venue clock skew {skew:+.1f}s exceeds "
+                f"{MAX_CLOCK_SKEW_SECONDS}s budget — signed requests expire "
+                f"against recvWindow ({self._recv_window}ms); fix NTP "
+                "before trading"
+            )
 
     # --- instruments -------------------------------------------------------------
 
@@ -310,9 +362,12 @@ class BinanceFuturesAdapter:
         4. ``AdapterError`` before the entry landed — the OMS resolves by
            coid and re-enters this same flow, so a retried entry still
            gets its stop.
-        Reduce-only specs (stops, TPs, flattens) go straight through.
+        Reduce-only specs (stops, TPs, flattens) go straight through —
+        including while disarmed: closing risk is never gated.
         """
-        self._require_armed()
+        if not spec.reduce_only:
+            # arming gates RISK-INCREASING orders only
+            self._require_armed("opening new risk on the venue")
         info = self.instruments.get(spec.symbol)
         contracts = info.to_contracts(spec.quantity)
         if contracts < info.min_contracts:
@@ -514,8 +569,17 @@ class BinanceFuturesAdapter:
 
     # --- order reads ---------------------------------------------------------------
 
-    def cancel_order(self, client_order_id: str) -> OrderUpdate:
-        self._require_armed()
+    def cancel_order(self, client_order_id: str, *,
+                     flattening: bool = False) -> OrderUpdate:
+        """Cancel a resting order. State-changing, so arming-gated — a
+        cancel can remove a protective stop.
+
+        ``flattening=True`` is the documented escape for the emergency
+        flatten path only: cancel-all + close-all is one safety action,
+        and a resting *entry* left working after a TTL demotion is exactly
+        the exposure the flatten exists to remove."""
+        if not flattening:
+            self._require_armed("canceling a venue order")
         venue_symbol = self._symbol_for(client_order_id)
         if venue_symbol is None:
             return OrderUpdate(client_order_id=client_order_id,
@@ -621,10 +685,13 @@ class BinanceFuturesAdapter:
 
     def close_position(self, symbol: str, reference_price: float):
         """Reduce-only market close of whatever the venue reports —
-        used by emergency_flatten and resolve_unknown_positions."""
+        used by emergency_flatten and resolve_unknown_positions.
+
+        Deliberately NOT arming-gated: flattening is a safety action and
+        is most needed exactly when arming has lapsed (TTL demotion) or
+        been dropped by a drill."""
         from tradingagents.pro.execution.interface import OrderResult
 
-        self._require_armed()
         position = next((p for p in self.positions() if p.symbol == symbol),
                         None)
         if position is None:

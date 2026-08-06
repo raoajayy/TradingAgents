@@ -19,6 +19,7 @@ router still runs every deterministic check.
 
 from __future__ import annotations
 
+import os
 import secrets as _secrets
 import sys
 from pathlib import Path
@@ -47,9 +48,48 @@ def _arming(audit=None):
     return ArmingStore(_data_dir() / "arming.json", audit=audit or _audit())
 
 
+def _selected_exchange() -> str:
+    """Which venue this operator process talks to — the same switch the
+    service uses (``PRO_LIVE_EXCHANGE``), so the ceremony can never arm a
+    venue the running service isn't wired to."""
+    return os.environ.get("PRO_LIVE_EXCHANGE", "delta").strip().lower()
+
+
+def _effective_testnet(testnet: bool) -> bool:
+    """Testnet unless BOTH the operator (--no-testnet) and the deployment
+    (``PRO_LIVE_VENUE=production``) say production. Mirrors main.py's
+    reading of PRO_LIVE_VENUE; the flag alone can only be more cautious."""
+    return testnet or os.environ.get(
+        "PRO_LIVE_VENUE", "testnet").strip().lower() != "production"
+
+
 def _build_adapter(testnet: bool):
-    """Live venue adapter from the secrets layer. Testnet unless the
-    operator explicitly asks for production."""
+    """Live venue adapter from the secrets layer, for the venue selected
+    by ``PRO_LIVE_EXCHANGE`` (default ``delta``; ``binance`` = the P3-01
+    dust pilot). Testnet unless the operator explicitly asks for
+    production; Binance mainnet additionally requires the adapter's
+    ``PRO_BINANCE_MAINNET_ACK`` double opt-in, which it enforces itself.
+
+    The Binance adapter gates *every* call — reads included — behind
+    arming, so the CLI wires it to the real ArmingStore: an armed pair
+    makes readiness/reconcile/flatten work, an unarmed one refuses
+    honestly instead of pretending the venue is unreachable."""
+    testnet = _effective_testnet(testnet)
+    exchange = _selected_exchange()
+    if exchange == "binance":
+        from tradingagents.pro.execution.adapters.binance_futures import (
+            BinanceFuturesAdapter,
+        )
+        from tradingagents.pro.main import _live_max_notional
+
+        arming = _arming()
+        return BinanceFuturesAdapter.from_env(
+            testnet=testnet,
+            armed_fn=lambda: any(
+                v["tier"] in ("canary", "live")
+                for v in arming.status().values()),
+            max_order_notional=_live_max_notional(),
+        )
     from tradingagents.pro.execution.adapters.delta import DeltaAdapter
 
     return DeltaAdapter.from_env(testnet=testnet)
@@ -87,7 +127,9 @@ def readiness_report(
     except Exception as exc:
         typer.echo(f"(no venue adapter: {exc})")
         adapter = None
-    report = go_live_readiness(adapter=adapter, audit=_audit())
+    report = go_live_readiness(adapter=adapter, audit=_audit(),
+                               exchange=_selected_exchange(),
+                               testnet=_effective_testnet(testnet))
     typer.echo(report.render())
 
     if config is not None:
@@ -160,7 +202,9 @@ def arm_live(
         typer.secho(f"cannot build venue adapter: {exc}", fg="red")
         raise typer.Exit(code=2) from exc
 
-    report = go_live_readiness(adapter=adapter, audit=_audit())
+    report = go_live_readiness(adapter=adapter, audit=_audit(),
+                               exchange=_selected_exchange(),
+                               testnet=_effective_testnet(testnet))
     typer.echo(report.render())
     if not report.ok:
         typer.secho("\narming blocked — resolve every FAIL above.", fg="red")
@@ -169,7 +213,9 @@ def arm_live(
     account = adapter.account()
     worst_case = account.equity * cfg.risk.daily_loss_limit_pct / 100.0
     typer.echo("\n" + "=" * 52)
-    typer.secho(f"  ARM {pair} at tier '{tier}'  ({'TESTNET' if testnet else 'PRODUCTION'})",
+    venue = ("TESTNET" if _effective_testnet(testnet) else "PRODUCTION")
+    typer.secho(f"  ARM {pair} at tier '{tier}'  "
+                f"({_selected_exchange().upper()} {venue})",
                 fg="yellow", bold=True)
     typer.echo("=" * 52)
     typer.echo(f"  venue equity        : {account.equity:,.2f}")

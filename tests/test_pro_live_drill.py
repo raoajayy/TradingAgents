@@ -240,3 +240,65 @@ class TestKillSwitchDrill:
         drill_entry = next(e for e in rig.audit.entries
                            if e["event"] == "kill_switch_drill")
         assert drill_entry["payload"]["passed"] is False
+
+
+class TestSightAndFlattenSurviveDisarm:
+    """The blindness defect: after a drill disarms (or an arming TTL
+    silently demotes to paper) the operator must still be able to SEE the
+    venue book and CLOSE it. Only opening new risk needs the ceremony."""
+
+    def test_reads_and_flatten_work_after_drill_disarms(self, creds, tmp_path):
+        from tradingagents.pro.flatten import emergency_flatten
+
+        rig = make_rig(tmp_path)
+        run_kill_switch_drill(
+            oms=rig.oms, arming=rig.arming, kill_switch=rig.kill_switch,
+            audit=rig.audit, operator="tester", symbol="BTC-USD")
+        assert rig.arming.is_live("BTC-USD") is False
+
+        # a position appears on the venue while nothing is armed (a stray
+        # fill, a manual trade, a reconcile-time surprise)
+        rig.venue.position_amt = 0.002
+
+        # eyesight first
+        assert rig.adapter.account().equity == 10_000.0
+        assert [p.symbol for p in rig.adapter.positions()] == ["BTC-USD"]
+        assert callable(rig.adapter.check_clock)  # readiness can probe
+
+        # then the ability to close it
+        router = SimpleNamespace(adapter=rig.adapter, oms=None,
+                                 audit=rig.audit,
+                                 kill_switch=rig.kill_switch)
+        summary = emergency_flatten(router, arming=rig.arming,
+                                    operator="tester")
+        assert summary["errors"] == []
+        assert summary["flattened"] == ["BTC-USD"]
+        assert rig.venue.position_amt == 0.0
+
+    def test_flatten_cancels_resting_orders_while_disarmed(self, creds,
+                                                           tmp_path):
+        """cancel-all is part of the flatten safety action: a resting
+        entry must not survive a flatten just because arming lapsed."""
+        from tradingagents.pro.flatten import emergency_flatten
+
+        rig = make_rig(tmp_path)
+        rig.arming.disarm_all("ttl lapsed", operator="tester")
+        assert rig.arming.is_live("BTC-USD") is False
+
+        # a resting order exists on the venue regardless of how it got there
+        rig.venue._place({"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+                          "quantity": "0.001",
+                          "newClientOrderId": "stray-resting"})
+        # the disarmed read sees it (eyesight), the disarmed flatten-cancel
+        # removes it
+        assert "stray-resting" in {u.client_order_id
+                                   for u in rig.adapter.open_orders()}
+        update = rig.adapter.cancel_order("stray-resting", flattening=True)
+        assert update.state.terminal
+        assert rig.venue.orders["stray-resting"]["status"] == "CANCELED"
+
+        router = SimpleNamespace(adapter=rig.adapter, oms=None,
+                                 audit=rig.audit,
+                                 kill_switch=rig.kill_switch)
+        assert emergency_flatten(router, arming=rig.arming,
+                                 operator="tester")["errors"] == []

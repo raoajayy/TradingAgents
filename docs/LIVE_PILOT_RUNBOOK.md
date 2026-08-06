@@ -8,31 +8,51 @@ specific to P3-01; the general live subsystem procedures (host
 requirements, Telegram alerts, dead-man switch, promotion policy) live in
 `LIVE_TRADING_RUNBOOK.md` and still apply.
 
-**The system is inert by default.** The Binance adapter is constructed
-without an arming hook granting nothing: every operation — including
-reads — raises `ExecutionNotEnabled` until a pair is armed at a live tier
-through the ceremony below. There is no environment variable, config
-flag, or code path that skips the ceremony.
+**The system places no orders by default.** The Binance adapter is
+constructed without an arming hook granting nothing: every
+*state-changing* operation raises `ExecutionNotEnabled` until a pair is
+armed at a live tier through the ceremony below. There is no environment
+variable, config flag, or code path that skips the ceremony. Read-only
+venue calls are deliberately NOT gated — see invariant 1.
 
 ## Safety invariants (what the code enforces, so you can verify it)
 
-1. **No naked entries.** An entry without a protective stop is REJECTED
+1. **Arming gates orders, not reads.** The ceremony is required to
+   *open new risk* (a non-reduce-only entry) and to cancel a resting
+   order. It is **not** required to look at the venue or to close a
+   position: `account`, `positions`, `open orders`, order lookup, mark
+   price, the clock probe, instrument facts, every reduce-only order,
+   and `close_position`/emergency flatten all work whenever credentials
+   exist. This is deliberate and it corrects an earlier defect where
+   arming gated reads as well:
+   - it deadlocked this runbook — `readiness-report` must pass **before**
+     arming, but its authenticated venue read could not run until
+     something was armed; and
+   - worse, when an arming TTL expired (silent demotion to paper) or a
+     drill disarmed, `reconcile` and the position reads refused —
+     leaving the operator blind to positions that might still be open on
+     the venue, and unable to verify a flatten.
+
+   The rule is: **the operator must always be able to see and flatten
+   the book.** Gating eyesight or the exit behind arming is the wrong
+   invariant; only the entry door is locked.
+2. **No naked entries.** An entry without a protective stop is REJECTED
    before any network call. With one, the reduce-only `STOP_MARKET` stop
    is placed on the venue in the same submission flow as the entry
    (risk #48: an LLM/app/laptop outage must never leave an unprotected
    position — the stop rests on Binance, not in our process).
-2. **Stop fails ⇒ position dies.** If the entry fills but the stop cannot
+3. **Stop fails ⇒ position dies.** If the entry fills but the stop cannot
    be placed, the adapter immediately flattens the entry (reduce-only
    market) and fires a critical alert. If even the flatten fails, the
    kill switch engages and a `MANUAL INTERVENTION` alert fires.
-3. **Hard notional cap.** Orders above `risk.max_notional_per_trade`
+4. **Hard notional cap.** Orders above `risk.max_notional_per_trade`
    from `live.yaml` are refused adapter-side (in addition to the
    LiveGateChain). Reduce-only closes are exempt — flattening is never
    blocked.
-4. **Mainnet is opt-in twice.** The mainnet base URL refuses to construct
+5. **Mainnet is opt-in twice.** The mainnet base URL refuses to construct
    without `PRO_BINANCE_MAINNET_ACK=dust-pilot-approved`, and mainnet
    keys use different env var names than testnet keys.
-5. **Everything is audited.** Orders, refusals, flattens, arming
+6. **Everything is audited.** Orders, refusals, flattens, arming
    transitions, and drills land in the hash-chained `audit.jsonl`.
 
 ## Phase A — Testnet pilot

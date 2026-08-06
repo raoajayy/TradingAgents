@@ -8,11 +8,33 @@ touching the process.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from tradingagents.contracts import RiskLimits, utc_now
+
+
+def cancel_for_safety(adapter, client_order_id: str):
+    """Cancel a resting order as part of a SAFETY action (emergency
+    flatten, dead-man trip, loss-limit breach response).
+
+    An ordinary cancel is a state change and stays behind the arming
+    ceremony, but cancel-all is half of a flatten: a resting entry left
+    working after an arming TTL lapse is exactly the exposure the safety
+    path exists to remove. Adapters that gate cancels expose a
+    ``flattening`` keyword for this (see ``BinanceFuturesAdapter``);
+    adapters without it are called plainly.
+    """
+    try:
+        supports = "flattening" in inspect.signature(
+            adapter.cancel_order).parameters
+    except (TypeError, ValueError):  # unintrospectable callable
+        supports = False
+    if supports:
+        return adapter.cancel_order(client_order_id, flattening=True)
+    return adapter.cancel_order(client_order_id)
 
 
 class KillSwitch:

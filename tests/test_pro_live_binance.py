@@ -2,11 +2,13 @@
 
 Nothing here touches a network: every test runs against ``FakeHttp``.
 The invariants under test are the pilot's safety story: HMAC signing,
-call-time credentials, inert-unless-armed, entry+stop atomicity,
+call-time credentials, arming gating orders (never reads or flattens),
+the public clock probe, entry+stop atomicity,
 stop-failure -> flatten + alert, the hard notional cap, and the
 reduce-only ladder.
 """
 
+import time
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
@@ -187,30 +189,117 @@ class TestSigning:
 
 
 class TestArmingGate:
-    def test_disarmed_adapter_refuses_everything(self, creds):
+    """Arming gates ORDERS, not eyesight: a disarmed adapter refuses to
+    open new risk but must still let the operator see and close the
+    book (the deadlock/blindness defect)."""
+
+    def test_disarmed_adapter_refuses_risk_increasing_writes(self, creds):
         adapter, http = make_adapter(armed=False)
         operations = [
             lambda: adapter.place_order(entry_spec(), BRACKET),
             lambda: adapter.cancel_order(COID),
-            lambda: adapter.get_order(COID),
-            adapter.open_orders,
-            lambda: adapter.poll_updates(None),
-            adapter.positions,
-            adapter.account,
-            lambda: adapter.close_position("BTC-USD", 100_000.0),
-            lambda: adapter.mark_price("BTC-USD"),
         ]
         for operation in operations:
             with pytest.raises(ExecutionNotEnabled):
                 operation()
-        assert http.calls == []  # inert: zero venue traffic while disarmed
+        assert http.posts() == []  # no order ever left the process
 
-    def test_armed_false_is_also_refused(self, creds):
+    def test_disarmed_reads_still_work(self, creds):
+        """Readiness must be able to do its authenticated venue read
+        BEFORE anything is armed, and a TTL demotion must never blind
+        the operator to open positions."""
+        adapter, http = make_adapter(armed=False)
+        http.routes[("GET", "/fapi/v2/account")] = FakeResponse(
+            200, {"totalMarginBalance": "1000", "availableBalance": "900"})
+        http.routes[("GET", "/fapi/v2/positionRisk")] = FakeResponse(200, [
+            {"symbol": "BTCUSDT", "positionAmt": "0.002",
+             "entryPrice": "100000"}])
+        http.routes[("GET", "/fapi/v1/openOrders")] = FakeResponse(200, [])
+        http.routes[("GET", "/fapi/v1/premiumIndex")] = FakeResponse(
+            200, {"markPrice": "100500"})
+        http.routes[("GET", "/fapi/v1/time")] = FakeResponse(
+            200, {"serverTime": int(time.time() * 1000)})
+
+        assert adapter.account().equity == 1000.0
+        assert [p.symbol for p in adapter.positions()] == ["BTC-USD"]
+        assert adapter.open_orders() == []
+        assert adapter.mark_price("BTC-USD") == 100_500.0
+        assert adapter.has_resting_stop("BTC-USD") is False
+        adapter.check_clock()  # no raise
+        assert adapter.instruments.get("BTC-USD").venue_symbol == "BTCUSDT"
+
+    def test_disarmed_flatten_is_never_blocked(self, creds):
+        """Flattening is a safety action; it is most needed exactly when
+        arming lapsed or a drill disarmed the pair."""
+        adapter, http = make_adapter(armed=False)
+        http.routes[("GET", "/fapi/v2/positionRisk")] = FakeResponse(200, [
+            {"symbol": "BTCUSDT", "positionAmt": "0.002",
+             "entryPrice": "100000"}])
+        result = adapter.close_position("BTC-USD", 100_000.0)
+        assert result.status in ("filled", "submitted")
+        post = http.posts()[-1]["params"]
+        assert post["reduceOnly"] == "true" and post["side"] == "SELL"
+
+    def test_disarmed_reduce_only_order_passes(self, creds):
+        adapter, http = make_adapter(armed=False)
+        update = adapter.place_order(entry_spec(reduce_only=True, side="SELL"))
+        assert update.state is OrderState.FILLED
+        assert http.posts()[-1]["params"]["reduceOnly"] == "true"
+
+    def test_armed_false_refuses_writes_but_not_reads(self, creds):
         adapter, http = make_adapter()
         adapter._armed_fn = lambda: False
         with pytest.raises(ExecutionNotEnabled):
-            adapter.account()
-        assert http.calls == []
+            adapter.place_order(entry_spec(), BRACKET)
+        assert http.posts() == []
+        http.routes[("GET", "/fapi/v2/account")] = FakeResponse(
+            200, {"totalMarginBalance": "7", "availableBalance": "7"})
+        assert adapter.account().equity == 7.0
+
+    def test_refusal_is_honest_about_what_is_blocked(self, creds):
+        adapter, _ = make_adapter(armed=False)
+        with pytest.raises(ExecutionNotEnabled) as excinfo:
+            adapter.place_order(entry_spec(), BRACKET)
+        message = str(excinfo.value)
+        assert "arm-live" in message
+        assert "reduce-only" in message.lower()
+
+
+class TestClockProbe:
+    def test_check_clock_passes_within_budget(self, creds):
+        adapter, http = make_adapter()
+        http.routes[("GET", "/fapi/v1/time")] = FakeResponse(
+            200, {"serverTime": int(time.time() * 1000)})
+        assert adapter.check_clock() is None
+        call = http.calls[-1]
+        assert call["path"] == "/fapi/v1/time"
+        assert "signature" not in call["params"]
+        assert "X-MBX-APIKEY" not in call["headers"]  # public probe
+
+    def test_check_clock_fails_beyond_budget(self, creds):
+        adapter, http = make_adapter()
+        http.routes[("GET", "/fapi/v1/time")] = FakeResponse(
+            200, {"serverTime": int((time.time() - 30) * 1000)})
+        with pytest.raises(AdapterError, match="clock skew"):
+            adapter.check_clock()
+
+    def test_check_clock_needs_no_credentials(self, monkeypatch):
+        monkeypatch.delenv("BINANCE_TESTNET_API_KEY", raising=False)
+        monkeypatch.delenv("BINANCE_TESTNET_API_SECRET", raising=False)
+        adapter, http = make_adapter(armed=False)
+        http.routes[("GET", "/fapi/v1/time")] = FakeResponse(
+            200, {"serverTime": int(time.time() * 1000)})
+        adapter.check_clock()
+
+    def test_preflight_clock_check_passes_for_binance(self, creds):
+        from tradingagents.pro.preflight import ReadinessReport, check_clock
+
+        adapter, http = make_adapter(armed=False)
+        http.routes[("GET", "/fapi/v1/time")] = FakeResponse(
+            200, {"serverTime": int(time.time() * 1000)})
+        report = ReadinessReport()
+        check_clock(report, adapter)
+        assert report.checks[0].status == "pass"
 
     def test_mainnet_requires_explicit_ack(self, creds, monkeypatch):
         monkeypatch.setenv("BINANCE_API_KEY", "k")
