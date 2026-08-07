@@ -187,7 +187,11 @@ class TestReadinessSecretNames:
     def test_names_follow_exchange(self):
         from tradingagents.pro.preflight import venue_secret_names
 
+        # delta testnet reads DELTA_TESTNET_* (adapter from_env prefix) —
+        # the old expectation here was the bug found live 2026-08-07
         assert venue_secret_names("delta", True) == (
+            "DELTA_TESTNET_API_KEY", "DELTA_TESTNET_API_SECRET")
+        assert venue_secret_names("delta", False) == (
             "DELTA_API_KEY", "DELTA_API_SECRET")
         assert venue_secret_names("binance", True) == (
             "BINANCE_TESTNET_API_KEY", "BINANCE_TESTNET_API_SECRET")
@@ -239,4 +243,4 @@ class TestReadinessSecretNames:
         monkeypatch.setenv("PRO_DASHBOARD_TOKEN", "x" * 32)
         report = go_live_readiness(adapter=None)
         names = {c.name for c in report.checks}
-        assert "secret_DELTA_API_KEY" in names
+        assert "secret_DELTA_TESTNET_API_KEY" in names  # default = testnet

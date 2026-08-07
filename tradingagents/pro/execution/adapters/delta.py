@@ -387,8 +387,10 @@ class DeltaAdapter:
     # --- account ------------------------------------------------------------------
 
     def positions(self) -> list[BrokerPosition]:
-        result = self._request("GET", "/v2/positions",
-                               params={"product_ids": "all"})
+        # /v2/positions began requiring product_id/underlying_asset_symbol
+        # (bad_schema, found by the P3-01 readiness probe 2026-08-07);
+        # /v2/positions/margined returns the full book with no filter
+        result = self._request("GET", "/v2/positions/margined")
         rows = result.get("result", [])
         if isinstance(rows, dict):
             rows = [rows]

@@ -106,6 +106,7 @@ def check_key_scope(report: ReadinessReport, adapter) -> None:
 
 
 DELTA_SECRET_ENV = ("DELTA_API_KEY", "DELTA_API_SECRET")
+DELTA_TESTNET_SECRET_ENV = ("DELTA_TESTNET_API_KEY", "DELTA_TESTNET_API_SECRET")
 
 
 def venue_secret_names(exchange: str | None = None,
@@ -125,7 +126,10 @@ def venue_secret_names(exchange: str | None = None,
         )
 
         return TESTNET_ENV if testnet else MAINNET_ENV
-    return DELTA_SECRET_ENV
+    # Delta's adapter prefixes testnet names too (from_env: DELTA_TESTNET_*)
+    # — checking the prod pair on a testnet run reported a correctly
+    # configured pilot NOT READY (found live 2026-08-07)
+    return DELTA_TESTNET_SECRET_ENV if testnet else DELTA_SECRET_ENV
 
 
 def check_secrets_hygiene(report: ReadinessReport,
