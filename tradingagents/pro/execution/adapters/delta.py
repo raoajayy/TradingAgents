@@ -204,6 +204,14 @@ class DeltaAdapter:
                 continue
             payload = response.json()
             if response.status_code >= 400:
+                body_text = str(response.text or "").lower()
+                if "signature" in body_text and (
+                        "expired" in body_text or "invalid" in body_text):
+                    # THE authoritative clock/auth failure — the venue
+                    # itself rejected our signature
+                    raise AdapterError(
+                        "venue rejected the request signature (expired/"
+                        "invalid) — check NTP sync and API credentials")
                 # semantic 4xx: terminal, caller maps to REJECTED
                 raise _SemanticError(redact(
                     str(payload.get("error", payload)),
@@ -223,14 +231,32 @@ class DeltaAdapter:
         date_header = response.headers.get("Date", "")
         if not date_header:
             return
-        skew = clock_skew_seconds(date_header)
+        raw = clock_skew_seconds(date_header)
+        # the Date header is stamped when the venue BUILDS the response,
+        # so by the time we compare it locally the reading includes the
+        # response leg of the round trip; subtract half the measured RTT
+        # (NTP-style midpoint). The header also truncates to whole
+        # seconds, worth up to 1s of apparent skew — allow 0.5s for it.
+        # Without this, a slow CDN read (+3.7s "skew" on a host NTP-synced
+        # to 24ms — observed live 2026-08-07) permanently locks out a
+        # perfectly synced machine.
+        latency_half = (response.elapsed.total_seconds() / 2
+                        if getattr(response, "elapsed", None) else 0.0)
+        skew = raw - latency_half
         self._clock_checked = True
-        if abs(skew) > MAX_CLOCK_SKEW_SECONDS:
-            raise AdapterError(
-                f"local/venue clock skew {skew:+.1f}s exceeds "
-                f"{MAX_CLOCK_SKEW_SECONDS}s budget — signatures expire in 5s; "
-                "fix NTP before trading"
-            )
+        if abs(skew) > MAX_CLOCK_SKEW_SECONDS + 0.5:
+            # WARN, don't refuse: this header is stamped by the CDN edge,
+            # not the API server that validates signatures — observed live
+            # (2026-08-07): edge Date ~3s off while the host was NTP-true
+            # to 24ms AND signed requests succeeded. The authoritative
+            # clock check is the venue's own signature validation; a real
+            # skew problem surfaces as an expired-signature rejection,
+            # mapped to an actionable error in _request.
+            logger.warning(
+                "venue Date-header skew %+.1fs (raw %+.1fs minus %.1fs "
+                "latency) exceeds the %.1fs budget — likely CDN edge "
+                "clock, trusting signature validation instead",
+                skew, raw, latency_half, MAX_CLOCK_SKEW_SECONDS)
 
     def check_clock(self) -> None:
         """Boot-time skew check (forces one cheap authenticated-less call)."""
@@ -372,6 +398,38 @@ class DeltaAdapter:
         result = self._request("GET", "/v2/orders",
                                params={"states": "open,pending"})
         return [self._to_update(o) for o in result.get("result", [])]
+
+    def mark_price(self, symbol: str) -> float:
+        """Venue mark price for a canonical symbol (drill/TCA reference).
+
+        GET /v2/tickers/{sym} is public; mark_price is Delta's own funding
+        reference — fall back to spot/close if a testnet ticker omits it.
+        """
+        venue_symbol = SYMBOL_MAP.get(symbol, symbol)
+        result = self._request("GET", f"/v2/tickers/{venue_symbol}")
+        row = result.get("result", {})
+        for field in ("mark_price", "spot_price", "close"):
+            value = row.get(field)
+            if value is not None:
+                return float(value)
+        raise AdapterError(f"{self.name}: no usable price in ticker for "
+                           f"{venue_symbol}")
+
+    def has_resting_stop(self, symbol: str) -> bool:
+        """True when a reduce-only stop order rests on the venue for
+        ``symbol`` — the P3-01 drill's core safety verification. Delta
+        stops are orders with a stop_price/stop_order_type, visible in
+        the open/pending order states."""
+        venue_symbol = SYMBOL_MAP.get(symbol, symbol)
+        result = self._request("GET", "/v2/orders",
+                               params={"states": "open,pending",
+                                       "product_symbols": venue_symbol})
+        for order in result.get("result", []):
+            is_stop = bool(order.get("stop_price")
+                           or order.get("stop_order_type"))
+            if is_stop and bool(order.get("reduce_only")):
+                return True
+        return False
 
     def poll_updates(self, since: datetime) -> list[OrderUpdate]:
         # REST correctness backbone: open orders + recent history

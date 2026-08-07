@@ -188,10 +188,6 @@ def _build_and_run(symbol: str, operator: str, data_dir: str) -> dict:
     from tradingagents.contracts import LiveRiskLimits
     from tradingagents.pro.arming import ArmingStore
     from tradingagents.pro.execution import AuditLog, KillSwitch, OrderManager
-    from tradingagents.pro.execution.adapters.binance_futures import (
-        BinanceFuturesAdapter,
-    )
-
     data_path = Path(data_dir)
     audit = AuditLog(data_path / "audit.jsonl")
     arming = ArmingStore(data_path / "arming.json", audit=audit)
@@ -204,12 +200,26 @@ def _build_and_run(symbol: str, operator: str, data_dir: str) -> dict:
 
         max_notional = load_live_config(config_path).risk.max_notional_per_trade
 
-    adapter = BinanceFuturesAdapter.from_env(
-        testnet=True,  # the drill NEVER targets mainnet
-        armed_fn=lambda: arming.is_live(symbol),
-        max_order_notional=max_notional,
-        audit=audit, kill_switch=kill_switch,
-    )
+    # venue follows PRO_LIVE_EXCHANGE like the CLI ceremony (found live:
+    # the drill was Binance-hardcoded while the pilot ran on Delta).
+    # Either way the drill NEVER targets mainnet — testnet=True is fixed,
+    # and run_kill_switch_drill refuses non-testnet adapter names anyway.
+    exchange = os.environ.get("PRO_LIVE_EXCHANGE", "delta").strip().lower()
+    if exchange == "binance":
+        from tradingagents.pro.execution.adapters.binance_futures import (
+            BinanceFuturesAdapter,
+        )
+
+        adapter = BinanceFuturesAdapter.from_env(
+            testnet=True,
+            armed_fn=lambda: arming.is_live(symbol),
+            max_order_notional=max_notional,
+            audit=audit, kill_switch=kill_switch,
+        )
+    else:
+        from tradingagents.pro.execution.adapters.delta import DeltaAdapter
+
+        adapter = DeltaAdapter.from_env(testnet=True)
     oms = OrderManager(adapter,
                        journal_path=data_path / "oms" / "drill_journal.jsonl",
                        audit=audit)

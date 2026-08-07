@@ -25,13 +25,19 @@ PY="${PY:-$HOME/.venvs/tradingagents-pro/bin/python}"
 SYMBOL="${SYMBOL:-BTC-USD}"
 DATA_DIR="${PRO_DATA_DIR:?set PRO_DATA_DIR to the deployment data volume (e.g. /data)}"
 
-: "${BINANCE_TESTNET_API_KEY:?export BINANCE_TESTNET_API_KEY (testnet.binancefuture.com API key)}"
-: "${BINANCE_TESTNET_API_SECRET:?export BINANCE_TESTNET_API_SECRET}"
+EXCHANGE="${PRO_LIVE_EXCHANGE:-delta}"
+if [ "${EXCHANGE}" = "binance" ]; then
+  : "${BINANCE_TESTNET_API_KEY:?export BINANCE_TESTNET_API_KEY (testnet.binancefuture.com API key)}"
+  : "${BINANCE_TESTNET_API_SECRET:?export BINANCE_TESTNET_API_SECRET}"
+else
+  : "${DELTA_TESTNET_API_KEY:?export DELTA_TESTNET_API_KEY (demo.delta.exchange API key, or set in .env)}"
+  : "${DELTA_TESTNET_API_SECRET:?export DELTA_TESTNET_API_SECRET}"
+fi
 
 echo "=============================================================="
-echo " P3-01 KILL-SWITCH DRILL — Binance FUTURES TESTNET"
+echo " P3-01 KILL-SWITCH DRILL — ${EXCHANGE} TESTNET"
 echo "=============================================================="
-echo " venue    : testnet.binancefuture.com (mainnet is refused in code)"
+echo " venue    : ${EXCHANGE} testnet (mainnet is refused in code)"
 echo " symbol   : ${SYMBOL}"
 echo " data dir : ${DATA_DIR}"
 echo
