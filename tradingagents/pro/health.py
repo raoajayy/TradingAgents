@@ -39,6 +39,16 @@ class HealthReport:
         return all(c.ok for c in self.checks)
 
     @property
+    def execution_ok(self) -> bool:
+        """Health of the EXECUTION path only: venue, kill switch, clock,
+        run recency — everything except optional data feeds. The dead-man
+        heartbeat must use this, not ``ok``: a single degraded sentiment
+        feed (e.g. the multi-day coinmetrics outage) otherwise starves the
+        heartbeat and trips the switch 600s after every armed start. Same
+        rule the deploy pipeline's smoke gate applies (health_feeds_only)."""
+        return all(c.ok for c in self.checks if c.name != "feeds")
+
+    @property
     def degraded(self) -> list[str]:
         return [c.name for c in self.checks if not c.ok]
 

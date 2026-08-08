@@ -235,6 +235,29 @@ class TestLiveHealth:
                              max_run_age_seconds=5400)
         assert not report.ok and "run_recency" in report.degraded
 
+    def test_feeds_only_degradation_keeps_execution_ok(self):
+        # the dead-man heartbeat consumes execution_ok: an optional data
+        # feed outage (coinmetrics, 2026-08-08) must NOT starve it — it
+        # tripped the switch 600s after every armed start while venue/
+        # clock/kill-switch were all green
+        from tradingagents.pro.health import HealthReport
+
+        report = HealthReport()
+        report.add("feeds", False, "degraded: ['coinmetrics_community']")
+        report.add("venue", True, "venue reachable")
+        report.add("kill_switch", True, "clear")
+        report.add("run_recency", True, "last run 60s ago")
+        assert not report.ok            # full verdict stays honest
+        assert report.execution_ok      # but execution is healthy
+
+    def test_execution_degradation_still_fails_execution_ok(self):
+        from tradingagents.pro.health import HealthReport
+
+        report = HealthReport()
+        report.add("feeds", True, "all feeds fresh")
+        report.add("venue", False, "venue unreachable")
+        assert not report.execution_ok
+
     def test_venue_unreachable_is_degraded(self, tmp_path):
         from tradingagents.pro.health import live_health
 

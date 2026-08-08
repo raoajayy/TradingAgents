@@ -811,8 +811,15 @@ def _start_live_safety_daemons(service, state) -> None:
     from tradingagents.pro.health import live_health
 
     timeout = float(os.environ.get("PRO_DEADMAN_TIMEOUT_SECONDS", "600"))
+    # heartbeat on EXECUTION health only — optional data-feed degradation
+    # (a sentiment feed outage) must not trip the dead-man and engage the
+    # kill switch while the venue path is perfectly healthy (2026-08-08:
+    # the coinmetrics outage did exactly that, 600s after arming)
+    from types import SimpleNamespace
+
     deadman = DeadManSwitch(
-        health_fn=lambda: live_health(state, state.arming),
+        health_fn=lambda: SimpleNamespace(
+            ok=live_health(state, state.arming).execution_ok),
         on_trip=cancel_resting_orders(service.router),
         timeout_seconds=timeout, alerts=service.alerts,
     )
