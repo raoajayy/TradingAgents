@@ -3,7 +3,8 @@
  * decision history rendered as marks on the bars where the runs decided.
  * TV's own toolbar owns timeframes, indicators, and drawings now — the
  * card chrome keeps only what TV can't know: our symbol registry, the
- * multi-chart grid, the open-position badge, and the macro event strip. */
+ * open-position badge, and the macro event strip. Multi-chart layouts are
+ * TV-native (header layout toggle). */
 import { Maximize2 } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
@@ -11,16 +12,13 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Segment, Segmented } from "@/components/ui/segmented";
 import { TVChart } from "@/components/charts/TVChart";
-import { GridChartCell } from "./GridChartCell";
 import { useCalendar, useStatus, useSymbols } from "@/lib/api/queries";
 import { fmtCountdown, fmtPnl, fmtPrice } from "@/lib/format";
 import { TF_TO_RESOLUTION } from "@/lib/tv/datafeed";
 import { levelFromSearchParams, type RefLevel } from "@/lib/levelFromRef";
 import { countdownExpired, useCountdown } from "@/lib/useCountdown";
 import { useUiStore } from "@/stores/ui";
-import { cn } from "@/lib/utils";
 
 // tradeable pairs come from /api/symbols (server-driven, same set as the
 // run dialog); the registry's other symbols (DXY, US10Y, …) are
@@ -46,8 +44,7 @@ export default function WorkspacePage() {
     () => levelFromSearchParams(searchParams),
     [searchParams],
   );
-  const { timeframe, setSymbol, gridCells, setGridCells, updateGridCell } =
-    useUiStore();
+  const { timeframe, setSymbol } = useUiStore();
   const chartCardRef = useRef<HTMLDivElement | null>(null);
 
   const symbols = useSymbols();
@@ -60,8 +57,6 @@ export default function WorkspacePage() {
   // TV owns interval switching once mounted; ui-store timeframe seeds it
   const interval = TF_TO_RESOLUTION[timeframe] ?? "60";
 
-  // still the default seed symbol for the multi-chart grid cells
-  const compareSymbol = symbol === "BTC-USD" ? "XAUUSD" : "BTC-USD";
 
   // open position for this symbol: the server's unrealized P&L in a badge
   // (no client math — Constraint 2)
@@ -140,27 +135,6 @@ export default function WorkspacePage() {
               </button>
             </span>
           )}
-          {/* multi-chart grid (P2.6): extra cells beside the main chart */}
-          <Segmented aria-label="Chart grid" data-testid="grid-switch">
-            {[0, 1, 3].map((n) => (
-              <Segment
-                key={n}
-                active={gridCells.length === n}
-                onClick={() =>
-                  setGridCells(
-                    Array.from({ length: n }, (_, i) =>
-                      gridCells[i] ?? {
-                        symbol: i % 2 === 0 ? compareSymbol : symbol,
-                        timeframe: i < 1 ? timeframe : "1d",
-                      },
-                    ),
-                  )
-                }
-              >
-                {n === 0 ? "1" : n === 1 ? "2×1" : "2×2"}
-              </Segment>
-            ))}
-          </Segmented>
           <Button
             size="icon"
             variant="outline"
@@ -174,56 +148,33 @@ export default function WorkspacePage() {
       {/* overflow-hidden: last line of defence. Nothing inside may paint
           outside the card's rounded border. */}
       <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* @container so the column count tracks the CARD's width — this
-            card is fullscreen-able and sits beside a collapsible sidebar,
-            so a viewport media query measures the wrong box. */}
-        <div className="@container min-h-0 min-w-0 flex-1 overflow-hidden">
-          <div
-            data-testid="chart-grid"
-            data-grid-cells={gridCells.length}
-            className={cn(
-              "grid h-full min-h-0 min-w-0 grid-cols-1 gap-2",
-              gridCells.length === 1 && "@3xl:grid-cols-2",
-              gridCells.length === 3 &&
-                "grid-rows-4 @3xl:grid-cols-2 @3xl:grid-rows-2",
-            )}
-          >
-            <div
-              className="relative min-h-0 min-w-0"
-              data-testid="main-chart-tile"
-            >
-              <div className="absolute inset-0 overflow-hidden rounded-lg">
-                <TVChart
-                  symbol={symbol}
-                  interval={interval}
-                  persistKey="workspace-main"
-                />
-              </div>
-              {openPosition?.unrealized_pnl != null && (
-                <div
-                  data-testid="position-badge"
-                  className={
-                    "absolute right-2 top-2 z-10 rounded-lg border border-border bg-surface/90 px-2 py-1 font-mono text-xs tabular " +
-                    (openPosition.unrealized_pnl >= 0
-                      ? "text-bull"
-                      : "text-bear")
-                  }
-                >
-                  {openPosition.quantity > 0 ? "long" : "short"}{" "}
-                  {Math.abs(openPosition.quantity)} ·{" "}
-                  {fmtPnl(openPosition.unrealized_pnl)}
-                  <span className="ml-1 text-fg-subtle">paper</span>
-                </div>
-              )}
-            </div>
-            {gridCells.map((cell, i) => (
-              <GridChartCell
-                key={i}
-                cell={cell}
-                onChange={(next) => updateGridCell(i, next)}
-              />
-            ))}
+        {/* multi-chart layouts are TV-native now (header layout toggle,
+            Trading Platform edition) — no external grid */}
+        <div
+          className="relative min-h-0 min-w-0 flex-1"
+          data-testid="main-chart-tile"
+        >
+          <div className="absolute inset-0 overflow-hidden rounded-lg">
+            <TVChart
+              symbol={symbol}
+              interval={interval}
+              persistKey="workspace-main"
+            />
           </div>
+          {openPosition?.unrealized_pnl != null && (
+            <div
+              data-testid="position-badge"
+              className={
+                "absolute right-2 top-2 z-10 rounded-lg border border-border bg-surface/90 px-2 py-1 font-mono text-xs tabular " +
+                (openPosition.unrealized_pnl >= 0 ? "text-bull" : "text-bear")
+              }
+            >
+              {openPosition.quantity > 0 ? "long" : "short"}{" "}
+              {Math.abs(openPosition.quantity)} ·{" "}
+              {fmtPnl(openPosition.unrealized_pnl)}
+              <span className="ml-1 text-fg-subtle">paper</span>
+            </div>
+          )}
         </div>
         {nextRelease && (
           <p

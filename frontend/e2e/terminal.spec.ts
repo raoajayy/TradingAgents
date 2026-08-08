@@ -1,14 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-type BoundingBox = { x: number; y: number; width: number; height: number };
 
 const TOKEN = "e2e-token";
 
-/** The Trade page's primary chart (TradingView widget wrapper). Scoped to
- * its tile because the main chart is grid participant #0 — an unscoped
- * lookup resolves to 2-4 elements whenever `gridCells` (persisted in
- * localStorage) leaks in from another test, which is a strict-mode
- * violation rather than a clean failure. */
+/** The Trade page's primary chart (TradingView widget wrapper). */
 const mainChart = (page: Page): Locator =>
   page.getByTestId("main-chart-tile").getByTestId("tv-chart");
 
@@ -354,78 +349,17 @@ test.describe("v2 features", () => {
   // replay + the custom indicator picker were retired with the TradingView
   // migration: TV's own toolbar owns indicators/drawings/replay now
 
-  test("multi-chart grid tiles instead of overlapping", async ({
+  // the external multi-chart grid was replaced by TV's NATIVE layout
+  // switching (header layout toggle, Trading Platform edition). The layout
+  // button lives inside the TV iframe; the wiring assertion is that the
+  // single TV chart mounts and the old grid chrome is gone.
+  test("TV chart owns multi-chart layouts (no external grid chrome)", async ({
     page,
-    isMobile,
   }) => {
-    test.skip(isMobile, "the chart grid is a desktop layout");
     await page.goto("/trade/XAUUSD");
-    const grid = page.getByTestId("chart-grid");
-    const gridSwitch = page.getByTestId("grid-switch");
-    const tiles = page
-      .getByTestId("main-chart-tile")
-      .or(page.getByTestId("grid-chart-cell"));
-    await expect(grid.getByTestId("tv-chart").first().locator("iframe"))
-      .toBeVisible({ timeout: 20_000 });
-
-    const boxes = async (locator: Locator) => {
-      const all = await locator.all();
-      const out = [];
-      for (const item of all) out.push((await item.boundingBox())!);
-      return out;
-    };
-    /** intersection area; >4px² is a real overlap, not sub-pixel rounding */
-    const overlap = (a: BoundingBox, b: BoundingBox) =>
-      Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
-      Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
-    const distinct = (values: number[]) =>
-      new Set(values.map((v) => Math.round(v))).size;
-
-    // 2×2 = the main chart + 3 cells, tiled 2 across and 2 down. The main
-    // chart is grid participant #0, not a full-width chart sitting above.
-    await gridSwitch.getByRole("button", { name: "2×2" }).click();
-    await expect(page.getByTestId("grid-chart-cell")).toHaveCount(3);
-    await expect(grid.getByTestId("tv-chart")).toHaveCount(4);
-
-    const charts = await boxes(grid.getByTestId("tv-chart"));
-    // THE regression: the main chart's inline min-height (>=478px) could not
-    // shrink and nothing in the chain clipped, so it painted straight over
-    // the 288px cells below — hundreds of px² of intersection.
-    for (let i = 0; i < charts.length; i++) {
-      for (let j = i + 1; j < charts.length; j++) {
-        expect(overlap(charts[i]!, charts[j]!)).toBeLessThan(4);
-      }
-    }
-
-    // nothing paints outside the card
-    const card = (await page.getByTestId("chart-card").boundingBox())!;
-    for (const b of charts) {
-      expect(b.y + b.height).toBeLessThanOrEqual(card.y + card.height + 1);
-      expect(b.x + b.width).toBeLessThanOrEqual(card.x + card.width + 1);
-    }
-
-    // ...and they are genuinely tiled, not stacked-and-clipped
-    const grid2x2 = await boxes(tiles);
-    expect(grid2x2).toHaveLength(4);
-    expect(distinct(grid2x2.map((b) => b.x))).toBe(2); // 2 columns
-    expect(distinct(grid2x2.map((b) => b.y))).toBe(2); // 2 rows
-    const heights = grid2x2.map((b) => b.height);
-    expect(Math.min(...heights)).toBeGreaterThan(120);
-    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(8);
-
-    // 2×1 = main + 1 cell, side by side on one row
-    await gridSwitch.getByRole("button", { name: "2×1" }).click();
-    await expect(page.getByTestId("grid-chart-cell")).toHaveCount(1);
-    const grid2x1 = await boxes(tiles);
-    expect(grid2x1).toHaveLength(2);
-    expect(overlap(grid2x1[0]!, grid2x1[1]!)).toBeLessThan(4);
-    expect(Math.abs(grid2x1[0]!.y - grid2x1[1]!.y)).toBeLessThan(2); // one row
-    expect(distinct(grid2x1.map((b) => b.x))).toBe(2); // two columns
-
-    // back to 1 = the main chart alone, still inside the grid
-    await gridSwitch.getByRole("button", { name: "1", exact: true }).click();
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("grid-switch")).toHaveCount(0);
     await expect(page.getByTestId("grid-chart-cell")).toHaveCount(0);
-    await expect(grid.getByTestId("tv-chart")).toHaveCount(1);
   });
 
   test("watchlist add and remove persists", async ({ page, isMobile }) => {

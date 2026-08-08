@@ -90,6 +90,9 @@ export function TVChart({
             "dom_widget",
             "open_account_manager",
           ],
+          // TV's native multi-chart layouts (Trading Platform edition)
+          // replace the old external chart grid entirely
+          enabled_features: ["header_layouttoggle"],
         });
         widgetRef.current = widget;
         widget.onChartReady(() => {
