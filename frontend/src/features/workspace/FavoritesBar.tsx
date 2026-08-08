@@ -22,21 +22,43 @@ const ICONS: Record<string, { glyph: string; bg: string }> = {
 // pricescale: FX majors 5 decimals, JPY quotes 3, everything else 2
 const DECIMALS: Record<string, number> = { EURUSD: 5, USDJPY: 3 };
 
-function useLiveMid(pythSymbol: string | null | undefined): number | null {
+// a price older than this renders dimmed — a frozen stream must never
+// keep LOOKING live (the same honesty rule the status chips follow)
+const STALE_AFTER_MS = 90_000;
+
+function useLiveMid(
+  pythSymbol: string | null | undefined,
+): { mid: number | null; stale: boolean } {
   const [mid, setMid] = useState<number | null>(null);
+  const [stale, setStale] = useState(false);
   useEffect(() => {
     if (!pythSymbol) return;
     setMid(null);
-    return subscribeStreamPair(streamPairOf(pythSymbol), (tick) =>
-      setMid(tick.mid),
+    setStale(false);
+    let lastTickAt = Date.now();
+    const unsubscribe = subscribeStreamPair(
+      streamPairOf(pythSymbol),
+      (tick) => {
+        lastTickAt = Date.now();
+        setMid(tick.mid);
+        setStale(false);
+      },
     );
+    const staleCheck = window.setInterval(
+      () => setStale(Date.now() - lastTickAt > STALE_AFTER_MS),
+      15_000,
+    );
+    return () => {
+      unsubscribe();
+      window.clearInterval(staleCheck);
+    };
   }, [pythSymbol]);
-  return mid;
+  return { mid, stale };
 }
 
 function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
   const navigate = useNavigate();
-  const mid = useLiveMid(spec.pyth_symbol);
+  const { mid, stale } = useLiveMid(spec.pyth_symbol);
   const icon = ICONS[spec.symbol] ?? { glyph: spec.symbol[0]!, bg: "#64748b" };
   const pair = spec.pyth_symbol ? streamPairOf(spec.pyth_symbol) : spec.symbol;
   const price =
@@ -68,7 +90,13 @@ function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
       </span>
       <span className="flex flex-col justify-center gap-0.5">
         <span className="text-xs font-bold leading-none text-fg">{pair}</span>
-        <span className="font-mono text-[11px] leading-none tabular text-fg-muted">
+        <span
+          className={cn(
+            "font-mono text-[11px] leading-none tabular text-fg-muted",
+            stale && "opacity-50",
+          )}
+          title={stale ? "stale — price stream reconnecting" : undefined}
+        >
           {price}
         </span>
       </span>

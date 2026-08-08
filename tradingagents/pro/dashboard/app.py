@@ -765,6 +765,14 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         return {"s": "ok" if t else "no_data",
                 "t": t, "o": o, "h": h, "l": low, "c": c, "v": v}
 
+    # TV multi-chart layouts fan identical history windows out per pane and
+    # per pan/zoom; historical windows are immutable, so a short TTL cache
+    # plus one keep-alive session cuts upstream round-trips substantially
+    _tv_session: dict = {"session": None}
+    _tv_cache: dict[tuple, tuple[float, dict]] = {}
+    _TV_CACHE_TTL = 15.0
+    _TV_CACHE_MAX = 128
+
     @app.get("/api/tv/history")
     def tv_history(symbol: str, resolution: str,
                    from_: int = Query(alias="from"),
@@ -773,6 +781,7 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         history API (no CORS upstream, so the browser can't call it direct).
         Sync on purpose like /api/bars: the upstream call blocks."""
         import os
+        import time as _time
 
         import requests as _requests
 
@@ -788,8 +797,14 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         if base == "synthetic":
             # hermetic mode for e2e/CI: deterministic bars, no egress
             return _synthetic_udf(pyth_symbol, res, from_, to)
+        cache_key = (base, pyth_symbol, res, from_, to)
+        cached = _tv_cache.get(cache_key)
+        if cached and _time.monotonic() - cached[0] < _TV_CACHE_TTL:
+            return cached[1]
+        if _tv_session["session"] is None:
+            _tv_session["session"] = _requests.Session()
         try:
-            upstream = _requests.get(
+            upstream = _tv_session["session"].get(
                 f"{base}/api/pyth/history",
                 params={"symbol": pyth_symbol, "resolution": res,
                         "from": from_, "to": to},
@@ -809,6 +824,9 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         if upstream.status_code != 200 or not isinstance(body, dict):
             return {"s": "error",
                     "errmsg": f"upstream HTTP {upstream.status_code}"}
+        if len(_tv_cache) >= _TV_CACHE_MAX:
+            _tv_cache.pop(next(iter(_tv_cache)))  # FIFO eviction is enough
+        _tv_cache[cache_key] = (_time.monotonic(), body)
         return body
 
     @app.get("/api/chart/annotations")
@@ -2311,6 +2329,13 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
                          else "public, max-age=86400")
                 return Response(candidate.read_bytes(), media_type=media_type,
                                 headers={"Cache-Control": cache})
+        # asset-like paths (file extension on the last segment) that didn't
+        # match a real file must 404, never the SPA shell — HTML-as-JS
+        # poisoned missing chart chunks twice during the TradingView
+        # rollout ("Unexpected token '<'")
+        last_segment = path.rsplit("/", 1)[-1]
+        if "." in last_segment.strip("."):
+            raise HTTPException(status_code=404, detail=f"no asset /{path}")
         if has_spa:
             return HTMLResponse(spa_index.read_text(encoding="utf-8"),
                                 headers={"Cache-Control": "no-cache"})

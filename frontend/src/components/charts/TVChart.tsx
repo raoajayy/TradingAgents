@@ -104,6 +104,10 @@ export function TVChart({
         widget.onChartReady(() => {
           if (disposed) return;
           readyRef.current = true;
+          // known limitation: this tracks the PRIMARY pane only — in a
+          // native multi-chart layout, symbol changes on other panes (or
+          // after switching the active pane) don't re-route; revisit with
+          // an activeChartChanged re-subscription if it bites in practice
           widget.activeChart().onSymbolChanged().subscribe(null, () => {
             // TV reports the resolved ticker (sometimes EXCHANGE:NAME)
             const raw = widget.activeChart().symbol();
@@ -162,10 +166,15 @@ export function TVChart({
   useEffect(() => {
     const widget = widgetRef.current;
     if (!readyRef.current || !widget) return;
-    void widget.changeTheme(tvTheme(theme)).then(() => {
-      // changeTheme resets colors to the stock palette; re-assert tokens
-      widget.applyOverrides(tokenOverrides());
-    });
+    widget
+      .changeTheme(tvTheme(theme))
+      .then(() => {
+        // changeTheme resets colors to the stock palette; re-assert tokens
+        if (readyRef.current) widget.applyOverrides(tokenOverrides());
+      })
+      .catch(() => {
+        /* widget removed mid-flight — nothing to re-theme */
+      });
   }, [theme]);
 
   if (failed) {

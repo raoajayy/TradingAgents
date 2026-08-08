@@ -43,6 +43,23 @@ export function resolutionSeconds(resolution: string): number {
   return Number(resolution) * 60;
 }
 
+// epoch day zero (1970-01-01) is a THURSDAY; upstream weekly bars start
+// Monday 00:00 UTC (verified live), so weekly buckets need this anchor —
+// raw floor(ts/week) would roll live weekly bars every Thursday
+const WEEK_ANCHOR_MS = 4 * 86_400_000; // first Monday: 1970-01-05
+
+/** UTC-aligned bar bucket for a tick timestamp (ms), matching the
+ * upstream bar grid: minutes/days from epoch, weeks from Monday. */
+export function tickBucket(tsMs: number, resolution: string): number {
+  const barMs = resolutionSeconds(resolution) * 1000;
+  if (resolution === "1W" || resolution === "W") {
+    return (
+      Math.floor((tsMs - WEEK_ANCHOR_MS) / barMs) * barMs + WEEK_ANCHOR_MS
+    );
+  }
+  return Math.floor(tsMs / barMs) * barMs;
+}
+
 /** "Crypto.BTC/USD" → "BTC/USD", the pair key the Hermes stream uses */
 export function streamPairOf(pythSymbol: string): string {
   const dot = pythSymbol.indexOf(".");
@@ -125,10 +142,17 @@ interface StreamTick {
 
 type TickHandler = (tick: StreamTick) => void;
 
+// a healthy firehose ticks every second; 30s of silence means the socket
+// half-died (idle proxy, sleeping dyno) and must be recycled — without
+// this, charts freeze while still LOOKING live (the honesty rule)
+const SILENCE_LIMIT_MS = 30_000;
+
 class PythStream {
   private socket: WebSocket | null = null;
   private handlers = new Map<string, Set<TickHandler>>(); // pair → handlers
   private retryMs = 1_000;
+  private lastMessageAt = 0;
+  private watchdog: number | null = null;
 
   subscribe(pair: string, handler: TickHandler): () => void {
     let set = this.handlers.get(pair);
@@ -150,10 +174,21 @@ class PythStream {
       this.scheduleRetry();
       return;
     }
+    this.lastMessageAt = Date.now();
+    this.watchdog ??= window.setInterval(() => {
+      if (
+        this.socket?.readyState === WebSocket.OPEN &&
+        Date.now() - this.lastMessageAt > SILENCE_LIMIT_MS
+      ) {
+        this.socket.close(); // onclose path reconnects with backoff
+      }
+    }, 10_000);
     this.socket.onopen = () => {
       this.retryMs = 1_000;
+      this.lastMessageAt = Date.now();
     };
     this.socket.onmessage = (event) => {
+      this.lastMessageAt = Date.now();
       let parsed: unknown;
       try {
         parsed = JSON.parse(String(event.data));
@@ -195,6 +230,10 @@ class PythStream {
   }
 
   private close() {
+    if (this.watchdog != null) {
+      window.clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
     this.socket?.close();
     this.socket = null;
   }
@@ -227,17 +266,51 @@ function fetchSymbols(): Promise<SymbolSpec[]> {
   return symbolsCache;
 }
 
+// TV calls getMarks on EVERY visible-range change (× panes in multi-chart
+// layouts); annotations move on run cadence, not scroll cadence — a short
+// single-flight cache stops the pan/zoom fetch spam
+const MARKS_TTL_MS = 60_000;
+const marksCache = new Map<
+  string,
+  { at: number; promise: Promise<AnnotationRuns> }
+>();
+function fetchRuns(symbol: string): Promise<AnnotationRuns> {
+  const cached = marksCache.get(symbol);
+  if (cached && Date.now() - cached.at < MARKS_TTL_MS) return cached.promise;
+  const promise = apiFetch<unknown>(
+    `/api/chart/annotations?symbol=${encodeURIComponent(symbol)}`,
+  )
+    .then((raw) => ChartAnnotationsSchema.parse(raw).runs)
+    .catch((error) => {
+      marksCache.delete(symbol);
+      throw error;
+    });
+  marksCache.set(symbol, { at: Date.now(), promise });
+  return promise;
+}
+
+/** asset class from our dashboard naming (BTC-USD crypto, XAUUSD metal,
+ * the rest FX) — shared by resolveSymbol and the search dialog rows */
+export function assetTypeOf(symbol: string): "crypto" | "forex" | "commodity" {
+  if (symbol.endsWith("-USD")) return "crypto";
+  return symbol === "XAUUSD" ? "commodity" : "forex";
+}
+
 function toSymbolInfo(spec: SymbolSpec): TVSymbolInfo {
-  const isCrypto = spec.symbol.endsWith("-USD");
+  const type = assetTypeOf(spec.symbol);
+  const isCrypto = type === "crypto";
   const isJpyQuote = spec.symbol.endsWith("JPY");
-  const isFx = !isCrypto && spec.symbol !== "XAUUSD";
+  const isFx = type === "forex";
   return {
     name: spec.symbol,
     ticker: spec.symbol,
     description: spec.symbol,
-    type: isCrypto ? "crypto" : isFx ? "forex" : "commodity",
-    session: isCrypto ? "24x7" : "1700-1700:23456", // FX week, NY roll
-    timezone: isCrypto ? "Etc/UTC" : "America/New_York",
+    type,
+    // the Pyth oracle feed's bars are UTC-day aligned for EVERY asset
+    // (verified upstream — even FX rolls at 00:00 UTC, not NY 17:00), so
+    // the session must say so; FX weekends appear honestly as gaps
+    session: "24x7",
+    timezone: "Etc/UTC",
     exchange: "Pyth",
     listed_exchange: "Pyth",
     format: "price",
@@ -283,7 +356,7 @@ export function createDatafeed(): TVDatafeed {
               full_name: s.symbol,
               description: s.pyth_symbol!,
               exchange: "Pyth",
-              type: "crypto",
+              type: assetTypeOf(s.symbol),
             })),
         );
       });
@@ -327,9 +400,8 @@ export function createDatafeed(): TVDatafeed {
       const pyth = pythBySymbol.get(symbolInfo.name);
       if (!pyth) return;
       const barKey = `${symbolInfo.name}#${resolution}`;
-      const barMs = resolutionSeconds(resolution) * 1000;
       const unsubscribe = stream.subscribe(streamPairOf(pyth), (tick) => {
-        const bucket = Math.floor(tick.timestamp / barMs) * barMs;
+        const bucket = tickBucket(tick.timestamp, resolution);
         const last = lastBars.get(barKey);
         let next: TVBar;
         if (last && bucket <= last.time) {
@@ -361,13 +433,8 @@ export function createDatafeed(): TVDatafeed {
     },
 
     getMarks(symbolInfo, from, to, onDataCallback) {
-      apiFetch<unknown>(
-        `/api/chart/annotations?symbol=${encodeURIComponent(symbolInfo.name)}`,
-      )
-        .then((raw) => {
-          const { runs } = ChartAnnotationsSchema.parse(raw);
-          onDataCallback(marksFromRuns(runs, from, to));
-        })
+      fetchRuns(symbolInfo.name)
+        .then((runs) => onDataCallback(marksFromRuns(runs, from, to)))
         .catch(() => onDataCallback([]));
     },
   };

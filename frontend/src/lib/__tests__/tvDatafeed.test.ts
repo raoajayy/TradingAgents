@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   TF_TO_RESOLUTION,
+  assetTypeOf,
   marksFromRuns,
   resolutionSeconds,
   streamPairOf,
+  tickBucket,
   udfToBars,
 } from "@/lib/tv/datafeed";
 
@@ -36,6 +38,36 @@ describe("resolutionSeconds", () => {
     expect(resolutionSeconds("240")).toBe(14_400);
     expect(resolutionSeconds("1D")).toBe(86_400);
     expect(resolutionSeconds("1W")).toBe(604_800);
+  });
+});
+
+describe("tickBucket", () => {
+  it("weekly buckets anchor to MONDAY 00:00 UTC (epoch is a Thursday)", () => {
+    // Fri 2026-08-07 12:00 UTC → its week began Mon 2026-08-03 00:00 UTC
+    const friday = Date.UTC(2026, 7, 7, 12, 0, 0);
+    expect(tickBucket(friday, "1W")).toBe(Date.UTC(2026, 7, 3));
+    // a Monday tick starts ITS OWN week, not the previous one
+    const monday = Date.UTC(2026, 7, 3, 0, 0, 1);
+    expect(tickBucket(monday, "1W")).toBe(Date.UTC(2026, 7, 3));
+    // year boundary: Thu 2026-01-01 belongs to the week of Mon 2025-12-29
+    const newYear = Date.UTC(2026, 0, 1, 9, 0, 0);
+    expect(tickBucket(newYear, "1W")).toBe(Date.UTC(2025, 11, 29));
+  });
+
+  it("daily buckets align to 00:00 UTC, intraday to the resolution grid", () => {
+    const ts = Date.UTC(2026, 7, 7, 13, 47, 9);
+    expect(tickBucket(ts, "1D")).toBe(Date.UTC(2026, 7, 7));
+    expect(tickBucket(ts, "60")).toBe(Date.UTC(2026, 7, 7, 13));
+    expect(tickBucket(ts, "5")).toBe(Date.UTC(2026, 7, 7, 13, 45));
+  });
+});
+
+describe("assetTypeOf", () => {
+  it("classifies crypto, metal, and FX", () => {
+    expect(assetTypeOf("BTC-USD")).toBe("crypto");
+    expect(assetTypeOf("XAUUSD")).toBe("commodity");
+    expect(assetTypeOf("EURUSD")).toBe("forex");
+    expect(assetTypeOf("USDJPY")).toBe("forex");
   });
 });
 
