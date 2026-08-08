@@ -202,6 +202,15 @@ class PythStream {
 
 const stream = new PythStream();
 
+/** Live mid-price ticks for UI chrome (favorites bar) — same shared
+ * Hermes socket the chart's subscribeBars uses. Returns an unsubscribe. */
+export function subscribeStreamPair(
+  pair: string,
+  handler: (tick: { mid: number; timestamp: number }) => void,
+): () => void {
+  return stream.subscribe(pair, handler);
+}
+
 // ---------------------------------------------------------------------------
 // datafeed
 

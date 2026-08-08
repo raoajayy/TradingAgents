@@ -1,37 +1,21 @@
-/** Trading Workspace: the TradingView Charting Library front and center
- * (Pyth history + Hermes live stream via lib/tv/datafeed), with the AI's
- * decision history rendered as marks on the bars where the runs decided.
- * TV's own toolbar owns timeframes, indicators, and drawings now — the
- * card chrome keeps only what TV can't know: our symbol registry, the
- * open-position badge, and the macro event strip. Multi-chart layouts are
- * TV-native (header layout toggle). */
-import { Maximize2 } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+/** Trading Workspace: a full-bleed TradingView terminal (Pyth history +
+ * Hermes live stream via lib/tv/datafeed), AI decision history as marks.
+ * TV owns ALL chart chrome now — symbol search, timeframes, indicators,
+ * drawings, multi-chart layouts, fullscreen. The page adds only what TV
+ * can't know: route sync (/trade/:symbol), the open-position badge, the
+ * evidence-level chip, and the macro event strip. */
+import { useEffect, useMemo } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { TVChart } from "@/components/charts/TVChart";
+import { FavoritesBar } from "./FavoritesBar";
 import { useCalendar, useStatus, useSymbols } from "@/lib/api/queries";
 import { fmtCountdown, fmtPnl, fmtPrice } from "@/lib/format";
 import { TF_TO_RESOLUTION } from "@/lib/tv/datafeed";
 import { levelFromSearchParams, type RefLevel } from "@/lib/levelFromRef";
 import { countdownExpired, useCountdown } from "@/lib/useCountdown";
 import { useUiStore } from "@/stores/ui";
-
-// tradeable pairs come from /api/symbols (server-driven, same set as the
-// run dialog); the registry's other symbols (DXY, US10Y, …) are
-// correlation inputs, not chartable workspaces
-const TRADE_SYMBOL_LABELS: Record<string, string> = {
-  "BTC-USD": "BTC-USD · Bitcoin",
-  XAUUSD: "XAUUSD · Gold",
-  "ETH-USD": "ETH-USD · Ethereum",
-  "SOL-USD": "SOL-USD · Solana",
-  EURUSD: "EURUSD · Euro / US Dollar",
-  USDJPY: "USDJPY · US Dollar / Yen",
-};
-const FALLBACK_TRADE_SYMBOLS = ["BTC-USD", "XAUUSD"];
 
 export default function WorkspacePage() {
   const params = useParams<{ symbol: string }>();
@@ -45,18 +29,18 @@ export default function WorkspacePage() {
     [searchParams],
   );
   const { timeframe, setSymbol } = useUiStore();
-  const chartCardRef = useRef<HTMLDivElement | null>(null);
 
-  const symbols = useSymbols();
   const status = useStatus();
   const calendar = useCalendar();
+  const symbols = useSymbols();
 
   // keep global symbol in sync with the route
-  if (useUiStore.getState().symbol !== symbol) setSymbol(symbol);
+  useEffect(() => {
+    if (useUiStore.getState().symbol !== symbol) setSymbol(symbol);
+  }, [symbol, setSymbol]);
 
   // TV owns interval switching once mounted; ui-store timeframe seeds it
   const interval = TF_TO_RESOLUTION[timeframe] ?? "60";
-
 
   // open position for this symbol: the server's unrealized P&L in a badge
   // (no client math — Constraint 2)
@@ -68,19 +52,6 @@ export default function WorkspacePage() {
     [status.data, symbol],
   );
 
-  // full-screen: button + `f` shortcut (dispatched as a window event)
-  const toggleFullscreen = () => {
-    const el = chartCardRef.current;
-    if (!el) return;
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void el.requestFullscreen();
-  };
-  useEffect(() => {
-    const handler = () => toggleFullscreen();
-    window.addEventListener("pro:fullscreen", handler);
-    return () => window.removeEventListener("pro:fullscreen", handler);
-  }, []);
-
   // the server-computed next MAJOR event (countdown-capable) beats the
   // first row of the raw release list (review P1.1); the countdown ticks
   // locally between refetches (R2.3)
@@ -90,66 +61,11 @@ export default function WorkspacePage() {
 
   return (
     <Card
-      ref={chartCardRef}
       data-testid="chart-card"
-      className="flex h-full flex-col bg-surface"
+      className="flex h-full flex-col bg-surface !p-2"
     >
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 whitespace-nowrap !text-lg !font-extrabold !normal-case !tracking-normal !text-fg">
-          <label htmlFor="trade-symbol" className="sr-only">
-            Trading pair
-          </label>
-          <select
-            id="trade-symbol"
-            data-testid="symbol-select"
-            value={symbol}
-            onChange={(event) => navigate(`/trade/${event.target.value}`)}
-            className="cursor-pointer rounded-[10px] border border-border bg-transparent px-1.5 py-0.5 text-lg font-extrabold tracking-[-0.01em] text-fg hover:border-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            {(symbols.data?.filter((s) => s.tradeable).map((s) => s.symbol) ??
-              FALLBACK_TRADE_SYMBOLS).map((s) => (
-              <option key={s} value={s}>
-                {TRADE_SYMBOL_LABELS[s] ?? s}
-              </option>
-            ))}
-          </select>
-          <Badge variant="bull">live</Badge>
-        </CardTitle>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {refLevel && (
-            <span
-              data-testid="level-badge"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-accent-muted px-2 py-1 font-mono text-xs text-accent"
-            >
-              {refLevel.label}{" "}
-              {refLevel.kind === "line"
-                ? fmtPrice(refLevel.price)
-                : `${fmtPrice(refLevel.low)}–${fmtPrice(refLevel.high)}`}
-              <button
-                aria-label="Clear plotted level"
-                data-testid="level-clear"
-                className="font-semibold hover:text-fg"
-                onClick={() => setSearchParams({}, { replace: true })}
-              >
-                ×
-              </button>
-            </span>
-          )}
-          <Button
-            size="icon"
-            variant="outline"
-            aria-label="Full screen (f)"
-            onClick={toggleFullscreen}
-          >
-            <Maximize2 size={13} />
-          </Button>
-        </div>
-      </CardHeader>
-      {/* overflow-hidden: last line of defence. Nothing inside may paint
-          outside the card's rounded border. */}
-      <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* multi-chart layouts are TV-native now (header layout toggle,
-            Trading Platform edition) — no external grid */}
+      <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden !p-0">
+        <FavoritesBar symbols={symbols.data ?? []} active={symbol} />
         <div
           className="relative min-h-0 min-w-0 flex-1"
           data-testid="main-chart-tile"
@@ -159,26 +75,56 @@ export default function WorkspacePage() {
               symbol={symbol}
               interval={interval}
               persistKey="workspace-main"
+              // TV's own symbol search drives the route now
+              onSymbolChange={(next) =>
+                navigate(`/trade/${next}`, { replace: true })
+              }
             />
           </div>
-          {openPosition?.unrealized_pnl != null && (
-            <div
-              data-testid="position-badge"
-              className={
-                "absolute right-2 top-2 z-10 rounded-lg border border-border bg-surface/90 px-2 py-1 font-mono text-xs tabular " +
-                (openPosition.unrealized_pnl >= 0 ? "text-bull" : "text-bear")
-              }
-            >
-              {openPosition.quantity > 0 ? "long" : "short"}{" "}
-              {Math.abs(openPosition.quantity)} ·{" "}
-              {fmtPnl(openPosition.unrealized_pnl)}
-              <span className="ml-1 text-fg-subtle">paper</span>
-            </div>
-          )}
+          {/* overlays: everything TV can't know, floated over the chart in
+              ONE wrapping row — separate left/right absolutes collided on
+              narrow screens and swallowed each other's clicks */}
+          <div className="pointer-events-none absolute inset-x-14 top-2 z-10 flex flex-wrap justify-end gap-2">
+            {refLevel && (
+              <span
+                data-testid="level-badge"
+                className="pointer-events-auto mr-auto inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface/90 px-2 py-1 font-mono text-xs text-accent"
+              >
+                {refLevel.label}{" "}
+                {refLevel.kind === "line"
+                  ? fmtPrice(refLevel.price)
+                  : `${fmtPrice(refLevel.low)}–${fmtPrice(refLevel.high)}`}
+                <button
+                  aria-label="Clear plotted level"
+                  data-testid="level-clear"
+                  className="font-semibold hover:text-fg"
+                  onClick={() => setSearchParams({}, { replace: true })}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            {openPosition?.unrealized_pnl != null && (
+              <div
+                data-testid="position-badge"
+                className={
+                  "pointer-events-auto rounded-lg border border-border bg-surface/90 px-2 py-1 font-mono text-xs tabular " +
+                  (openPosition.unrealized_pnl >= 0
+                    ? "text-bull"
+                    : "text-bear")
+                }
+              >
+                {openPosition.quantity > 0 ? "long" : "short"}{" "}
+                {Math.abs(openPosition.quantity)} ·{" "}
+                {fmtPnl(openPosition.unrealized_pnl)}
+                <span className="ml-1 text-fg-subtle">paper</span>
+              </div>
+            )}
+          </div>
         </div>
         {nextRelease && (
           <p
-            className="mt-[10px] shrink-0 text-xs text-fg-subtle"
+            className="mt-2 shrink-0 px-1 text-xs text-fg-subtle"
             data-testid="event-strip"
           >
             next macro event:{" "}

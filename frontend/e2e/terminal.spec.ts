@@ -113,44 +113,77 @@ test.describe("terminal", () => {
     await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
   });
 
-  test("chart symbol dropdown switches between BTC and gold", async ({
-    page,
-  }) => {
-    await page.goto("/trade");
-    await expect(page.getByTestId("symbol-select")).toHaveValue("BTC-USD");
-    await page.getByTestId("symbol-select").selectOption("XAUUSD");
+  // symbol selection is TV-NATIVE now: the app's own dropdown is gone and
+  // the widget's header symbol search (fed by our datafeed's searchSymbols)
+  // owns it, reflecting the active symbol. The onSymbolChange→route sync is
+  // exercised by unit-level wiring; here we assert the chrome swap and that
+  // the route still drives the chart's symbol.
+  test("symbol selection is TV-native (no app dropdown)", async ({ page }) => {
+    await page.goto("/trade/BTC-USD");
+    // the old app-owned <select> is gone
+    await expect(page.getByTestId("symbol-select")).toHaveCount(0);
+    const frame = page
+      .getByTestId("main-chart-tile")
+      .frameLocator("iframe")
+      .first();
+    // TV's header symbol button is present and shows the active symbol
+    const searchButton = frame.locator("#header-toolbar-symbol-search");
+    await expect(searchButton).toBeVisible({ timeout: 20_000 });
+    await expect(searchButton).toContainText("BTC-USD");
+    // route still drives the chart: navigating updates the header symbol
+    await page.goto("/trade/XAUUSD");
+    await expect(
+      page
+        .getByTestId("main-chart-tile")
+        .frameLocator("iframe")
+        .first()
+        .locator("#header-toolbar-symbol-search"),
+    ).toContainText("XAUUSD", { timeout: 20_000 });
+  });
+
+  // favorites bar: one chip per tradeable Pyth-charted symbol, active chip
+  // highlighted, click switches the route (and therefore the TV chart)
+  test("favorites bar switches symbols", async ({ page }) => {
+    await page.goto("/trade/BTC-USD");
+    const bar = page.getByTestId("favorites-bar");
+    await expect(bar).toBeVisible({ timeout: 15_000 });
+    const chips = bar.getByTestId("favorite-chip");
+    await expect
+      .poll(async () => chips.count(), { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(2);
+    await expect(
+      bar.locator('[data-symbol="BTC-USD"]'),
+    ).toHaveAttribute("aria-pressed", "true");
+    await bar.locator('[data-symbol="XAUUSD"]').click();
     await expect(page).toHaveURL(/\/trade\/XAUUSD/);
+    await expect(
+      bar.locator('[data-symbol="XAUUSD"]'),
+    ).toHaveAttribute("aria-pressed", "true");
     await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
-    await page.getByTestId("symbol-select").selectOption("BTC-USD");
-    await expect(page).toHaveURL(/\/trade\/BTC-USD/);
   });
 
   // P2-10: FX majors surface wherever tradeable symbols are enumerated —
-  // the dropdown is server-driven via /api/symbols, so EURUSD/USDJPY
-  // appearing here proves the whole chain (registry → API → UI)
-  test("FX pairs are tradeable: EURUSD in the dropdown and charted", async ({
+  // /api/symbols is what feeds TV's symbol search (registry → API → UI)
+  test("FX pairs are tradeable: EURUSD served and charted", async ({
     page,
   }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (err) => pageErrors.push(String(err)));
 
-    await page.goto("/trade");
-    const select = page.getByTestId("symbol-select");
-    // wait for the server-driven list (the pre-fetch fallback has no FX)
-    await expect(select.locator('option[value="EURUSD"]')).toHaveCount(1, {
-      timeout: 15_000,
-    });
-    const values = await select
-      .locator("option")
-      .evaluateAll((opts) => opts.map((o) => o.getAttribute("value")));
-    expect(values.length).toBeGreaterThanOrEqual(4);
-    expect(values).toContain("EURUSD");
-    expect(values).toContain("USDJPY");
+    const symbols = (await (
+      await page.request.get("/api/symbols", {
+        headers: { "X-API-Key": TOKEN },
+      })
+    ).json()) as { symbol: string; pyth_symbol?: string | null }[];
+    const names = symbols.map((s) => s.symbol);
+    expect(names).toContain("EURUSD");
+    expect(names).toContain("USDJPY");
+    // the TV datafeed needs the Pyth mapping to chart them
+    expect(symbols.find((s) => s.symbol === "EURUSD")?.pyth_symbol).toBe(
+      "FX.EUR/USD",
+    );
 
-    await select.selectOption("EURUSD");
-    await expect(page).toHaveURL(/\/trade\/EURUSD/);
-    // the TV datafeed resolves EURUSD via its pyth_symbol and the proxy
-    // serves bars (synthetic in e2e), so the widget mounts its iframe
+    await page.goto("/trade/EURUSD");
     await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
     expect(pageErrors).toEqual([]);
   });

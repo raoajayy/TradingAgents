@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { Outlet, useNavigate } from "react-router";
+import { Outlet, useLocation, useNavigate } from "react-router";
 
 import { AuthGate } from "./AuthGate";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -130,6 +130,9 @@ function Wiring() {
 }
 
 export function AppShell() {
+  // /trade is a full-bleed TradingView terminal: the status strip would
+  // duplicate TV's own chrome, so it hides there (safety banners never do)
+  const isTradePage = useLocation().pathname.startsWith("/trade");
   return (
     <AuthGate>
       <TooltipProvider>
@@ -144,7 +147,7 @@ export function AppShell() {
           <div className="flex min-w-0 grow flex-col gap-3">
             <HaltBanner />
             <ArmingBanner />
-            <StatusStrip />
+            {!isTradePage && <StatusStrip />}
             <main className="min-h-0 min-w-0 grow overflow-y-auto max-md:pb-20">
               <ErrorBoundary label="This page">
                 <Outlet />

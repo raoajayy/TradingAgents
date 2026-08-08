@@ -47,16 +47,24 @@ export function TVChart({
   interval,
   persistKey,
   className,
+  onSymbolChange,
 }: {
   symbol: string;
   interval: string;
   /** set on the main chart only: TV drawings/studies survive reloads */
   persistKey?: string;
   className?: string;
+  /** fired when the user switches symbols via TV's own symbol search —
+   * lets the page keep the /trade/:symbol route in sync */
+  onSymbolChange?: (symbol: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<TVWidget | null>(null);
   const readyRef = useRef(false);
+  const symbolRef = useRef(symbol);
+  symbolRef.current = symbol;
+  const onSymbolChangeRef = useRef(onSymbolChange);
+  onSymbolChangeRef.current = onSymbolChange;
   const theme = useUiStore((s) => s.theme);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -80,8 +88,6 @@ export function TVChart({
           loading_screen: { backgroundColor: chartColors().bg },
           overrides: tokenOverrides(),
           disabled_features: [
-            "header_symbol_search",
-            "symbol_search_hot_key",
             // Trading Platform edition widgets — no broker is wired here;
             // orders route through our own arming/venue path, never TV
             "trading_account_manager",
@@ -98,6 +104,14 @@ export function TVChart({
         widget.onChartReady(() => {
           if (disposed) return;
           readyRef.current = true;
+          widget.activeChart().onSymbolChanged().subscribe(null, () => {
+            // TV reports the resolved ticker (sometimes EXCHANGE:NAME)
+            const raw = widget.activeChart().symbol();
+            const next = raw.includes(":") ? raw.split(":").pop()! : raw;
+            if (next && next !== symbolRef.current) {
+              onSymbolChangeRef.current?.(next);
+            }
+          });
           if (persistKey) {
             widget.subscribe("onAutoSaveNeeded", () =>
               widget.save((state) => {
@@ -131,7 +145,12 @@ export function TVChart({
   }, []);
 
   useEffect(() => {
-    if (readyRef.current) widgetRef.current?.activeChart().setSymbol(symbol);
+    const widget = widgetRef.current;
+    if (!readyRef.current || !widget) return;
+    // no-op when TV itself initiated the change (route sync round-trip)
+    const raw = widget.activeChart().symbol();
+    const current = raw.includes(":") ? raw.split(":").pop()! : raw;
+    if (current !== symbol) widget.activeChart().setSymbol(symbol);
   }, [symbol]);
 
   useEffect(() => {

@@ -85,10 +85,17 @@ export interface TVDatafeed {
   ): void;
 }
 
+export interface TVSubscription {
+  subscribe(obj: object | null, callback: () => void): void;
+  unsubscribe(obj: object | null, callback: () => void): void;
+}
+
 export interface TVChartApi {
   setSymbol(symbol: string, callback?: () => void): void;
   setResolution(resolution: string, callback?: () => void): void;
   resolution(): string;
+  symbol(): string;
+  onSymbolChanged(): TVSubscription;
 }
 
 export interface TVWidget {
