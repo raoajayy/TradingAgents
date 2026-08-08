@@ -7,7 +7,6 @@ import { useNavigate } from "react-router";
 
 import { subscribeStreamPair, streamPairOf } from "@/lib/tv/datafeed";
 import type { SymbolSpec } from "@/lib/api/types";
-import { fmtPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const ICONS: Record<string, { glyph: string; bg: string }> = {
@@ -18,6 +17,10 @@ const ICONS: Record<string, { glyph: string; bg: string }> = {
   EURUSD: { glyph: "€", bg: "#2563eb" },
   USDJPY: { glyph: "¥", bg: "#dc2626" },
 };
+
+// price precision follows the venue convention, same as the chart's
+// pricescale: FX majors 5 decimals, JPY quotes 3, everything else 2
+const DECIMALS: Record<string, number> = { EURUSD: 5, USDJPY: 3 };
 
 function useLiveMid(pythSymbol: string | null | undefined): number | null {
   const [mid, setMid] = useState<number | null>(null);
@@ -36,6 +39,13 @@ function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
   const mid = useLiveMid(spec.pyth_symbol);
   const icon = ICONS[spec.symbol] ?? { glyph: spec.symbol[0]!, bg: "#64748b" };
   const pair = spec.pyth_symbol ? streamPairOf(spec.pyth_symbol) : spec.symbol;
+  const price =
+    mid != null
+      ? mid.toLocaleString("en-US", {
+          minimumFractionDigits: DECIMALS[spec.symbol] ?? 2,
+          maximumFractionDigits: DECIMALS[spec.symbol] ?? 2,
+        })
+      : "—";
   return (
     <button
       data-testid="favorite-chip"
@@ -43,7 +53,7 @@ function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
       aria-pressed={active}
       onClick={() => navigate(`/trade/${spec.symbol}`)}
       className={cn(
-        "flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition-colors",
+        "flex h-11 shrink-0 items-center gap-2.5 rounded-xl border px-3 text-left transition-colors",
         active
           ? "border-accent bg-accent-muted"
           : "border-border bg-surface hover:border-border-strong",
@@ -51,15 +61,15 @@ function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
     >
       <span
         aria-hidden="true"
-        className="flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold text-white"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold leading-none text-white"
         style={{ backgroundColor: icon.bg }}
       >
         {icon.glyph}
       </span>
-      <span className="leading-tight">
-        <span className="block text-xs font-bold text-fg">{pair}</span>
-        <span className="block font-mono text-[11px] tabular text-fg-muted">
-          {mid != null ? fmtPrice(mid) : "—"}
+      <span className="flex flex-col justify-center gap-0.5">
+        <span className="text-xs font-bold leading-none text-fg">{pair}</span>
+        <span className="font-mono text-[11px] leading-none tabular text-fg-muted">
+          {price}
         </span>
       </span>
     </button>
@@ -78,9 +88,9 @@ export function FavoritesBar({
   return (
     <div
       data-testid="favorites-bar"
-      className="mb-2 flex shrink-0 items-center gap-2 overflow-x-auto"
+      className="mb-2 flex shrink-0 items-center gap-2 overflow-x-auto px-1 py-0.5"
     >
-      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-fg-subtle">
+      <span className="shrink-0 self-center text-[10px] font-semibold uppercase leading-none tracking-[0.08em] text-fg-subtle">
         Favorites
       </span>
       {favorites.map((spec) => (
