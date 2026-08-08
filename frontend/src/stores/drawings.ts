@@ -5,7 +5,34 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import type { Drawing } from "@/components/charts/drawings/types";
+/** The persisted drawing data model. The custom canvas drawing layer was
+ * retired with the TradingView migration (TV owns on-chart drawings now),
+ * but this store still feeds PositionPlanPanel's sizing math ("adopt AI
+ * levels" → long/short 3-point plans) and round-trips through UserPrefs. */
+export interface DrawingPoint {
+  time: number; // unix seconds (bar time)
+  price: number;
+}
+
+export type DrawingKind =
+  | "trend"
+  | "hray"
+  | "vline"
+  | "arrow"
+  | "fib"
+  | "long"
+  | "short"
+  | "rect"
+  | "channel"
+  | "text";
+
+export interface Drawing {
+  id: string;
+  kind: DrawingKind;
+  points: DrawingPoint[];
+  text?: string;
+  hidden?: boolean;
+}
 
 const MAX_PER_SYMBOL = 100;
 const MAX_HISTORY = 50;

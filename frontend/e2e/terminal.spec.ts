@@ -4,13 +4,17 @@ type BoundingBox = { x: number; y: number; width: number; height: number };
 
 const TOKEN = "e2e-token";
 
-/** The Trade page's primary chart. Scoped to its tile because the main
- * chart is now grid participant #0 — an unscoped price-chart lookup
- * resolves to 2-4 elements whenever `gridCells` (persisted in
+/** The Trade page's primary chart (TradingView widget wrapper). Scoped to
+ * its tile because the main chart is grid participant #0 — an unscoped
+ * lookup resolves to 2-4 elements whenever `gridCells` (persisted in
  * localStorage) leaks in from another test, which is a strict-mode
  * violation rather than a clean failure. */
 const mainChart = (page: Page): Locator =>
-  page.getByTestId("main-chart-tile").getByTestId("price-chart");
+  page.getByTestId("main-chart-tile").getByTestId("tv-chart");
+
+/** The TV library renders inside a same-origin iframe; its presence is
+ * the "chart is up" signal (the old canvas assertions were LWC-specific). */
+const chartFrame = (page: Page): Locator => mainChart(page).locator("iframe");
 
 async function unlock(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -111,10 +115,7 @@ test.describe("terminal", () => {
 
   test("workspace renders a chart for gold", async ({ page }) => {
     await page.goto("/trade/XAUUSD");
-    await expect(mainChart(page).locator("canvas").first()).toBeVisible({
-      timeout: 20_000,
-    });
-    await expect(page.getByText("EOD data")).toBeVisible();
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
   });
 
   test("chart symbol dropdown switches between BTC and gold", async ({
@@ -124,9 +125,7 @@ test.describe("terminal", () => {
     await expect(page.getByTestId("symbol-select")).toHaveValue("BTC-USD");
     await page.getByTestId("symbol-select").selectOption("XAUUSD");
     await expect(page).toHaveURL(/\/trade\/XAUUSD/);
-    await expect(mainChart(page).locator("canvas").first()).toBeVisible({
-      timeout: 20_000,
-    });
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
     await page.getByTestId("symbol-select").selectOption("BTC-USD");
     await expect(page).toHaveURL(/\/trade\/BTC-USD/);
   });
@@ -155,20 +154,16 @@ test.describe("terminal", () => {
 
     await select.selectOption("EURUSD");
     await expect(page).toHaveURL(/\/trade\/EURUSD/);
-    // demo serves synthetic D1 bars for any registry symbol, so the chart
-    // itself renders; the yfinance-fallback spec (live=false, D1-only) is
-    // what the honest "EOD data" badge asserts
-    await expect(
-      mainChart(page).locator("canvas").first(),
-    ).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("EOD data")).toBeVisible();
+    // the TV datafeed resolves EURUSD via its pyth_symbol and the proxy
+    // serves bars (synthetic in e2e), so the widget mounts its iframe
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
     expect(pageErrors).toEqual([]);
   });
 
-  // regression: unmounting a page disposed the lightweight-charts instance
-  // before dependent effect cleanups ran; unguarded removeSeries/unsubscribe
-  // calls threw ("Object is disposed" / "Value is undefined") and the
-  // workspace crashed to its error boundary on the return visit
+  // regression: unmounting a page disposed the chart instance before
+  // dependent effect cleanups ran and the workspace crashed to its error
+  // boundary on the return visit. With TV this doubles as the widget
+  // remove()-on-unmount check.
   test("workspace survives trade → portfolio → trade SPA navigation", async ({
     page,
     isMobile,
@@ -182,7 +177,7 @@ test.describe("terminal", () => {
     await page.keyboard.press("g");
     await page.keyboard.press("t");
     await expect(page).toHaveURL(/\/trade\/XAUUSD/);
-    const canvas = mainChart(page).locator("canvas").first();
+    const canvas = chartFrame(page);
     await expect(canvas).toBeVisible({ timeout: 20_000 });
 
     // portfolio must mount (and later unmount) its EquityCurve chart —
@@ -356,35 +351,8 @@ test.describe("gaps v8", () => {
 test.describe("v2 features", () => {
   test.beforeEach(async ({ page }) => unlock(page));
 
-  test("replay mode isolates history from live", async ({ page }) => {
-    await page.goto("/trade/XAUUSD");
-    await expect(
-      mainChart(page).locator("canvas").first(),
-    ).toBeVisible({ timeout: 20_000 });
-    await page.getByRole("button", { name: /Replay/ }).click();
-    await expect(page.getByTestId("replay-badge")).toContainText("REPLAY");
-    await expect(page.getByText("live ticks suspended")).toBeVisible();
-    await page.getByRole("button", { name: "Exit replay" }).click();
-    await expect(page.getByTestId("replay-badge")).toHaveCount(0);
-  });
-
-  test("indicator picker adds a pane", async ({ page }) => {
-    await page.goto("/trade/XAUUSD");
-    await expect(
-      mainChart(page).locator("canvas").first(),
-    ).toBeVisible({ timeout: 20_000 });
-    const before = await mainChart(page).locator("table canvas").count();
-    await page.getByTestId("indicator-picker").click();
-    await page.getByText("RSI", { exact: true }).click();
-    await page.keyboard.press("Escape");
-    await expect
-      .poll(
-        async () =>
-          mainChart(page).locator("table canvas").count(),
-        { timeout: 15_000 },
-      )
-      .toBeGreaterThan(before);
-  });
+  // replay + the custom indicator picker were retired with the TradingView
+  // migration: TV's own toolbar owns indicators/drawings/replay now
 
   test("multi-chart grid tiles instead of overlapping", async ({
     page,
@@ -397,7 +365,7 @@ test.describe("v2 features", () => {
     const tiles = page
       .getByTestId("main-chart-tile")
       .or(page.getByTestId("grid-chart-cell"));
-    await expect(grid.getByTestId("price-chart").first().locator("canvas").first())
+    await expect(grid.getByTestId("tv-chart").first().locator("iframe"))
       .toBeVisible({ timeout: 20_000 });
 
     const boxes = async (locator: Locator) => {
@@ -417,9 +385,9 @@ test.describe("v2 features", () => {
     // chart is grid participant #0, not a full-width chart sitting above.
     await gridSwitch.getByRole("button", { name: "2×2" }).click();
     await expect(page.getByTestId("grid-chart-cell")).toHaveCount(3);
-    await expect(grid.getByTestId("price-chart")).toHaveCount(4);
+    await expect(grid.getByTestId("tv-chart")).toHaveCount(4);
 
-    const charts = await boxes(grid.getByTestId("price-chart"));
+    const charts = await boxes(grid.getByTestId("tv-chart"));
     // THE regression: the main chart's inline min-height (>=478px) could not
     // shrink and nothing in the chain clipped, so it painted straight over
     // the 288px cells below — hundreds of px² of intersection.
@@ -457,7 +425,7 @@ test.describe("v2 features", () => {
     // back to 1 = the main chart alone, still inside the grid
     await gridSwitch.getByRole("button", { name: "1", exact: true }).click();
     await expect(page.getByTestId("grid-chart-cell")).toHaveCount(0);
-    await expect(grid.getByTestId("price-chart")).toHaveCount(1);
+    await expect(grid.getByTestId("tv-chart")).toHaveCount(1);
   });
 
   test("watchlist add and remove persists", async ({ page, isMobile }) => {
@@ -507,101 +475,6 @@ test.describe("v2 features", () => {
     await expect(views).toContainText("portfolio");
     await views.getByRole("button").first().click();
     await expect(page.getByTestId("saved-views")).toHaveCount(0);
-  });
-});
-
-test.describe("v3 drawing tools", () => {
-  test.beforeEach(async ({ page }) => unlock(page));
-
-  /** Place a two-point drawing like a human: arm the tool, click twice,
-   * and if nothing landed (slow CI runners can swallow taps during
-   * chart layout settle) cancel and try again. */
-  async function placeTwoPoints(
-    page: import("@playwright/test").Page,
-    tool: RegExp,
-    points: [number, number][],
-  ) {
-    const chart = mainChart(page);
-    const before = Number(await chart.getAttribute("data-drawings"));
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await page.getByRole("button", { name: tool }).click();
-      const box = (await chart.boundingBox())!;
-      for (const [fx, fy] of points) {
-        await page.mouse.click(box.x + box.width * fx, box.y + box.height * fy);
-        await page.waitForTimeout(650);
-      }
-      const after = Number(await chart.getAttribute("data-drawings"));
-      if (after > before) return;
-      await page.keyboard.press("Escape"); // reset any half-placed state
-      await page.waitForTimeout(400);
-    }
-  }
-
-  test("trendline: draw, persist across reload, erase", async ({
-    page,
-    isMobile,
-  }) => {
-    test.skip(isMobile, "drawing tools are desktop-only by design");
-    await page.goto("/trade/XAUUSD");
-    const chart = mainChart(page);
-    await expect(chart.locator("canvas").first()).toBeVisible({
-      timeout: 20_000,
-    });
-    await expect(chart).toHaveAttribute("data-drawings", "0");
-
-    await page.waitForTimeout(800); // let the chart finish its layout settle
-    // points sit in the top half: the volume pane (default-on) owns the
-    // bottom of the chart and drawing clicks there are ignored by design
-    await placeTwoPoints(page, /Trendline/, [[0.3, 0.15], [0.6, 0.35]]);
-    await expect(chart).toHaveAttribute("data-drawings", "1");
-
-    await page.reload();
-    await expect(
-      mainChart(page),
-    ).toHaveAttribute("data-drawings", "1", { timeout: 20_000 });
-
-    await page.getByRole("button", { name: /Erase/ }).click();
-    const box2 = (await mainChart(page).boundingBox())!;
-    // scan a short vertical line through the segment midpoint — autoscale
-    // can shift the re-projected segment a few px between sessions
-    await expect(async () => {
-      if ((await chart.getAttribute("data-drawings")) !== "0") {
-        for (const dy of [0, -0.03, 0.03, -0.06, 0.06]) {
-          await page.mouse.click(
-            box2.x + box2.width * 0.45,
-            box2.y + box2.height * (0.25 + dy),
-          );
-        }
-      }
-      expect(await chart.getAttribute("data-drawings")).toBe("0");
-    }).toPass({ timeout: 15_000 });
-  });
-
-  test("fib places with two clicks; Esc cancels in-progress", async ({
-    page,
-    isMobile,
-  }) => {
-    test.skip(isMobile, "drawing tools are desktop-only by design");
-    await page.goto("/trade/XAUUSD");
-    const chart = mainChart(page);
-    await expect(chart.locator("canvas").first()).toBeVisible({
-      timeout: 20_000,
-    });
-    const box = (await chart.boundingBox())!;
-
-    // start a fib, then cancel — nothing persists
-    await page.getByRole("button", { name: /Fib retracement/ }).click();
-    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.2);
-    await page.keyboard.press("Escape");
-    await expect(chart).toHaveAttribute("data-drawings", "0");
-
-    // place a full fib (top half: the volume pane owns the bottom)
-    await placeTwoPoints(page, /Fib retracement/, [[0.3, 0.15], [0.6, 0.35]]);
-    await expect(chart).toHaveAttribute("data-drawings", "1");
-
-    // clear all
-    await page.getByRole("button", { name: /Clear all drawings/ }).click();
-    await expect(chart).toHaveAttribute("data-drawings", "0");
   });
 });
 
@@ -664,125 +537,31 @@ test.describe("v-golive Phase 5 ops", () => {
   });
 });
 
-test.describe("chart phase 1: AI annotations", () => {
-  // canvas hit-testing races the primitive's paint cycle against synthetic
-  // demo data; the feature is verified live. Retry transient canvas-timing
-  // flakes rather than block CI on nondeterministic pixel hits.
-  test.describe.configure({ retries: 2 });
-  test("decision layer renders and click-to-explain opens the popover", async ({
+test.describe("chart phase 1: AI decision marks", () => {
+  // The AI's decision history reaches the chart through the TV datafeed's
+  // getMarks (lib/tv/datafeed.ts) — the widget requests
+  // /api/chart/annotations for the active symbol and paints B/S/H marks.
+  // Mark pixels live inside the TV iframe (third-party canvas), so the
+  // contract asserted here is the wiring: the widget mounts AND issues the
+  // marks request for the right symbol.
+  test("TV chart requests AI annotations for the active symbol", async ({
     page,
-    isMobile,
   }) => {
-    test.skip(isMobile, "canvas hit-targets are desktop UX");
     await unlock(page);
+    const marksRequest = page.waitForRequest(
+      (req) => req.url().includes("/api/chart/annotations?symbol=XAUUSD"),
+      { timeout: 20_000 },
+    );
     await page.goto("/trade/XAUUSD");
-    const chart = mainChart(page);
-    await expect(chart.locator("canvas").first()).toBeVisible({
-      timeout: 15_000,
-    });
-    // the demo's recorded run snaps onto the loaded bar window
-    await expect(chart).toHaveAttribute("data-annotations", /^[1-9]/, {
-      timeout: 15_000,
-    });
-    // let the annotations primitive paint + register hit-testing
-    await page.waitForTimeout(400);
-
-    // click the regime/confidence RIBBON (top ~12px, full-width hit target).
-    // The recent demo run sits at the last bar, so its segment is a right-
-    // edge band — sweep right→left just inside the price-axis gutter until
-    // the popover opens. Each miss leaves the popover closed, so the next
-    // click can't accidentally dismiss it.
-    // The demo's recorded run sits at (or near) the LAST bar. Its decision
-    // marker is the reliable hit target: findNearestRun matches any click
-    // within a few px of the entry bar's x, regardless of y (see
-    // annotationsPrimitive "entry-bar vicinity"). The entry bar lands just
-    // left of the ~68px price-axis gutter, so sweep x offsets around it at
-    // a y comfortably inside the price pane. Each miss leaves the popover
-    // closed, so the next click can't accidentally dismiss it.
-    const box = (await chart.boundingBox())!;
-    const popover = page.getByTestId("explain-run-popover");
-    let opened = false;
-    outer: for (const off of [71, 68, 74, 65, 77, 62, 80, 59, 84] as const) {
-      for (const fy of [0.28, 0.42, 0.16] as const) {
-        await page.mouse.click(
-          box.x + box.width - off,
-          box.y + box.height * fy,
-        );
-        opened = await popover.isVisible().catch(() => false);
-        if (opened) break outer;
-        await page.waitForTimeout(90);
-      }
-    }
-    await expect(popover).toBeVisible({ timeout: 5_000 });
-    // grounded content: verdict + the link to the full decision record
-    await expect(popover).toContainText(/Full decision/);
-    // Esc closes
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("explain-run-popover")).toHaveCount(0);
-  });
-
-  test("replay hides future AI decisions", async ({ page, isMobile }) => {
-    test.skip(isMobile, "replay controls are desktop UX");
-    await unlock(page);
-    await page.goto("/trade/XAUUSD");
-    const chart = mainChart(page);
-    await expect(chart).toHaveAttribute("data-annotations", /^[1-9]/, {
-      timeout: 15_000,
-    });
-    // start replay: cursor rewinds to 1/4 of history — the run decided
-    // at the last bar must disappear from the visible annotation set
-    await page.getByRole("button", { name: /Replay/ }).click();
-    await expect(page.getByTestId("replay-badge")).toBeVisible();
-    await expect(chart).toHaveAttribute("data-annotations", "0");
-  });
-});
-
-test.describe("chart phase 2: drawing kinds", () => {
-  // canvas placement races React's tool-mode commit; retry transient flakes
-  test.describe.configure({ retries: 2 });
-  test("vertical line places with one click and persists", async ({
-    page,
-    isMobile,
-  }) => {
-    test.skip(isMobile, "drawing toolbar is desktop-only");
-    await unlock(page);
-    await page.goto("/trade/XAUUSD");
-    const chart = mainChart(page);
-    await expect(chart.locator("canvas").first()).toBeVisible({
-      timeout: 15_000,
-    });
-    const before = Number(await chart.getAttribute("data-drawings"));
-    // vline lives in the clubbed "Lines" group: open its flyout (corner
-    // caret) and pick the tool. Afterwards the group's main button reflects
-    // the active tool (aria-label + aria-pressed).
-    const linesFlyout = page.getByRole("button", { name: "Lines tools" });
-    const vlineItem = page.getByRole("menuitem", { name: /Vertical line/ });
-    const vlineBtn = page.getByRole("button", { name: /Vertical line/ });
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await linesFlyout.click();
-      await vlineItem.click();
-      // wait for the tool to actually arm before clicking the canvas — the
-      // click handler reads the mode off a ref that updates on React's next
-      // commit, so a same-tick canvas click would run in select mode
-      await expect(vlineBtn).toHaveAttribute("aria-pressed", "true");
-      const box = (await chart.boundingBox())!;
-      // click the chart BODY (mid-height): the top ~10-20% is LWC's
-      // autoscale margin (no bar → no time → no placement)
-      await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.45);
-      await page.waitForTimeout(650);
-      if (Number(await chart.getAttribute("data-drawings")) > before) break;
-      await page.keyboard.press("Escape");
-    }
-    expect(Number(await chart.getAttribute("data-drawings"))).toBe(before + 1);
-    // legend readout renders OHLC values (phase 2)
-    await expect(page.getByTestId("chart-legend")).toContainText(/O \d/);
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
+    await marksRequest;
   });
 });
 
 test.describe("P2-09 evidence level chips", () => {
   test.beforeEach(async ({ page }) => unlock(page));
 
-  test("evidence level chip navigates to Trade with the level plotted", async ({
+  test("evidence level chip navigates to Trade with the level badge", async ({
     page,
   }) => {
     await page.goto("/decisions");
@@ -796,19 +575,13 @@ test.describe("P2-09 evidence level chips", () => {
     const label = (await chip.innerText()).trim();
     await chip.click();
 
-    // lands on the run's Trade page carrying the level in the URL
+    // lands on the run's Trade page carrying the level in the URL; the
+    // on-chart price line retired with the custom chart — the labeled
+    // badge is the surviving surface, and its × clears the URL params
     await expect(page).toHaveURL(/\/trade\/[A-Z0-9-]+\?.*label=/);
-    const chart = mainChart(page);
-    await expect(chart.locator("canvas").first()).toBeVisible({
-      timeout: 20_000,
-    });
-    // the chart plots the cited level (price line via data-levels, the
-    // same technique the drawing specs use for data-drawings)
-    await expect(chart).toHaveAttribute("data-levels", /^[1-9]/);
-    // labeled badge names the level; its × clears line + params
+    await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("level-badge")).toContainText(label);
     await page.getByTestId("level-clear").click();
-    await expect(chart).toHaveAttribute("data-levels", "0");
     await expect(page).not.toHaveURL(/label=/);
     await expect(page.getByTestId("level-badge")).toHaveCount(0);
   });

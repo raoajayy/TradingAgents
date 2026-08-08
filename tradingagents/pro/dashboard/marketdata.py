@@ -50,6 +50,19 @@ class UnsupportedTimeframeError(ValueError):
         )
 
 
+# Pyth-network symbology for the TradingView chart's history/stream feed
+# (proxied via /api/tv/history; stream pair = the part after the first dot).
+# Symbols without an entry simply have no TV chart data source.
+PYTH_SYMBOLS: dict[str, str] = {
+    "BTC-USD": "Crypto.BTC/USD",
+    "ETH-USD": "Crypto.ETH/USD",
+    "SOL-USD": "Crypto.SOL/USD",
+    "XAUUSD": "Metal.XAU/USD",
+    "EURUSD": "FX.EUR/USD",
+    "USDJPY": "FX.USD/JPY",
+}
+
+
 @dataclass(frozen=True)
 class SymbolSpec:
     symbol: str                       # dashboard-facing name (BTC-USD, XAUUSD)
@@ -68,6 +81,7 @@ class SymbolSpec:
             "timeframes": [t.value for t in self.timeframes],
             "live": self.live,
             "tradeable": self.tradeable,
+            "pyth_symbol": PYTH_SYMBOLS.get(self.symbol),
         }
 
 

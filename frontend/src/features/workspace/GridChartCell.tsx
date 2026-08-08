@@ -1,28 +1,29 @@
 /** One cell of the multi-chart grid (review P2.6): its own symbol and
- * timeframe, crosshair-synced with the main chart through the workspace
- * sync group. Deliberately lean — candles + volume only; the full
- * toolkit (drawings, indicators, replay) lives on the main chart. */
-import { PriceChart } from "@/components/charts/PriceChart";
-import { SkeletonCard } from "@/components/ui/skeleton";
-import { useBars, useSymbols } from "@/lib/api/queries";
+ * timeframe. Deliberately lean — a bare TV chart; the full toolkit
+ * (indicators, drawings, saved layout) lives on the main chart. */
+import { TVChart } from "@/components/charts/TVChart";
+import { useSymbols } from "@/lib/api/queries";
+import { TF_TO_RESOLUTION } from "@/lib/tv/datafeed";
 import type { GridCell } from "@/stores/ui";
 
 export function GridChartCell({
   cell,
   onChange,
-  syncId,
 }: {
   cell: GridCell;
   onChange: (next: Partial<GridCell>) => void;
-  syncId: string;
 }) {
   const symbols = useSymbols();
-  const spec = symbols.data?.find((s) => s.symbol === cell.symbol);
-  const timeframes = spec?.timeframes ?? ["1d"];
+  // only Pyth-charted symbols are offered — the TV datafeed has no source
+  // for the daily-only correlation series (DXY, US10Y, …)
+  const chartable = (symbols.data ?? []).filter((s) => s.pyth_symbol);
+  const spec = chartable.find((s) => s.symbol === cell.symbol);
+  const timeframes = (spec?.timeframes ?? ["1d"]).filter(
+    (tf) => TF_TO_RESOLUTION[tf],
+  );
   const activeTf = timeframes.includes(cell.timeframe)
     ? cell.timeframe
     : timeframes[timeframes.length - 1]!;
-  const bars = useBars(cell.symbol, activeTf, 300);
 
   return (
     // a grid item defaults to min-height:auto (min-content) and would
@@ -38,7 +39,7 @@ export function GridChartCell({
           className="rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono font-bold"
           aria-label="Grid cell symbol"
         >
-          {(symbols.data ?? []).map((s) => (
+          {chartable.map((s) => (
             <option key={s.symbol} value={s.symbol}>
               {s.symbol}
             </option>
@@ -59,25 +60,12 @@ export function GridChartCell({
       </div>
       {/* the chart fills this box absolutely, so the box owns the height */}
       <div className="relative min-h-0 flex-1">
-        {bars.data ? (
-          <PriceChart
-            bars={bars.data}
-            style="candles"
-            liveSymbol={cell.symbol}
-            showVolume
-            syncId={syncId}
-            fill
-            // no longer pixels — only the price:volume pane ratio. 210:78
-            // keeps volume readable at ~27% of a small tile (400:78 would
-            // squeeze it to 16%).
-            height={210}
-            datasetKey={`${cell.symbol}:${activeTf}`}
-            // cells are interchangeable, so they share one saved layout
-            paneLayoutKey="workspace-grid"
+        <div className="absolute inset-0 overflow-hidden rounded-lg">
+          <TVChart
+            symbol={cell.symbol}
+            interval={TF_TO_RESOLUTION[activeTf] ?? "1D"}
           />
-        ) : (
-          <SkeletonCard lines={4} />
-        )}
+        </div>
       </div>
     </div>
   );

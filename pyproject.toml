@@ -89,7 +89,13 @@ include = ["tradingagents*", "cli*"]
 cli = ["static/*"]
 "tradingagents.pro.agents" = ["prompts/*.md"]
 "tradingagents.pro.pipeline" = ["prompts/*.md"]
-"tradingagents.pro.dashboard" = ["templates/*.html", "static/*", "static/assets/*"]
+"tradingagents.pro.dashboard" = [
+    "templates/*.html",
+    "static/*",
+    "static/assets/*",
+    "static/charting_library/*",
+    "static/charting_library/bundles/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

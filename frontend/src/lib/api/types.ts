@@ -771,6 +771,8 @@ export const SymbolSpecSchema = z.object({
   source: z.string(),
   timeframes: z.array(z.string()),
   live: z.boolean(),
+  // Pyth symbology for the TradingView datafeed; null = no TV chart source
+  pyth_symbol: z.string().nullable().optional(),
 });
 export type SymbolSpec = z.infer<typeof SymbolSpecSchema>;
 export const SymbolsSchema = z.array(SymbolSpecSchema);

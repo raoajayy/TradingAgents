@@ -34,6 +34,9 @@ export default defineConfig({
         // a stale kill-switch state is a safety bug, so /api/* stays
         // NetworkOnly except immutable historical bars.
         globPatterns: ["**/*.{js,css,html,woff2,png,svg}"],
+        // the TradingView library (~6MB of hashed chunks) loads on demand
+        // from the Trade tab only — precaching it would bloat every install
+        globIgnores: ["**/charting_library/**"],
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api/, /^\/legacy/, /^\/healthz/],
         runtimeCaching: [

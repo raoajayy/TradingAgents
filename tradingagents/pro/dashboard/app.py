@@ -159,7 +159,7 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
     import secrets
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi import FastAPI, HTTPException, Query, Request, Response
     from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
     state = state or DashboardState()
@@ -739,6 +739,77 @@ def create_app(state: DashboardState | None = None, api_token: str | None = None
         """``end`` (epoch seconds, exclusive) pages history backward — the
         chart's load-more. Omitted = the latest window (unchanged)."""
         return md.bars_view(_fetch_bars(symbol, timeframe, limit, end))
+
+    def _synthetic_udf(pyth_symbol: str, resolution: str,
+                       start: int, end: int) -> dict:
+        """Deterministic UDF bars (seeded random walk) so e2e runs offline."""
+        import hashlib
+        import math
+
+        step = {"D": 86_400, "W": 604_800}.get(
+            resolution, max(1, int(resolution or "60")) * 60)
+        seed = int(hashlib.sha256(pyth_symbol.encode()).hexdigest()[:8], 16)
+        base_price = 100.0 + seed % 900
+        first = (max(start, end - 500 * step) // step) * step
+        t, o, h, low, c, v = [], [], [], [], [], []
+        for ts in range(first, end, step):
+            k = ts // step
+            drift = math.sin(k / 9.0) * 4 + math.sin(k / 37.0) * 9
+            px = base_price + drift
+            t.append(ts)
+            o.append(round(px, 2))
+            c.append(round(px + math.sin(k) * 1.2, 2))
+            h.append(round(max(o[-1], c[-1]) + 0.8, 2))
+            low.append(round(min(o[-1], c[-1]) - 0.8, 2))
+            v.append(float(1000 + (k % 97) * 10))
+        return {"s": "ok" if t else "no_data",
+                "t": t, "o": o, "h": h, "l": low, "c": c, "v": v}
+
+    @app.get("/api/tv/history")
+    def tv_history(symbol: str, resolution: str,
+                   from_: int = Query(alias="from"),
+                   to: int = Query()) -> dict:
+        """UDF-style history for the TradingView chart, proxied to the Pyth
+        history API (no CORS upstream, so the browser can't call it direct).
+        Sync on purpose like /api/bars: the upstream call blocks."""
+        import os
+
+        import requests as _requests
+
+        pyth_symbol = md.PYTH_SYMBOLS.get(symbol)
+        if pyth_symbol is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no TV data source for {symbol!r}")
+        # TV sends 1D/1W for daily/weekly; upstream wants D/W or minutes
+        res = {"1D": "D", "D": "D", "1W": "W", "W": "W"}.get(
+            resolution, resolution)
+        base = os.environ.get("PRO_TV_HISTORY_BASE",
+                              "https://thefundedroom.com")
+        if base == "synthetic":
+            # hermetic mode for e2e/CI: deterministic bars, no egress
+            return _synthetic_udf(pyth_symbol, res, from_, to)
+        try:
+            upstream = _requests.get(
+                f"{base}/api/pyth/history",
+                params={"symbol": pyth_symbol, "resolution": res,
+                        "from": from_, "to": to},
+                timeout=10,
+            )
+        except _requests.RequestException as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"TV history upstream unreachable: {type(exc).__name__}",
+                headers={"Retry-After": "30"},
+            ) from None
+        try:
+            body = upstream.json()
+        except ValueError:
+            # upstream answers unknown symbols with plain text
+            return {"s": "error", "errmsg": upstream.text[:200]}
+        if upstream.status_code != 200 or not isinstance(body, dict):
+            return {"s": "error",
+                    "errmsg": f"upstream HTTP {upstream.status_code}"}
+        return body
 
     @app.get("/api/chart/annotations")
     async def chart_annotations_route(symbol: str) -> dict:

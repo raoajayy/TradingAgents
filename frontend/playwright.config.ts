@@ -29,7 +29,9 @@ export default defineConfig({
     // never touch the operator's real ~/.tradingagents state
     command:
       // OANDA_API_TOKEN cleared: e2e must be hermetic from operator env
-    'cd .. && PRO_DASHBOARD_TOKEN=e2e-token OANDA_API_TOKEN="" PRO_DISABLE_LIVE_VENDORS=1 TRADINGAGENTS_PRO_DATA="$(mktemp -d)" ' +
+    // PRO_TV_HISTORY_BASE=synthetic: the TV chart's history proxy serves
+    // deterministic bars instead of egressing to the Pyth history API
+    'cd .. && PRO_DASHBOARD_TOKEN=e2e-token OANDA_API_TOKEN="" PRO_DISABLE_LIVE_VENDORS=1 PRO_TV_HISTORY_BASE=synthetic TRADINGAGENTS_PRO_DATA="$(mktemp -d)" ' +
       `${process.env.PRO_PYTHON ?? "python"} scripts/pro_dashboard_demo.py ${PORT}`,
     url: `http://127.0.0.1:${PORT}/healthz`,
     reuseExistingServer: false,
