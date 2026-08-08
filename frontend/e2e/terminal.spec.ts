@@ -162,6 +162,42 @@ test.describe("terminal", () => {
     await expect(chartFrame(page)).toBeVisible({ timeout: 20_000 });
   });
 
+  test("favorites are editable: remove, re-add, and persist", async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(isMobile, "the hover-revealed × needs a pointer");
+    await page.goto("/trade/BTC-USD");
+    const bar = page.getByTestId("favorites-bar");
+    await expect(bar).toBeVisible({ timeout: 15_000 });
+    const ethChip = bar.locator('[data-testid="favorite-chip"][data-symbol="ETH-USD"]');
+    await expect(ethChip).toBeVisible({ timeout: 15_000 });
+
+    // remove: the × appears on hover
+    await ethChip.hover();
+    await ethChip.getByTestId("favorite-remove").click();
+    await expect(ethChip).toHaveCount(0);
+
+    // the edit survives a reload (persisted ui store)
+    await page.reload();
+    await expect(page.getByTestId("favorites-bar")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      page.locator('[data-testid="favorite-chip"][data-symbol="ETH-USD"]'),
+    ).toHaveCount(0);
+
+    // re-add from the + menu
+    await page.getByTestId("favorite-add").click();
+    await page
+      .getByTestId("favorite-add-menu")
+      .locator('[data-symbol="ETH-USD"]')
+      .click();
+    await expect(
+      page.locator('[data-testid="favorite-chip"][data-symbol="ETH-USD"]'),
+    ).toBeVisible();
+  });
+
   // P2-10: FX majors surface wherever tradeable symbols are enumerated —
   // /api/symbols is what feeds TV's symbol search (registry → API → UI)
   test("FX pairs are tradeable: EURUSD served and charted", async ({

@@ -7,6 +7,7 @@ import { useNavigate } from "react-router";
 
 import { subscribeStreamPair, streamPairOf } from "@/lib/tv/datafeed";
 import type { SymbolSpec } from "@/lib/api/types";
+import { useUiStore } from "@/stores/ui";
 import { cn } from "@/lib/utils";
 
 const ICONS: Record<string, { glyph: string; bg: string }> = {
@@ -56,7 +57,15 @@ function useLiveMid(
   return { mid, stale };
 }
 
-function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
+function FavoriteChip({
+  spec,
+  active,
+  onRemove,
+}: {
+  spec: SymbolSpec;
+  active: boolean;
+  onRemove: () => void;
+}) {
   const navigate = useNavigate();
   const { mid, stale } = useLiveMid(spec.pyth_symbol);
   const icon = ICONS[spec.symbol] ?? { glyph: spec.symbol[0]!, bg: "#64748b" };
@@ -75,12 +84,32 @@ function FavoriteChip({ spec, active }: { spec: SymbolSpec; active: boolean }) {
       aria-pressed={active}
       onClick={() => navigate(`/trade/${spec.symbol}`)}
       className={cn(
-        "flex h-11 shrink-0 items-center gap-2.5 rounded-xl border px-3 text-left transition-colors",
+        "group relative flex h-11 shrink-0 items-center gap-2.5 rounded-xl border px-3 text-left transition-colors",
         active
           ? "border-accent bg-accent-muted"
           : "border-border bg-surface hover:border-border-strong",
       )}
     >
+      {/* remove affordance: appears on hover/focus, never mid-tap targets */}
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label={`Remove ${spec.symbol} from favorites`}
+        data-testid="favorite-remove"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.stopPropagation();
+            onRemove();
+          }
+        }}
+        className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-border bg-surface text-[10px] leading-none text-fg-subtle shadow-sm hover:text-bear group-focus-within:flex group-hover:flex"
+      >
+        ×
+      </span>
       <span
         aria-hidden="true"
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold leading-none text-white"
@@ -111,23 +140,67 @@ export function FavoritesBar({
   symbols: SymbolSpec[];
   active: string;
 }) {
-  const favorites = symbols.filter((s) => s.tradeable && s.pyth_symbol);
-  if (favorites.length === 0) return null;
+  const [addOpen, setAddOpen] = useState(false);
+  const favoriteNames = useUiStore((s) => s.favorites);
+  const addFavorite = useUiStore((s) => s.addFavorite);
+  const removeFavorite = useUiStore((s) => s.removeFavorite);
+
+  const chartable = symbols.filter((s) => s.tradeable && s.pyth_symbol);
+  if (chartable.length === 0) return null;
+  const availableNames = chartable.map((s) => s.symbol);
+  const shownNames = favoriteNames ?? availableNames; // null = all (default)
+  const shown = chartable.filter((s) => shownNames.includes(s.symbol));
+  const addable = chartable.filter((s) => !shownNames.includes(s.symbol));
+
   return (
     <div
       data-testid="favorites-bar"
-      className="mb-2 flex shrink-0 items-center gap-2 overflow-x-auto px-1 py-0.5"
+      className="mb-2 flex shrink-0 items-center gap-2 overflow-x-auto px-1 py-1.5"
     >
       <span className="shrink-0 self-center text-[10px] font-semibold uppercase leading-none tracking-[0.08em] text-fg-subtle">
         Favorites
       </span>
-      {favorites.map((spec) => (
+      {shown.map((spec) => (
         <FavoriteChip
           key={spec.symbol}
           spec={spec}
           active={spec.symbol === active}
+          onRemove={() => removeFavorite(spec.symbol, availableNames)}
         />
       ))}
+      {addable.length > 0 && (
+        <div className="relative shrink-0">
+          <button
+            aria-label="Add favorite"
+            aria-expanded={addOpen}
+            data-testid="favorite-add"
+            onClick={() => setAddOpen((v) => !v)}
+            className="flex h-11 w-11 items-center justify-center rounded-xl border border-dashed border-border text-lg leading-none text-fg-subtle hover:border-border-strong hover:text-fg"
+          >
+            +
+          </button>
+          {addOpen && (
+            <div
+              data-testid="favorite-add-menu"
+              className="absolute left-0 top-12 z-20 flex min-w-36 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-lg"
+            >
+              {addable.map((spec) => (
+                <button
+                  key={spec.symbol}
+                  data-symbol={spec.symbol}
+                  onClick={() => {
+                    addFavorite(spec.symbol, availableNames);
+                    setAddOpen(false);
+                  }}
+                  className="px-3 py-2 text-left font-mono text-xs text-fg hover:bg-accent-muted"
+                >
+                  {spec.pyth_symbol ? streamPairOf(spec.pyth_symbol) : spec.symbol}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

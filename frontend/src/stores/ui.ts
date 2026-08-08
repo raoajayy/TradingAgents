@@ -26,6 +26,11 @@ interface UiState {
   setSymbol: (symbol: string) => void;
   timeframe: string;
   setTimeframe: (tf: string) => void;
+  /** Trade-tab favorites bar. null = "every chartable symbol" (the
+   * default until the user edits); an explicit list after any edit. */
+  favorites: string[] | null;
+  addFavorite: (symbol: string, available: string[]) => void;
+  removeFavorite: (symbol: string, available: string[]) => void;
   indicators: string[];
   toggleIndicator: (name: string) => void;
   // named indicator sets (PC.4), synced to server prefs
@@ -70,6 +75,22 @@ export const useUiStore = create<UiState>()(
       setSymbol: (symbol) => set({ symbol }),
       timeframe: "1h",
       setTimeframe: (timeframe) => set({ timeframe }),
+      favorites: null,
+      // edits materialize the default (all available) into an explicit
+      // list first, so add/remove always operate on what the user SEES
+      addFavorite: (symbol, available) =>
+        set((state) => {
+          const current = state.favorites ?? available;
+          return current.includes(symbol)
+            ? {}
+            : { favorites: [...current, symbol] };
+        }),
+      removeFavorite: (symbol, available) =>
+        set((state) => ({
+          favorites: (state.favorites ?? available).filter(
+            (s) => s !== symbol,
+          ),
+        })),
       // mockup default: EMA 10 overlay on ("Indicators (1)")
       indicators: ["EMA_10"],
       toggleIndicator: (name) =>
@@ -151,6 +172,7 @@ export const useUiStore = create<UiState>()(
         indicatorTemplates: s.indicatorTemplates,
         showProfile: s.showProfile,
         sidebarCollapsed: s.sidebarCollapsed,
+        favorites: s.favorites,
       }),
     },
   ),
