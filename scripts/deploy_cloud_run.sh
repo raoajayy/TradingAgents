@@ -193,15 +193,28 @@ deploy_service() {
   if [ -n "${TRADINGAGENTS_DEEP_THINK_LLM:-}" ]; then
     env_vars="${env_vars},TRADINGAGENTS_DEEP_THINK_LLM=${TRADINGAGENTS_DEEP_THINK_LLM}"
   fi
+  # Cost shape (Aug 2026 billing audit: Cloud Run was 98% of the bill —
+  # two always-on 2-vCPU services ≈ ₹420/day). PROD stays a warm singleton
+  # with unthrottled CPU (the hourly loop, dead-man switch, and SSE run
+  # outside requests) but 1 vCPU is plenty for one operator. STAGING exists
+  # for the ~2-minute smoke check per deploy: scale-to-zero + throttled CPU
+  # bills it only while it actually serves.
+  local scale_flags
+  if [ "$service" = "$SERVICE" ]; then
+    scale_flags="--min-instances 1 --no-cpu-throttling"
+  else
+    scale_flags="--min-instances 0 --cpu-throttling"
+  fi
   echo "==> Deploying ${service} to Cloud Run (${REGION}) [bucket=${bucket}, loop_disabled=${loop_disabled}]"
+  # shellcheck disable=SC2086 — scale_flags is two flags on purpose
   gcloud run deploy "$service" \
     --project "$PROJECT_ID" \
     --region "$REGION" \
     --image "$IMAGE" \
     --execution-environment gen2 \
-    --min-instances 1 \
+    $scale_flags \
     --max-instances 1 \
-    --no-cpu-throttling \
+    --cpu 1 \
     --memory 1Gi \
     --concurrency 250 \
     --add-volume "name=data,type=cloud-storage,bucket=${bucket}" \
