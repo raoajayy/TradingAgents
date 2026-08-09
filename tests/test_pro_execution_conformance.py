@@ -51,6 +51,10 @@ class FakeDeltaHttp:
          "contract_value": "0.001", "default_leverage": "10"},
         {"id": 93, "symbol": "XAUTUSD", "tick_size": "0.1",
          "contract_value": "0.01", "default_leverage": "5"},
+        {"id": 3136, "symbol": "ETHUSD", "tick_size": "0.05",
+         "contract_value": "0.01", "default_leverage": "10"},
+        {"id": 14823, "symbol": "SOLUSD", "tick_size": "0.0001",
+         "contract_value": "1", "default_leverage": "10"},
     ]
 
     def __init__(self):
@@ -98,7 +102,8 @@ class FakeDeltaHttp:
             order = {
                 "id": self.next_id, "client_order_id": coid,
                 "product_symbol": body["product_symbol"],
-                "product_id": {"BTCUSD": 27, "XAUTUSD": 93}[body["product_symbol"]],
+                "product_id": {"BTCUSD": 27, "XAUTUSD": 93, "ETHUSD": 3136,
+                               "SOLUSD": 14823}[body["product_symbol"]],
                 "side": body["side"], "size": body["size"],
                 "unfilled_size": body["size"], "state": "open",
                 "limit_price": body.get("limit_price"),
@@ -415,7 +420,8 @@ class TestInstruments:
 
 class TestDeltaAdapterUnits:
     def test_symbol_map_covers_operator_pairs(self):
-        assert SYMBOL_MAP == {"BTC-USD": "BTCUSD", "XAUUSD": "XAUTUSD"}
+        assert SYMBOL_MAP == {"BTC-USD": "BTCUSD", "XAUUSD": "XAUTUSD",
+                              "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD"}
 
     def test_from_env_refuses_without_credentials(self, monkeypatch):
         from tradingagents.pro.execution import AdapterError

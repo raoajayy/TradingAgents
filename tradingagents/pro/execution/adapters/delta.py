@@ -60,7 +60,12 @@ _BUDGET_UNITS = 10_000
 _BUDGET_WINDOW = 300.0
 
 # canonical -> Delta venue symbols this adapter will trade
-SYMBOL_MAP = {"BTC-USD": "BTCUSD", "XAUUSD": "XAUTUSD"}
+SYMBOL_MAP = {
+    "BTC-USD": "BTCUSD",
+    "XAUUSD": "XAUTUSD",  # Tether Gold ≈ spot (small disclosed basis)
+    "ETH-USD": "ETHUSD",
+    "SOL-USD": "SOLUSD",
+}
 _REVERSE_MAP = {v: k for k, v in SYMBOL_MAP.items()}
 
 
