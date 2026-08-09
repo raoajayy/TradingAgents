@@ -432,7 +432,17 @@ def has_llm_key() -> bool:
 
     provider = os.environ.get("TRADINGAGENTS_LLM_PROVIDER", "deepseek")
     key_env = get_api_key_env(provider)
-    return bool(key_env and os.environ.get(key_env))
+    if key_env and os.environ.get(key_env):
+        return True
+    # claude-cli authenticates via its own login locally; the OAuth token
+    # env is only for headless deploys (see llm_clients.api_key_env) — a
+    # present binary means runnable, so don't strand the loop in monitor
+    # mode on a logged-in workstation
+    if provider.lower() == "claude-cli":
+        import shutil
+
+        return shutil.which("claude") is not None
+    return False
 
 
 def loop_enabled() -> bool:

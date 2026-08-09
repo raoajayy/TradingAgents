@@ -395,3 +395,24 @@ class TestJournalExportColumns:
         assert entry["venue_order_id"] == "ta-abc"
         assert journal["by_mode"]["canary"]["n_trades"] == 1
         assert journal["by_mode"]["canary"]["win_rate"] == 1.0
+
+
+class TestHasLlmKey:
+    def test_claude_cli_counts_local_login_as_keyed(self, monkeypatch):
+        # local workstations authenticate via `claude login`, not the
+        # headless CLAUDE_CODE_OAUTH_TOKEN env — a present binary must not
+        # strand the loop in monitor mode
+        from tradingagents.pro import main as pro_main
+
+        monkeypatch.setenv("TRADINGAGENTS_LLM_PROVIDER", "claude-cli")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/claude")
+        assert pro_main.has_llm_key()
+
+    def test_claude_cli_without_binary_or_token_is_keyless(self, monkeypatch):
+        from tradingagents.pro import main as pro_main
+
+        monkeypatch.setenv("TRADINGAGENTS_LLM_PROVIDER", "claude-cli")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert not pro_main.has_llm_key()
