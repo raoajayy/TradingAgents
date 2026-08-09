@@ -24,8 +24,28 @@ logger = logging.getLogger(__name__)
 # e.g. "gpt-5.5-2026-03-11" or "claude-haiku-4-5-20251001"
 _DATED_MODEL = re.compile(r"\d{4}-\d{2}-\d{2}|\d{8}")
 
+# Model families whose published id IS the complete, immutable id — there is
+# no dated variant to pin to. The Claude 5 family dropped dated snapshots
+# entirely: "claude-sonnet-5" is the whole id, not an alias that resolves to
+# one. Treating these as floating was a false positive that logged AI-07 on
+# every boot, and worse, PRO_REQUIRE_PINNED_MODELS=1 would have refused to
+# start on a perfectly valid current model. Appending a date to one of these
+# does not produce a real model — it 404s.
+_UNDATED_BY_DESIGN = re.compile(
+    r"^claude-(?:opus|sonnet|haiku|fable|mythos)-[5-9]$", re.IGNORECASE
+)
+
 
 def is_pinned_model(model_id: str) -> bool:
+    """True when the id names one exact, immutable model version.
+
+    Either it carries a dated snapshot suffix, or it belongs to a family
+    that ships no dated variants (see _UNDATED_BY_DESIGN) — in which case
+    the bare id is already as pinned as that model can be.
+    """
+    model_id = (model_id or "").strip()
+    if _UNDATED_BY_DESIGN.match(model_id):
+        return True
     return bool(_DATED_MODEL.search(model_id))
 
 

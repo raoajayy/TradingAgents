@@ -13,7 +13,7 @@ from tradingagents.pro.evals.golden import (
     POISON_MARKER_FORGERY,
     POISON_TOOL_STYLE,
 )
-from tradingagents.pro.models import ModelBundle, bundle_from_config
+from tradingagents.pro.models import ModelBundle, bundle_from_config, is_pinned_model
 from tradingagents.pro.observability import ModelPrice, price_for
 from tradingagents.pro.pipeline import run_pipeline
 
@@ -143,6 +143,51 @@ class TestModelPinning:
         assert is_pinned_model("claude-haiku-4-5-20251001")
         assert not is_pinned_model("gpt-5.5")
         assert not is_pinned_model("deepseek-chat")
+
+    def test_claude_5_ids_are_pinned_without_a_date(self):
+        """The Claude 5 family ships no dated snapshots — the bare id IS the
+        complete, immutable id, and appending a date 404s.
+
+        Treating them as floating logged AI-07 on every boot, and
+        PRO_REQUIRE_PINNED_MODELS=1 would have refused to start production
+        on a perfectly valid current model.
+        """
+        from tradingagents.pro.models import is_pinned_model
+
+        for model in ("claude-sonnet-5", "claude-opus-5", "claude-fable-5"):
+            assert is_pinned_model(model), model
+
+    def test_dated_families_are_still_required_to_carry_their_date(self):
+        """The carve-out must not leak to families that DO publish dated
+        snapshots — those aliases really can be swapped under us."""
+        from tradingagents.pro.models import is_pinned_model
+
+        for model in ("claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"):
+            assert not is_pinned_model(model), model
+
+    def test_the_live_production_routing_is_fully_pinned(self):
+        """Both tiers as deployed: a dated Haiku snapshot and Sonnet 5."""
+        from tradingagents.pro.models import is_pinned_model
+
+        assert is_pinned_model("claude-haiku-4-5-20251001")
+        assert is_pinned_model("claude-sonnet-5")
+
+    def test_require_pinned_accepts_the_live_claude_cli_routing(self):
+        config = ProConfig(asset=AssetClass.GOLD)
+        config = config.model_copy(update={
+            "models": config.models.model_copy(update={
+                "llm_provider": "claude-cli",
+                "quick_think_llm": "claude-haiku-4-5-20251001",
+                "deep_think_llm": "claude-sonnet-5",
+                "require_pinned_models": True,
+            })
+        })
+        # must not raise: this is exactly what production runs
+        from tradingagents.pro.models import assert_models_match_provider
+
+        assert_models_match_provider(config.models.llm_provider,
+                                     config.models.all_model_ids())
+        assert all(is_pinned_model(m) for m in config.models.all_model_ids())
 
     def test_require_pinned_refuses_floating_aliases(self):
         config = ProConfig(asset=AssetClass.GOLD)
