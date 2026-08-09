@@ -56,7 +56,11 @@ class PairArming:
 class ArmingStore:
     """Persistent per-pair arming with an audited transition log."""
 
-    def __init__(self, path: str | Path, audit=None, pairs=("BTC-USD", "XAUUSD")):
+    # every Delta-tradeable pair the pipeline can decide on (registry
+    # crypto_spec + gold); arming any of them still requires the live.yaml
+    # mode AND the full CLI ceremony — this list only bounds what CAN be armed
+    def __init__(self, path: str | Path, audit=None,
+                 pairs=("BTC-USD", "XAUUSD", "ETH-USD", "SOL-USD")):
         self.path = Path(path)
         self._audit = audit
         self._pairs = tuple(pairs)
