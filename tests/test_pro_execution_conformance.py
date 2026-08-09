@@ -205,7 +205,28 @@ if os.environ.get("DELTA_TESTNET_API_KEY"):
 
 @pytest.fixture(params=list(HARNESSES))
 def harness(request):
-    return HARNESSES[request.param]()
+    h = HARNESSES[request.param]()
+    yield h
+    # real-venue runs MUST leave the book flat even when an assert aborted
+    # the test body — residue trips the live campaign's reconciliation
+    # (unknown_on_venue) and once required two manual audited closes
+    if request.param == "delta-testnet":
+        import uuid
+
+        try:
+            for pos in h.adapter.positions():
+                qty = float(getattr(pos, "quantity", 0) or 0)
+                if not qty:
+                    continue
+                h.adapter.place_order(OrderSpec(
+                    client_order_id="ta" + uuid.uuid4().hex[:24],
+                    symbol=pos.symbol, venue_symbol="",
+                    side="SELL" if pos.side == "BUY" else "BUY",
+                    quantity=abs(qty), order_type="market",
+                    reduce_only=True, reference_price=4000.0,
+                ))
+        except Exception:
+            pass  # teardown is best-effort; reconciliation still discloses
 
 
 def _coid(request_node, suffix=""):
