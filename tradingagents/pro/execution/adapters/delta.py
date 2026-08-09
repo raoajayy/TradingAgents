@@ -158,6 +158,9 @@ class DeltaAdapter:
             fetch=self._fetch_instruments, fail_closed=True,
         )
         self._clock_checked = False
+        # coids this process has successfully handed to the venue — see the
+        # session idempotency guard in place_order
+        self._sent_coids: set[str] = set()
 
     @classmethod
     def from_env(cls, testnet: bool = True, **kwargs) -> DeltaAdapter:
@@ -209,7 +212,11 @@ class DeltaAdapter:
                 continue
             payload = response.json()
             if response.status_code >= 400:
-                body_text = str(response.text or "").lower()
+                # transports are only contracted to provide .json(); the
+                # raw body is best-effort (fakes and minimal responses
+                # legitimately lack .text — this AttributeError swallowed
+                # semantic 4xxs and broke REJECTED mapping in the OMS)
+                body_text = str(getattr(response, "text", "") or "").lower()
                 if "signature" in body_text and (
                         "expired" in body_text or "invalid" in body_text):
                     # THE authoritative clock/auth failure — the venue
@@ -266,6 +273,9 @@ class DeltaAdapter:
     def check_clock(self) -> None:
         """Boot-time skew check (forces one cheap authenticated-less call)."""
         self._clock_checked = False
+        # coids this process has successfully handed to the venue — see the
+        # session idempotency guard in place_order
+        self._sent_coids: set[str] = set()
         self._request("GET", "/v2/products", params={"page_size": 1},
                       auth=False)
 
@@ -328,6 +338,20 @@ class DeltaAdapter:
                     bracket: BracketSpec | None = None) -> OrderUpdate:
         import json as _json
 
+        # session idempotency guard: Delta frees a client_order_id for
+        # reuse once the original order reaches a terminal state, so the
+        # venue only deduplicates among OPEN orders (proven live by the
+        # conformance suite — a post-fill resubmit double-filled). The OMS
+        # resolve loop is the primary retry guard; this makes the adapter
+        # itself fail closed if any path resubmits a coid it already sent.
+        if spec.client_order_id in self._sent_coids:
+            return OrderUpdate(
+                client_order_id=spec.client_order_id,
+                state=OrderState.REJECTED,
+                reason="duplicate client_order_id (adapter session guard: "
+                       "venue dedup only covers open orders)",
+            )
+
         info = self.instruments.get(spec.symbol)
         contracts = info.to_contracts(spec.quantity)
         if contracts < info.min_contracts:
@@ -365,6 +389,7 @@ class DeltaAdapter:
         except _SemanticError as exc:
             return OrderUpdate(client_order_id=spec.client_order_id,
                                state=OrderState.REJECTED, reason=str(exc))
+        self._sent_coids.add(spec.client_order_id)
         return self._to_update(result.get("result", {}))
 
     def cancel_order(self, client_order_id: str) -> OrderUpdate:

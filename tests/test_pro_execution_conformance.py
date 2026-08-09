@@ -441,3 +441,27 @@ class TestDeltaAdapterUnits:
             stub.place_order(OrderSpec(
                 client_order_id="x", symbol="BTC-USD", venue_symbol="",
                 side="BUY", quantity=1.0))
+
+
+class TestSessionIdempotencyGuard:
+    def test_resubmitted_coid_rejected_without_venue_call(self):
+        """Delta frees a client_order_id once the original order is
+        terminal (proven live: a post-fill resubmit double-filled), so the
+        adapter itself refuses any coid it has already sent this session."""
+        from tradingagents.pro.execution.adapters.delta import DeltaAdapter
+        from tradingagents.pro.execution.interface import OrderState
+
+        fake = FakeDeltaHttp()
+        adapter = DeltaAdapter(CREDS, http=fake, max_read_retries=0)
+        adapter.instruments.refresh()
+        coid = _coid("guard")
+        spec = OrderSpec(client_order_id=coid, symbol="BTC-USD",
+                         venue_symbol="BTCUSD", side="BUY", quantity=0.001,
+                         reference_price=60_000.0)
+        first = adapter.place_order(spec)
+        assert first.state is not OrderState.REJECTED
+        calls_after_first = fake.next_id
+        second = adapter.place_order(spec)
+        assert second.state is OrderState.REJECTED
+        assert "session guard" in (second.reason or "")
+        assert fake.next_id == calls_after_first  # venue never saw it
