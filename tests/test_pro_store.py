@@ -281,3 +281,41 @@ class TestUsers:
             assert upgraded.get_kv("k") == "v"
         finally:
             upgraded.close()
+
+
+def test_load_runs_limit_is_applied_by_sqlite_not_in_python(tmp_path):
+    """The boot path fetched EVERY run row and sliced afterwards, so a
+    500-run store materialised the whole table (~100 KB JSON each) just to
+    keep the newest few hundred. On a 1 GiB container that transient peak —
+    on top of building models from it — is the likeliest OOM moment."""
+    from tradingagents.pro.store import EventStore
+
+    store = EventStore(tmp_path / "s.db")
+    for i in range(25):
+        store.upsert_run(f"r{i:02d}", f"2026-01-{i + 1:02d}T00:00:00+00:00",
+                         "BTC-USD", "loop", json.dumps({"run_id": f"r{i:02d}"}))
+
+    statements = []
+    store._conn.set_trace_callback(statements.append)
+    try:
+        rows = store.load_runs(limit=5)
+    finally:
+        store._conn.set_trace_callback(None)
+
+    assert [json.loads(r)["run_id"] for r in rows] == \
+        ["r20", "r21", "r22", "r23", "r24"], "newest-last contract"
+    select = next(s for s in statements if "SELECT record FROM runs" in s)
+    assert "LIMIT" in select.upper(), "SQLite must do the limiting, not Python"
+
+
+def test_load_runs_zero_and_unlimited(tmp_path):
+    import json
+
+    from tradingagents.pro.store import EventStore
+
+    store = EventStore(tmp_path / "s.db")
+    for i in range(3):
+        store.upsert_run(f"r{i}", f"2026-01-0{i + 1}T00:00:00+00:00",
+                       "BTC-USD", "loop", json.dumps({"run_id": f"r{i}"}))
+    assert store.load_runs(limit=0) == []
+    assert len(store.load_runs()) == 3

@@ -188,12 +188,27 @@ class EventStore:
             )
 
     def load_runs(self, limit: int | None = None) -> list[str]:
-        """Newest-last record JSONs (recorder sorts again by started_at)."""
-        sql = "SELECT record FROM runs ORDER BY started_at"
-        with self._lock:
-            rows = self._conn.execute(sql).fetchall()
+        """Newest-last record JSONs (recorder sorts again by started_at).
+
+        The LIMIT is applied by SQLite, not in Python. Fetching every row
+        and slicing afterwards defeated the point of ``max_runs``: the boot
+        path materialised the WHOLE runs table (~100 KB of JSON per run)
+        just to keep the newest few hundred, and that transient peak — on
+        top of the models being built from it — is the moment a 1 GiB
+        container is most likely to be OOM-killed.
+        """
         if limit is not None and limit >= 0:
-            rows = rows[-limit:] if limit else []
+            if limit == 0:
+                return []
+            # DESC + LIMIT so SQLite stops after `limit` rows, then flip
+            # back to newest-last for the caller's contract
+            sql = "SELECT record FROM runs ORDER BY started_at DESC LIMIT ?"
+            with self._lock:
+                rows = self._conn.execute(sql, (limit,)).fetchall()
+            return [r[0] for r in reversed(rows)]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record FROM runs ORDER BY started_at").fetchall()
         return [r[0] for r in rows]
 
     def prune_runs(self, keep: int) -> int:

@@ -81,3 +81,86 @@ class TestNextMajorEvent:
         releases = enrich_calendar([row("GDPNow", "2026-07-16")])
         nxt = next_major_event(releases, self.NOW)
         assert nxt is not None and nxt["seconds_until"] > 0
+
+
+def test_multi_day_run_anchored_at_today_is_dropped_as_a_fred_artifact():
+    """The recurring-FOMC bug that blocked production for days.
+
+    FRED lists some releases on runs of consecutive days, and the query
+    window always starts at today — so the surviving head of the run slid
+    forward daily, re-materializing "FOMC Press Release" as a fresh event
+    "today at 14:00 ET" on 07-29, 07-30, 08-01, 08-02 and 08-07.
+    """
+    from datetime import date, timedelta
+
+    today = date.today()
+    rows = [
+        {"date": (today + timedelta(days=i)).isoformat(),
+         "release": "FOMC Press Release", "release_id": 101, "major": True}
+        for i in range(5)
+    ]
+    assert enrich_calendar(rows) == []
+
+
+def test_a_genuine_single_day_event_today_survives():
+    """Only multi-day runs are the artifact; a real release publishing today
+    arrives as one row and must still gate."""
+    from datetime import date
+
+    today = date.today().isoformat()
+    kept = enrich_calendar([
+        {"date": today, "release": "FOMC Press Release",
+         "release_id": 101, "major": True},
+    ])
+    assert [r["date"] for r in kept] == [today]
+
+
+def test_future_runs_still_collapse_to_their_head():
+    from datetime import date, timedelta
+
+    start = date.today() + timedelta(days=10)
+    rows = [
+        {"date": (start + timedelta(days=i)).isoformat(),
+         "release": "FOMC Press Release", "release_id": 101, "major": True}
+        for i in range(4)
+    ]
+    kept = enrich_calendar(rows)
+    assert [r["date"] for r in kept] == [start.isoformat()]
+
+
+def test_next_major_marks_synthetic_times_inexact():
+    """next_major_event always fills `at`, substituting 23:59 ET when the
+    agency time is unknown — so the gate needs at_is_exact to tell a
+    published instant from a placeholder."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    exact = next_major_event(
+        [{"date": "2026-08-10", "release": "FOMC Press Release", "major": True,
+          "ts_utc": "2026-08-10T18:00:00+00:00"}], now)
+    assert exact["at_is_exact"] is True
+
+    guessed = next_major_event(
+        [{"date": "2026-08-10", "release": "Some Major Print", "major": True,
+          "ts_utc": None}], now)
+    assert guessed["at_is_exact"] is False
+
+
+def test_event_gate_passes_open_on_a_synthetic_instant():
+    """A timeless major used to block every run in the last 4h of its date,
+    on a fabricated 23:59 ET instant — defeating event_gate's documented
+    date-only pass-open branch."""
+    from datetime import datetime, timedelta, timezone
+
+    from tradingagents.pro.pipeline.gates import event_gate
+
+    now = datetime(2026, 8, 9, 20, 0, tzinfo=timezone.utc)
+    soon = (now + timedelta(hours=2)).isoformat()
+
+    blocked = event_gate({"release": "CPI", "at": soon, "at_is_exact": True},
+                         now, 4.0)
+    assert blocked.passed is False
+
+    guessed = event_gate({"release": "CPI", "at": soon, "at_is_exact": False},
+                         now, 4.0)
+    assert guessed.passed is True

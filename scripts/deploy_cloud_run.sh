@@ -141,7 +141,7 @@ echo "==> Building + pushing ${IMAGE} via Cloud Build"
 gcloud builds submit \
   --project "$PROJECT_ID" \
   --config deploy/cloudbuild.yaml \
-  --substitutions "_IMAGE=${IMAGE}" \
+  --substitutions "_IMAGE=${IMAGE},_GIT_SHA=${GIT_SHA_VALUE}" \
   .
 
 # deploy_service SERVICE BUCKET LOOP_DISABLED — one Cloud Run (re)deploy.

@@ -117,6 +117,13 @@ class PrefsDocument(_Mutable):
     # loop actually ran on — persisted so a restart keeps skipping
     # unchanged bars instead of re-spending an LLM run per symbol
     last_bar_state: dict = Field(default_factory=dict)
+    # symbol-rotation cursor. last_bar_state persists but the cursor used
+    # to be an in-process itertools.cycle, so every restart replayed the
+    # roster from the top — and since the head symbols were already marked
+    # seen for the day, the tail (EURUSD/USDJPY) could go days without ever
+    # being reached. Persist the cursor so the rotation resumes where it
+    # left off.
+    loop_rotation_index: int = Field(default=0, ge=0)
 
 
 PREFS_KV_KEY = "dashboard_prefs"
@@ -241,6 +248,16 @@ class PrefsStore:
         with self._lock:
             self._document.last_bar_state = dict(state)
             self._write()
+
+    def next_rotation_index(self, length: int) -> int:
+        """Return the current rotation cursor and advance it, atomically."""
+        if length <= 0:
+            return 0
+        with self._lock:
+            index = self._document.loop_rotation_index % length
+            self._document.loop_rotation_index = (index + 1) % length
+            self._write()
+            return index
 
     def add_price_alert(self, data: dict) -> dict:
         from datetime import datetime, timezone

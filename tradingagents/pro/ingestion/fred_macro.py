@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -33,6 +34,56 @@ from tradingagents.pro.ingestion.base import HttpTransport, RequestsTransport
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.stlouisfed.org/fred"
+
+# Releases that actually move price on publication. This drives the
+# pipeline's 4h event gate — a trading kill-switch — so it is an ALLOWLIST
+# of anchored names, not a substring search.
+#
+# It used to be an unanchored `re.search` written for ordering a briefing
+# widget. Reused as a gate, it blocked 26% of production runs: "Debt to
+# Gross Domestic Product Ratios" matched "gross domestic product", and the
+# STATE-level "State Unemployment Insurance Weekly Claims Report" matched
+# the national weekly-claims pattern and blocked 4h every single week.
+_MAJOR_RELEASES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        r"^FOMC\b",
+        r"^Consumer Price Index$",
+        r"^Employment Situation$",
+        r"^Producer Price Index",
+        r"^Advance Monthly Sales for Retail(?: and Food Services)?$",
+        r"^Retail Sales$",
+        r"^Personal Income and Outlays$",
+        r"^Gross Domestic Product$",
+        # national weekly claims only — the "State ..." variant is a
+        # regional breakdown that does not move the tape
+        r"^Unemployment Insurance Weekly Claims Report$",
+        r"^University of Michigan Consumer (?:Survey|Sentiment)",
+        r"^ISM (?:Manufacturing|Services|Non-Manufacturing)",
+        r"^Job Openings and Labor Turnover Survey$",
+        r"^JOLTS$",
+    )
+)
+
+#: names containing a major phrase that are derived/regional, never the
+#: market-moving print. Belt-and-braces against allowlist drift.
+_NEVER_MAJOR = re.compile(
+    r"\b(?:state|regional|by (?:state|industry|county|metro)|ratio|"
+    r"revision|annual revision|nowcast)\b",
+    re.IGNORECASE,
+)
+
+
+def is_major_release(release_name: str) -> bool:
+    """True only for releases whose publication reliably moves price.
+
+    Anchored allowlist: this gates trading, so a false positive costs real
+    signal (4h of blocked entries) while a false negative only forfeits
+    caution around a second-tier print.
+    """
+    name = (release_name or "").strip()
+    if not name or _NEVER_MAJOR.search(name):
+        return False
+    return any(pattern.search(name) for pattern in _MAJOR_RELEASES)
 
 # P3-02 vintage sink: called once per usable observation with keyword args
 # (name, value, observed_at, as_of, source) — the exact signature of
@@ -97,24 +148,12 @@ class FredMacroFeed:
                 "limit": 200,
             },
         )
-        import re
-
-        # market-moving releases surface first in briefing widgets;
-        # everything still ships (the calendar page shows all)
-        major = re.compile(
-            r"consumer price index|employment situation|fomc|"
-            r"gross domestic product|producer price index|retail sales|"
-            r"personal income and outlays|advance monthly sales|"
-            r"unemployment insurance weekly claims|"
-            r"university of michigan|ism report|jolts|gdpnow",
-            re.IGNORECASE,
-        )
         return [
             {
                 "date": row["date"],
                 "release": row.get("release_name", ""),
                 "release_id": row.get("release_id"),
-                "major": bool(major.search(row.get("release_name", ""))),
+                "major": is_major_release(row.get("release_name", "")),
             }
             for row in payload.get("release_dates", [])
             if today.isoformat() <= row.get("date", "")

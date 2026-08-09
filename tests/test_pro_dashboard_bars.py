@@ -378,7 +378,7 @@ class TestRegistryFallback:
         monkeypatch.setattr(DeltaExchangeFeed, "probe", classmethod(lambda cls, timeout=8.0: False))
         monkeypatch.setattr(OandaGoldFeed, "probe", classmethod(lambda cls, timeout=8.0: False))
         registry = default_registry()
-        assert registry["XAUUSD"].source == "yfinance_daily"
+        assert registry["XAUUSD"].source.endswith("yfinance_daily")
         assert registry["XAUUSD"].live is False
 
     def test_valid_probe_enables_oanda(self, monkeypatch):
@@ -390,7 +390,7 @@ class TestRegistryFallback:
         monkeypatch.setattr(DeltaExchangeFeed, "probe", classmethod(lambda cls, timeout=8.0: False))
         monkeypatch.setattr(OandaGoldFeed, "probe", classmethod(lambda cls, timeout=8.0: True))
         registry = default_registry()
-        assert registry["XAUUSD"].source == "oanda_gold"
+        assert registry["XAUUSD"].source.endswith("oanda_gold")
         assert registry["XAUUSD"].live is True
         assert "1h" in registry["XAUUSD"].timeframes
 
@@ -407,7 +407,7 @@ class TestRegistryFallback:
         registry = default_registry()
         for symbol, yf_sym in (("EURUSD", "EURUSD=X"), ("USDJPY", "USDJPY=X")):
             spec = registry[symbol]
-            assert spec.source == "yfinance_daily"
+            assert spec.source.endswith("yfinance_daily")
             assert spec.vendor_symbol == yf_sym
             assert spec.timeframes == (Timeframe.D1,)
             assert spec.live is False and spec.tradeable is True
@@ -425,7 +425,7 @@ class TestRegistryFallback:
         registry = default_registry()
         for symbol, oanda_sym in (("EURUSD", "EUR_USD"), ("USDJPY", "USD_JPY")):
             spec = registry[symbol]
-            assert spec.source == "oanda"
+            assert spec.source.endswith("oanda")
             assert spec.vendor_symbol == oanda_sym
             assert spec.live is True and spec.tradeable is True
             assert "1h" in spec.timeframes
@@ -439,9 +439,9 @@ class TestDeltaPreference:
         monkeypatch.setattr(DeltaExchangeFeed, "probe",
                             classmethod(lambda cls, timeout=8.0: True))
         registry = default_registry()
-        assert registry["BTC-USD"].source == "delta_exchange"
+        assert registry["BTC-USD"].source.endswith("delta_exchange")
         assert registry["BTC-USD"].vendor_symbol == "BTCUSD"
-        assert registry["XAUUSD"].source == "delta_exchange"
+        assert registry["XAUUSD"].source.endswith("delta_exchange")
         assert registry["XAUUSD"].vendor_symbol == "XAUTUSD"
         assert registry["XAUUSD"].live is True
         assert "1m" in [t.value for t in registry["XAUUSD"].timeframes]
@@ -454,5 +454,76 @@ class TestDeltaPreference:
         monkeypatch.delenv("OANDA_API_TOKEN", raising=False)
         assert DeltaExchangeFeed.probe() is False  # no network touched
         registry = default_registry()
-        assert registry["BTC-USD"].source == "binance_spot"
-        assert registry["XAUUSD"].source == "yfinance_daily"
+        assert registry["BTC-USD"].source.endswith("binance_spot")
+        assert registry["XAUUSD"].source.endswith("yfinance_daily")
+
+
+class TestCacheIsBounded:
+    """The bar cache had no max size and no eviction.
+
+    TTL governs staleness only — a stale entry is overwritten just if that
+    exact key is asked for again, otherwise it lives forever. Chart "load
+    more" mints one entry per scroll position and a backtest pages backwards
+    at 1000 bars (~1.2 MB) per entry, so the dict grew without limit in a
+    1 GiB container.
+    """
+
+    def _service(self, max_entries=8):
+        from datetime import datetime, timedelta, timezone
+
+        from tradingagents.contracts import OHLCVBar, Timeframe
+        from tradingagents.pro.dashboard.marketdata import (
+            MarketDataService, SymbolSpec,
+        )
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        class Feed:
+            name = "fake"
+
+            def get_bars(self, symbol, timeframe, *, limit=300, end=None):
+                return [OHLCVBar(timeframe=timeframe,
+                                 start=base + timedelta(days=i),
+                                 open=1.0, high=2.0, low=0.5, close=1.5,
+                                 volume=1.0)
+                        for i in range(3)]
+
+        registry = {"X": SymbolSpec(
+            symbol="X", vendor_symbol="X", source="fake",
+            timeframes=(Timeframe.D1,), live=False, feed_factory=Feed)}
+        return MarketDataService(registry, max_entries=max_entries), base
+
+    def test_paged_windows_evict_instead_of_growing_forever(self):
+        from datetime import timedelta
+
+        from tradingagents.contracts import Timeframe
+
+        svc, base = self._service(max_entries=8)
+        for i in range(50):  # 50 distinct scroll positions
+            svc.get_bars("X", Timeframe.D1, limit=3,
+                         end=base + timedelta(days=100 + i))
+        assert len(svc._cache) <= 8, "cache grew past its cap"
+
+    def test_flight_locks_do_not_leak_with_the_keys(self):
+        from datetime import timedelta
+
+        from tradingagents.contracts import Timeframe
+
+        svc, base = self._service(max_entries=8)
+        for i in range(30):
+            svc.get_bars("X", Timeframe.D1, limit=3,
+                         end=base + timedelta(days=200 + i))
+        assert len(svc._flights) <= 8, "one lock per key, kept forever"
+
+    def test_a_hit_refreshes_recency_so_the_hot_window_survives(self):
+        from datetime import timedelta
+
+        from tradingagents.contracts import Timeframe
+
+        svc, base = self._service(max_entries=4)
+        svc.get_bars("X", Timeframe.D1, limit=3)          # live window
+        for i in range(3):
+            svc.get_bars("X", Timeframe.D1, limit=3,
+                         end=base + timedelta(days=300 + i))
+            svc.get_bars("X", Timeframe.D1, limit=3)      # keep it hot
+        assert ("X", Timeframe.D1, None) in svc._cache

@@ -263,6 +263,32 @@ class TestFredCalendar:
         assert by_name["Employment Situation"]["major"] is True
         assert by_name["SONIA Interest Rate Benchmark"]["major"] is False
 
+    def test_derived_and_regional_releases_are_not_major(self):
+        """The exact false positives that blocked 26% of production runs.
+
+        The classifier was an unanchored substring search written to order a
+        briefing widget, then reused as the 4h trading kill-switch:
+        "Debt to Gross Domestic Product Ratios" matched "gross domestic
+        product", and the STATE-level claims report matched the national
+        weekly-claims pattern — blocking 4h every single week.
+        """
+        from tradingagents.pro.ingestion.fred_macro import is_major_release
+
+        assert is_major_release("Debt to Gross Domestic Product Ratios") is False
+        assert is_major_release(
+            "State Unemployment Insurance Weekly Claims Report") is False
+        assert is_major_release("Gross Domestic Product by Industry") is False
+        assert is_major_release("Real Gross Domestic Product by State") is False
+        assert is_major_release("GDPNow") is False  # a nowcast, not a print
+
+        # ...while the genuine market movers still qualify
+        assert is_major_release("FOMC Press Release") is True
+        assert is_major_release("Consumer Price Index") is True
+        assert is_major_release("Employment Situation") is True
+        assert is_major_release("Gross Domestic Product") is True
+        assert is_major_release(
+            "Unemployment Insurance Weekly Claims Report") is True
+
     def test_calendar_requires_key(self, monkeypatch):
         from tradingagents.dataflows.fred import FredNotConfiguredError
 

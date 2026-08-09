@@ -19,8 +19,20 @@ from pydantic import BaseModel, Field
 from tradingagents.contracts import AgentEvidence, Direction, MarketSnapshot, MetricReading
 from tradingagents.pro.agents.rendering import render_context
 from tradingagents.pro.agents.specs import AgentSpec
+from tradingagents.pro.observability import is_retryable_llm_error
 
 logger = logging.getLogger(__name__)
+
+# Why an agent abstained. NO_DATA is a legitimate market/coverage state;
+# everything else is infrastructure and must not be reported as though the
+# agents simply had nothing to say.
+NO_DATA = "no_data"
+LLM_ERROR = "llm_error"          # call failed, may succeed on retry
+LLM_REFUSED = "llm_refused"      # 401/402/403 — account/auth, never retryable
+LLM_UNAVAILABLE = "llm_unavailable"  # model has no structured-output support
+
+#: abstention causes that mean "the model layer is broken", not "no signal"
+LLM_ABSTENTIONS = frozenset({LLM_ERROR, LLM_REFUSED, LLM_UNAVAILABLE})
 
 
 class EvidenceDraft(BaseModel):
@@ -62,6 +74,10 @@ class EvidenceAgent:
         model qualifies; tests pass fakes."""
         self.spec = spec
         self._template = template or load_team_template(spec.team.value)
+        # cause of the most recent abstention (None = last call produced
+        # evidence). One agent is only ever analyzed by one thread, so this
+        # is safe under the team node's ThreadPoolExecutor.
+        self.last_abstention: str | None = None
         try:
             self._structured = llm.with_structured_output(EvidenceDraft)
         except Exception:
@@ -99,16 +115,27 @@ class EvidenceAgent:
         snapshot: MarketSnapshot,
         extra_metrics: dict[str, MetricReading] | None = None,
     ) -> AgentEvidence | None:
-        """Produce evidence, or None (abstain) when data or parsing fails."""
+        """Produce evidence, or None (abstain) when data or parsing fails.
+
+        Abstaining sets ``self.last_abstention`` to the CAUSE — callers that
+        care (the team node) read it to tell "this agent had no data" from
+        "the model provider is down". Both used to collapse into a bare
+        None, which is how a 402 outage surfaced to operators as the
+        market-shaped message "no agent produced evidence".
+        """
+        self.last_abstention = None
         if self._structured is None:
+            self.last_abstention = LLM_UNAVAILABLE
             return None
         ctx = render_context(snapshot, self.spec, extra_metrics)
         if ctx.empty:
             logger.info("%s: no requested data available; abstaining", self.spec.agent_id)
+            self.last_abstention = NO_DATA
             return None
         if self.spec.primary and not ctx.has_any(self.spec.primary):
             logger.info("%s: primary inputs %s unavailable; abstaining",
                         self.spec.agent_id, self.spec.primary)
+            self.last_abstention = NO_DATA
             return None
         prompt = self.build_prompt(snapshot, extra_metrics, ctx=ctx)
         try:
@@ -119,11 +146,17 @@ class EvidenceAgent:
                     prompt, self.spec, ctx.data_refs)
             else:
                 draft = self._structured.invoke(prompt)
-        except Exception:
+        except Exception as exc:
+            # a provider refusal (402/401) is not "this agent had nothing to
+            # say" — record it so join can name the real cause
             logger.warning("%s: structured output failed; abstaining",
                            self.spec.agent_id, exc_info=True)
+            self.last_abstention = (
+                LLM_ERROR if is_retryable_llm_error(exc) else LLM_REFUSED
+            )
             return None
         if draft is None:
+            self.last_abstention = LLM_ERROR
             return None
         return AgentEvidence(
             agent_id=self.spec.agent_id,
@@ -165,3 +198,21 @@ def run_agents(
         if result is not None:
             evidence.append(result)
     return evidence
+
+
+def abstention_causes(agents: Sequence[EvidenceAgent]) -> dict[str, int]:
+    """Tally why the given agents abstained on their most recent analyze().
+
+    Read AFTER running a team. Agents that produced evidence contribute
+    nothing, so ``sum(counts.values())`` is the abstention count.
+    """
+    counts: dict[str, int] = {}
+    for agent in agents:
+        # getattr: the roster also carries non-EvidenceAgent agents
+        # (GoldVolContextAgent, ComputedFactorAgent). They record no cause,
+        # so they simply do not contribute — better than overclaiming an
+        # LLM failure we did not observe.
+        cause = getattr(agent, "last_abstention", None)
+        if cause:
+            counts[cause] = counts.get(cause, 0) + 1
+    return counts

@@ -63,6 +63,16 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && npm cache clean --force
 
 RUN useradd --create-home trader && mkdir -p /data && chown trader /data
+
+# Bake the source revision INTO the image. The GIT_SHA env var alone is not
+# trustworthy: `gcloud run services update --update-env-vars` MERGES, so a
+# stale GIT_SHA from an earlier deploy survives a new image and the audit
+# stamp then attributes orders to code that is not running (observed in
+# prod: env said 071fd14 while the image contained later commits). This
+# file cannot drift from the code it ships with.
+ARG GIT_SHA=unknown
+RUN printf '%s' "$GIT_SHA" > /etc/tradingagents-build-sha
+
 USER trader
 # P2-04: bake the embedding model into the image so cold boots never
 # depend on the HF Hub (fallback would silently degrade to hashing)

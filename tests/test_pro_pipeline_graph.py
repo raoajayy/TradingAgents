@@ -431,6 +431,78 @@ def test_critic_tie_fails_closed():
     assert state["gate_results"]["critic"]["votes_pass"] == 1
 
 
+def test_join_names_the_provider_when_the_model_layer_is_what_failed():
+    """The production symptom: every signal on /decisions rejected at join
+    with "no agent produced evidence; nothing to debate" — which reads as a
+    market/coverage condition — while the real cause was the provider
+    refusing all ~55 calls with HTTP 402 Insufficient Balance. An operator
+    reading that message investigates the strategy, not the billing.
+    """
+    from tradingagents.pro.agents import EvidenceDraft
+
+    refusal = RuntimeError("Insufficient Balance")
+    refusal.status_code = 402  # duck-typed like openai.APIStatusError
+    llm = FakePipelineLLM(overrides={EvidenceDraft: refusal})
+    state = run_pipeline(llm, CONFIG, pipeline_snapshot())
+
+    assert state["rejection"]["stage"] == "join"
+    (reason,) = state["rejection"]["reasons"]
+    assert "failed the structured LLM call" in reason
+    assert "REFUSED" in reason and "not a market condition" in reason
+    # the honest count is carried, not a bare boolean
+    assert "/" in reason
+
+
+def test_join_keeps_the_plain_reason_when_agents_simply_had_no_data():
+    """The inverse: a genuine no-data abstention must NOT be dressed up as
+    an infrastructure failure, or the new message cries wolf."""
+    from tradingagents.pro.pipeline.nodes import NO_EVIDENCE_REASON, _no_evidence_reason
+
+    assert _no_evidence_reason({}) == NO_EVIDENCE_REASON
+    assert _no_evidence_reason(
+        {"abstentions_by_team": {"technical": {"no_data": 12}}}
+    ) == NO_EVIDENCE_REASON
+
+
+def test_non_retryable_provider_refusal_does_not_burn_the_retry_budget():
+    """402/401 can never succeed on retry. Retrying spent the full budget
+    plus its backoff sleeps on every one of ~55 agent calls per run."""
+    from tradingagents.pro.pipeline import DebateTurn
+    from tradingagents.pro.pipeline.nodes import PipelineNodes
+
+    calls = {"n": 0}
+
+    class _Refusing:
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, prompt):
+            calls["n"] += 1
+            exc = RuntimeError("Insufficient Balance")
+            exc.status_code = 402
+            raise exc
+
+    slept: list[float] = []
+    nodes = PipelineNodes(_Refusing(), CONFIG, llm_retries=3)
+    nodes._sleep = slept.append
+    assert nodes._invoke(DebateTurn, "why?") is None
+    assert calls["n"] == 1, "a 402 must not be retried"
+    assert slept == [], "and must not sleep between attempts"
+
+    # a retryable error still uses the full budget
+    calls["n"] = 0
+
+    class _Flaky(_Refusing):
+        def invoke(self, prompt):
+            calls["n"] += 1
+            raise RuntimeError("connection reset")  # no status_code
+
+    nodes2 = PipelineNodes(_Flaky(), CONFIG, llm_retries=3)
+    nodes2._sleep = slept.append
+    assert nodes2._invoke(DebateTurn, "why?") is None
+    assert calls["n"] == 4  # 1 + 3 retries
+
+
 def test_debate_abstentions_are_counted_and_never_read_as_confidence_zero():
     """A debate turn whose structured call fails must be recorded as an
     abstention, not as a real confidence-0 vote.

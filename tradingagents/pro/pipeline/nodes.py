@@ -38,7 +38,10 @@ from tradingagents.contracts import (
     utc_now,
 )
 from tradingagents.pro.agents import (
+    LLM_ABSTENTIONS,
+    LLM_REFUSED,
     SPECS_BY_TEAM,
+    abstention_causes,
     attach_gold_vol_context,
     attach_mined_factors,
     build_team,
@@ -47,6 +50,7 @@ from tradingagents.pro.agents import (
     run_agents,
 )
 from tradingagents.pro.agents.metrics import compute_neutral_risk_metrics, infer_timeframe
+from tradingagents.pro.observability import is_retryable_llm_error
 from tradingagents.pro.agents.rendering import wrap_untrusted
 from tradingagents.pro.analytics import classify_regime
 from tradingagents.pro.analytics.conformal import conformal_vol_gate_inputs
@@ -95,6 +99,33 @@ def _evidence_block(evidence: list[AgentEvidence]) -> str:
 
 
 ABSTAINED_ARGUMENT = "(abstained: structured output failed)"
+
+#: reason emitted when every agent abstained for ordinary data reasons
+NO_EVIDENCE_REASON = "no agent produced evidence; nothing to debate"
+
+
+def _no_evidence_reason(state: dict) -> str:
+    """Name the ACTUAL cause of an empty evidence set.
+
+    Production spent days emitting "no agent produced evidence" — which
+    reads as a market/coverage condition — while every call was being
+    refused with HTTP 402. When the model layer is what failed, say so:
+    the operator needs to fix billing, not the strategy.
+    """
+    counts: dict[str, int] = {}
+    for team_counts in (state.get("abstentions_by_team") or {}).values():
+        for cause, n in (team_counts or {}).items():
+            counts[cause] = counts.get(cause, 0) + n
+    total = sum(counts.values())
+    llm_failed = sum(n for cause, n in counts.items() if cause in LLM_ABSTENTIONS)
+    if not total or not llm_failed:
+        return NO_EVIDENCE_REASON
+    refused = counts.get(LLM_REFUSED, 0)
+    detail = (" — the provider REFUSED the calls (auth/billing, e.g. HTTP 402); "
+              "this is not a market condition" if refused else
+              " — the model calls failed (provider/model error)")
+    return (f"no agent produced evidence: {llm_failed}/{total} agents failed "
+            f"the structured LLM call{detail}")
 
 
 def _debate_entry(speaker: str, stance: str, turn) -> dict:
@@ -239,11 +270,17 @@ class PipelineNodes:
         for attempt in range(1 + self.llm_retries):
             try:
                 return runnable.invoke(prompt)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "pipeline structured call failed for %s (attempt %d/%d)",
                     schema.__name__, attempt + 1, 1 + self.llm_retries, exc_info=True,
                 )
+                if not is_retryable_llm_error(exc):
+                    # 401/402/403: the provider is refusing on auth/billing
+                    # grounds. Retrying cannot change the answer, and doing
+                    # so burns the budget plus its sleeps on every one of
+                    # ~55 agent calls per run.
+                    break
                 if attempt < self.llm_retries:
                     # exponential backoff so a 429 storm is not amplified
                     self._sleep(self.retry_base_seconds * (2 ** attempt))
@@ -392,19 +429,20 @@ class PipelineNodes:
                 evidence = [e for e in results if e is not None]
             else:
                 evidence = run_agents(agents, snapshot, extra_metrics=extras)
-            return {"evidence_by_team": {team.value: evidence}}
+            # why the silent agents were silent — read after running, so
+            # join can distinguish "no data" from "the provider is down"
+            return {"evidence_by_team": {team.value: evidence},
+                    "abstentions_by_team": {team.value: abstention_causes(agents)}}
 
         node.__name__ = f"team_{team.value}"
         return node
 
     def join(self, state: dict) -> dict[str, Any]:
         """Fan-in gate: no evidence from any team means nothing to debate."""
-        if not any(state.get("evidence_by_team", {}).values()):
-            return {"rejection": {
-                "stage": "join",
-                "reasons": ["no agent produced evidence; nothing to debate"],
-            }}
-        return {}
+        if any(state.get("evidence_by_team", {}).values()):
+            return {}
+        return {"rejection": {"stage": "join",
+                              "reasons": [_no_evidence_reason(state)]}}
 
     # --- debate ----------------------------------------------------------------
 

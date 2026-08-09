@@ -11,16 +11,53 @@ of error types equals the number of distinct caller reactions.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 import requests
+from pydantic import ValidationError
 
 from tradingagents.contracts import MetricReading, OHLCVBar, SpotQuote, Timeframe
 from tradingagents.dataflows.errors import VendorRateLimitError
 
 DEFAULT_TIMEOUT = 30.0
 _USER_AGENT = "tradingagents-pro/0.1"
+
+logger = logging.getLogger(__name__)
+
+
+def build_bars(rows: Iterable[dict], *, feed: str, symbol: str) -> list[OHLCVBar]:
+    """Build bars from vendor rows, dropping any the contract rejects.
+
+    ``OHLCVBar`` enforces that high/low bracket open/close — a real
+    invariant worth keeping strict. But vendors do emit rows that violate
+    it, and building bars in a bare list comprehension let ONE bad row
+    raise ValidationError all the way out of ``run_once``, killing the
+    whole loop iteration:
+
+        inconsistent bar: O=147.084 H=148.933 L=147.093 C=147.084   (L > O)
+        inconsistent bar: O=1.16546 H=1.16529 L=1.16036 C=1.16546   (H < O)
+
+    A gap is recoverable; a dead iteration is not. Bad rows are dropped and
+    logged rather than repaired — clamping high/low to bracket open/close
+    would fabricate prices the venue never printed.
+    """
+    bars: list[OHLCVBar] = []
+    dropped = 0
+    for row in rows:
+        try:
+            bars.append(OHLCVBar(**row))
+        except (ValidationError, ValueError, TypeError, KeyError):
+            dropped += 1
+    if dropped:
+        logger.warning(
+            "%s: dropped %d malformed bar(s) for %s (high/low did not bracket "
+            "open/close, or fields were unusable); continuing with %d",
+            feed, dropped, symbol, len(bars),
+        )
+    return bars
 
 
 class HttpTransport(Protocol):

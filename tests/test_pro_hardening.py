@@ -89,6 +89,50 @@ class TestDeepStageTimeouts:
         assert by_model["gpt-5.5"]["timeout"] == 120.0
 
 
+class TestProviderModelCoherence:
+    """A model routed to the wrong provider can never work — fail at start.
+
+    Production ran for days with llm_provider=deepseek while the model ids
+    were claude-haiku-4-5 / claude-sonnet-5: leftovers of an earlier
+    claude-cli deploy, because Cloud Run's --update-env-vars MERGES rather
+    than replaces. Every call was refused and the pipeline degraded to
+    evidence-starved rejections; the only signal was a RuntimeWarning.
+    """
+
+    def test_claude_models_under_deepseek_raise(self):
+        from tradingagents.pro.models import assert_models_match_provider
+
+        with pytest.raises(ValueError, match="model/provider mismatch"):
+            assert_models_match_provider(
+                "deepseek", ["claude-haiku-4-5-20251001", "claude-sonnet-5"])
+
+    def test_the_exact_production_config_is_rejected(self):
+        config = ProConfig(asset=AssetClass.GOLD)
+        config = config.model_copy(update={
+            "models": config.models.model_copy(update={
+                "llm_provider": "deepseek",
+                "quick_think_llm": "claude-haiku-4-5-20251001",
+                "deep_think_llm": "claude-sonnet-5",
+            })
+        })
+        with pytest.raises(ValueError, match="model/provider mismatch"):
+            bundle_from_config(config)
+
+    def test_claude_models_are_fine_on_their_own_providers(self):
+        from tradingagents.pro.models import assert_models_match_provider
+
+        for provider in ("anthropic", "claude-cli", "bedrock", "openrouter"):
+            assert_models_match_provider(provider, ["claude-sonnet-5"])
+
+    def test_unknown_families_pass_untouched(self):
+        """Custom/self-hosted ids on ollama/openrouter must not be blocked —
+        this guard catches wrong-provider routing, not unknown names."""
+        from tradingagents.pro.models import assert_models_match_provider
+
+        assert_models_match_provider("ollama", ["llama3.3:70b", "my-finetune-v2"])
+        assert_models_match_provider("groq", ["mixtral-8x7b-32768"])
+
+
 class TestModelPinning:
     """AI-07: floating aliases refused when pinning is required."""
 

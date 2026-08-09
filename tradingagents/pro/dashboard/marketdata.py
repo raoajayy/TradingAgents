@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 from tradingagents.contracts import OHLCVBar, Timeframe
+from tradingagents.pro.ingestion.pyth import (
+    PYTH_SYMBOLS as _PYTH_SYMBOLS,
+    PythPriceVenueVolumeFeed,
+)
 
 TIMEFRAME_SECONDS: dict[Timeframe, int] = {
     Timeframe.M1: 60,
@@ -36,6 +41,44 @@ TIMEFRAME_SECONDS: dict[Timeframe, int] = {
 MAX_LIMIT = 1000
 DEFAULT_LIMIT = 300
 
+#: Hard cap on cached bar windows. The live set is 9 symbols × up to 8
+#: timeframes = 72 entries at ~300 bars each (~26 MB); the rest of the
+#: budget absorbs chart paging without letting it grow without end. At
+#: ~368 KB per entry this ceiling is roughly 47 MB.
+DEFAULT_CACHE_ENTRIES = 128
+
+
+#: crypto is the only asset class with a real spot/perp volume print worth
+#: overlaying onto Pyth's prices. FX and metals have no meaningful
+#: consolidated spot volume, so there the oracle's "unknown" is the honest
+#: answer rather than a loss.
+_VOLUME_FROM_VENUE = frozenset({"BTC-USD", "ETH-USD", "SOL-USD"})
+
+
+def _pyth_priced(venue_factory, symbol: str):
+    """Wrap a venue feed so BARS come from Pyth and everything else — live
+    ticks, quotes, probes — still comes from the venue. Symbols Pyth does
+    not carry keep the venue feed untouched."""
+    if symbol not in _PYTH_SYMBOLS:
+        return venue_factory
+    with_volume = symbol in _VOLUME_FROM_VENUE
+    return lambda: PythPriceVenueVolumeFeed(venue_factory(), symbol,
+                                            with_volume=with_volume)
+
+
+def _pyth_source(venue_source: str, symbol: str) -> str:
+    """Provenance shown in the UI: name BOTH halves, always.
+
+    The venue stays part of the data path even when it supplies no volume —
+    it serves the live tick stream and quotes, and it is the fallback when
+    Pyth is unreachable. Collapsing that to a bare "pyth" would hide which
+    vendor is actually behind the symbol, which is exactly the provenance
+    this field exists to show.
+    """
+    if symbol not in _PYTH_SYMBOLS:
+        return venue_source
+    return f"pyth+{venue_source}"
+
 
 class UnknownSymbolError(KeyError):
     pass
@@ -50,17 +93,11 @@ class UnsupportedTimeframeError(ValueError):
         )
 
 
-# Pyth-network symbology for the TradingView chart's history/stream feed
-# (proxied via /api/tv/history; stream pair = the part after the first dot).
-# Symbols without an entry simply have no TV chart data source.
-PYTH_SYMBOLS: dict[str, str] = {
-    "BTC-USD": "Crypto.BTC/USD",
-    "ETH-USD": "Crypto.ETH/USD",
-    "SOL-USD": "Crypto.SOL/USD",
-    "XAUUSD": "Metal.XAU/USD",
-    "EURUSD": "FX.EUR/USD",
-    "USDJPY": "FX.USD/JPY",
-}
+# Pyth symbology — re-exported from the feed module so the TradingView
+# chart (/api/tv/history) and the pipeline's decision bars are guaranteed
+# to read the same price series. Symbols without an entry have no Pyth
+# source and keep their venue feed.
+PYTH_SYMBOLS = _PYTH_SYMBOLS
 
 
 @dataclass(frozen=True)
@@ -118,19 +155,19 @@ def default_registry() -> dict[str, SymbolSpec]:
             return SymbolSpec(
                 symbol=symbol,
                 vendor_symbol=delta_sym,
-                source="delta_exchange",
+                source=_pyth_source("delta_exchange", symbol),
                 timeframes=tuple(TIMEFRAME_SECONDS),
                 live=True,
-                feed_factory=DeltaExchangeFeed,
+                feed_factory=_pyth_priced(DeltaExchangeFeed, symbol),
                 tradeable=True,
             )
         return SymbolSpec(
             symbol=symbol,
             vendor_symbol=binance_sym,
-            source="binance_spot",
+            source=_pyth_source("binance_spot", symbol),
             timeframes=tuple(TIMEFRAME_SECONDS),
             live=True,
-            feed_factory=BinanceSpotFeed,
+            feed_factory=_pyth_priced(BinanceSpotFeed, symbol),
             tradeable=True,
         )
 
@@ -154,30 +191,30 @@ def default_registry() -> dict[str, SymbolSpec]:
         registry["XAUUSD"] = SymbolSpec(
             symbol="XAUUSD",
             vendor_symbol="XAUTUSD",  # Tether Gold, ≈ spot (small basis)
-            source="delta_exchange",
+            source=_pyth_source("delta_exchange", "XAUUSD"),
             timeframes=tuple(TIMEFRAME_SECONDS),
             live=True,
-            feed_factory=DeltaExchangeFeed,
+            feed_factory=_pyth_priced(DeltaExchangeFeed, "XAUUSD"),
             tradeable=True,
         )
     elif oanda_alive:
         registry["XAUUSD"] = SymbolSpec(
             symbol="XAUUSD",
             vendor_symbol="XAU_USD",
-            source="oanda_gold",
+            source=_pyth_source("oanda_gold", "XAUUSD"),
             timeframes=tuple(OandaGoldFeed.GRANULARITY),
             live=True,
-            feed_factory=OandaGoldFeed,
+            feed_factory=_pyth_priced(OandaGoldFeed, "XAUUSD"),
             tradeable=True,
         )
     else:
         registry["XAUUSD"] = SymbolSpec(
             symbol="XAUUSD",
             vendor_symbol="GC=F",
-            source="yfinance_daily",
+            source=_pyth_source("yfinance_daily", "XAUUSD"),
             timeframes=(Timeframe.D1,),
             live=False,
-            feed_factory=YFinanceDailyBarsFeed,
+            feed_factory=_pyth_priced(YFinanceDailyBarsFeed, "XAUUSD"),
             tradeable=True,
         )
 
@@ -188,19 +225,19 @@ def default_registry() -> dict[str, SymbolSpec]:
             return SymbolSpec(
                 symbol=symbol,
                 vendor_symbol=oanda_sym,
-                source="oanda",
+                source=_pyth_source("oanda", symbol),
                 timeframes=tuple(OandaFeed.GRANULARITY),
                 live=True,
-                feed_factory=OandaFeed,
+                feed_factory=_pyth_priced(OandaFeed, symbol),
                 tradeable=True,
             )
         return SymbolSpec(
             symbol=symbol,
             vendor_symbol=yf_sym,
-            source="yfinance_daily",
+            source=_pyth_source("yfinance_daily", symbol),
             timeframes=(Timeframe.D1,),
             live=False,
-            feed_factory=YFinanceDailyBarsFeed,
+            feed_factory=_pyth_priced(YFinanceDailyBarsFeed, symbol),
             tradeable=True,
         )
 
@@ -216,18 +253,27 @@ class MarketDataService:
         ttl_floor: float = 5.0,
         ttl_cap: float = 300.0,
         now: Callable[[], float] = time.monotonic,
+        max_entries: int = DEFAULT_CACHE_ENTRIES,
     ):
         self._registry = registry
         self.ttl_floor = ttl_floor
         self.ttl_cap = ttl_cap
         self._now = now
-        # key: (symbol, timeframe, end_bucket|None) — None is the live window
-        self._cache: dict[
+        self.max_entries = max(8, max_entries)
+        # key: (symbol, timeframe, end_bucket|None) — None is the live window.
+        # OrderedDict, not dict: this is an LRU with a hard cap. TTL only
+        # governs STALENESS, never residency — a stale entry is overwritten
+        # only if that exact key is asked for again, so an uncapped dict
+        # grew forever. Paged windows (end != None) are the leak: chart
+        # "load more" mints one entry per scroll position, and a backtest
+        # pages backwards at 1000 bars (~1.2 MB) per entry, none of which
+        # was ever released.
+        self._cache: OrderedDict[
             tuple[str, Timeframe, int | None], tuple[float, list[OHLCVBar]]
-        ] = {}
+        ] = OrderedDict()
         self._feeds: dict[str, object] = {}
         self._lock = threading.Lock()
-        self._flights: dict[tuple[str, Timeframe], threading.Lock] = {}
+        self._flights: dict[tuple[str, Timeframe, int | None], threading.Lock] = {}
 
     @property
     def registry(self) -> dict[str, SymbolSpec]:
@@ -276,21 +322,39 @@ class MarketDataService:
         with self._lock:
             cached = self._cache.get(key)
             if cached and self._now() - cached[0] < ttl:
+                self._cache.move_to_end(key)  # LRU: a hit is a recent use
                 return cached[1][-limit:]
             flight = self._flights.setdefault(key, threading.Lock())
 
-        with flight:  # single-flight: one vendor call per key
+        try:
+            with flight:  # single-flight: one vendor call per key
+                with self._lock:
+                    cached = self._cache.get(key)
+                    if cached and self._now() - cached[0] < ttl:
+                        self._cache.move_to_end(key)
+                        return cached[1][-limit:]
+                bars = self._feed(spec).get_bars(
+                    spec.vendor_symbol, timeframe,
+                    limit=max(limit, DEFAULT_LIMIT), end=end,
+                )
+                with self._lock:
+                    self._cache[key] = (self._now(), list(bars))
+                    self._cache.move_to_end(key)
+                    self._evict_locked()
+                return list(bars)[-limit:]
+        finally:
+            # a lock per key, kept forever, leaked alongside the key it
+            # guarded — same unbounded growth as the cache itself
             with self._lock:
-                cached = self._cache.get(key)
-                if cached and self._now() - cached[0] < ttl:
-                    return cached[1][-limit:]
-            bars = self._feed(spec).get_bars(
-                spec.vendor_symbol, timeframe,
-                limit=max(limit, DEFAULT_LIMIT), end=end,
-            )
-            with self._lock:
-                self._cache[key] = (self._now(), list(bars))
-            return list(bars)[-limit:]
+                held = self._flights.get(key)
+                if held is not None and not held.locked():
+                    self._flights.pop(key, None)
+
+    def _evict_locked(self) -> None:
+        """Drop the least-recently-used windows past the cap. Call holding
+        ``self._lock``."""
+        while len(self._cache) > self.max_entries:
+            self._cache.popitem(last=False)
 
 
 def bars_view(bars: Sequence[OHLCVBar]) -> list[dict]:

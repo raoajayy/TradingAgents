@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 from tradingagents.contracts import OHLCVBar, SpotQuote, Timeframe
 from tradingagents.dataflows.errors import NoMarketDataError, VendorNotConfiguredError
-from tradingagents.pro.ingestion.base import HttpTransport, RequestsTransport
+from tradingagents.pro.ingestion.base import HttpTransport, RequestsTransport, build_bars
 
 _HOSTS = {
     "practice": "https://api-fxpractice.oanda.com",
@@ -125,19 +125,27 @@ class OandaFeed:
         if end is not None:
             params["to"] = end.astimezone(timezone.utc).isoformat()
         candles = self._candles(self.instrument or symbol, params)
-        bars = [
-            OHLCVBar(
-                timeframe=timeframe,
-                start=datetime.fromisoformat(row["time"].replace("Z", "+00:00")),
-                open=float(row["mid"]["o"]),
-                high=float(row["mid"]["h"]),
-                low=float(row["mid"]["l"]),
-                close=float(row["mid"]["c"]),
-                volume=float(row.get("volume", 0)),
-            )
-            for row in candles
-            if row.get("complete")  # bar-close semantics only
-        ]
+        # build_bars, not a comprehension: one vendor row whose high/low do
+        # not bracket open/close otherwise raises out of run_once and kills
+        # the entire loop iteration (observed in prod on EURUSD/USDJPY)
+        bars = build_bars(
+            (
+                {
+                    "timeframe": timeframe,
+                    "start": datetime.fromisoformat(
+                        row["time"].replace("Z", "+00:00")),
+                    "open": float(row["mid"]["o"]),
+                    "high": float(row["mid"]["h"]),
+                    "low": float(row["mid"]["l"]),
+                    "close": float(row["mid"]["c"]),
+                    "volume": float(row.get("volume", 0)),
+                }
+                for row in candles
+                if row.get("complete")  # bar-close semantics only
+            ),
+            feed=self.name,
+            symbol=symbol,
+        )
         if not bars:
             raise NoMarketDataError(symbol, detail="OANDA returned no complete candles")
         return bars[-limit:]

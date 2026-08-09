@@ -5,7 +5,11 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 
 from tests.test_pro_pipeline_graph import FakePipelineLLM  # noqa: E402
-from tradingagents.pro.main import has_llm_key, loop_enabled  # noqa: E402
+from tradingagents.pro.main import (  # noqa: E402
+    DEFAULT_MAX_RUNS,
+    has_llm_key,
+    loop_enabled,
+)
 
 
 class TestLoopEnabled:
@@ -97,7 +101,11 @@ class TestBuildService:
                                        data_dir=tmp_path)
         assert service.router.limits.max_portfolio_var_pct is None
         assert service.router.limits.max_correlated_gross_pct is None
-        assert state.recorder.max_runs == 500
+        # sized for a 1 GiB container: each retained run holds a full
+        # snapshot (~620 KB resident), so the old default of 500 meant
+        # ~310 MB of permanently resident history and the container was
+        # OOM-killed mid-run
+        assert state.recorder.max_runs == DEFAULT_MAX_RUNS == 150
 
     def test_env_conformal_gate_reaches_pipeline_runs(self, tmp_path, monkeypatch):
         # P3-04: PRO_MAX_VOL_INTERVAL_WIDTH_PCT / PRO_VOL_INTERVAL_SIZE_SCALE

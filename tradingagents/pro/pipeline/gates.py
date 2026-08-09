@@ -226,9 +226,15 @@ def event_gate(
     if block_hours <= 0 or not next_major:
         return GateResult(passed=True, checks={"event_window_clear": True})
     at_raw = next_major.get("at") or next_major.get("ts_utc")
-    if not at_raw:
+    if not at_raw or next_major.get("at_is_exact") is False:
         # date-only event: blocking whole days would be worse than the
-        # disease; the debate prompt still sees the calendar context
+        # disease; the debate prompt still sees the calendar context.
+        #
+        # The explicit at_is_exact=False check matters because next_major_event
+        # ALWAYS fills `at`, substituting 23:59 ET when the agency time is
+        # unknown. Without this the branch above was unreachable in
+        # production and a timeless major blocked every run in the last four
+        # hours of its date — on a fabricated instant.
         return GateResult(passed=True, checks={"event_window_clear": True})
     try:
         instant = datetime.fromisoformat(str(at_raw))

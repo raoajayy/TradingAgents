@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from typing import Any
 
 from pydantic import ValidationError
@@ -145,6 +146,20 @@ def _repair_json(text: str) -> str:
     return "".join(out)
 
 
+# Max `claude` subprocesses alive at once, process-wide.
+#
+# Unlike an HTTP provider, every call here forks a Node runtime costing
+# ~200-300MB RSS. The pipeline runs its five team nodes concurrently, so an
+# unbounded stack of them repeatedly OOM-killed a 1Gi Cloud Run container
+# mid-run — and a container that dies mid-run leaves NO record, which is
+# why the symptom looked like a silent loop rather than a crash.
+#
+# 2 is sized for a 1Gi container. Raise it when the container has headroom;
+# concurrency here trades memory for wall-clock, nothing else.
+_MAX_CONCURRENT_CLI = max(1, int(os.environ.get("CLAUDE_CLI_MAX_CONCURRENCY") or 2))
+_CLI_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_CLI)
+
+
 class ClaudeCLIError(RuntimeError):
     """CLI-level failure (auth, spawn, timeout, malformed output)."""
 
@@ -204,10 +219,16 @@ class ClaudeCLIChat:
             "--no-session-persistence",
         ]
         try:
-            proc = subprocess.run(
-                cmd, input=prompt, capture_output=True, text=True,
-                timeout=self.timeout, env=_clean_env(), cwd=self._cwd,
-            )
+            # Every call is a full Node runtime (~200-300MB RSS). The
+            # pipeline fans its five team nodes out in parallel, so an
+            # unbounded stack of these OOM-killed a 1Gi Cloud Run container
+            # mid-run — repeatedly, leaving no run record at all. The
+            # semaphore bounds peak memory without serialising the graph.
+            with _CLI_SLOTS:
+                proc = subprocess.run(
+                    cmd, input=prompt, capture_output=True, text=True,
+                    timeout=self.timeout, env=_clean_env(), cwd=self._cwd,
+                )
         except subprocess.TimeoutExpired as exc:
             raise ClaudeCLIError(
                 f"claude CLI timed out after {self.timeout}s"

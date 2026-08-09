@@ -3,6 +3,11 @@
 # uses this config + a substitution instead.
 steps:
   - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-f", "deploy/Dockerfile.pro", "-t", "${_IMAGE}", "."]
+    args: ["build", "-f", "deploy/Dockerfile.pro", "-t", "${_IMAGE}",
+           "--build-arg", "GIT_SHA=${_GIT_SHA}", "."]
 images:
   - "${_IMAGE}"
+substitutions:
+  # baked into the image so the audit stamp cannot drift from the running
+  # code the way the merged GIT_SHA env var did
+  _GIT_SHA: "unknown"

@@ -29,6 +29,50 @@ def is_pinned_model(model_id: str) -> bool:
     return bool(_DATED_MODEL.search(model_id))
 
 
+# Model-name families that unambiguously belong to one provider. Used only
+# to catch a model routed to the WRONG provider — not to validate model
+# names in general, so custom/self-hosted ids on ollama/openrouter and any
+# family absent from this table pass untouched.
+_MODEL_FAMILY_OWNERS: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
+    (re.compile(r"^claude-", re.IGNORECASE),
+     frozenset({"anthropic", "claude-cli", "bedrock", "openrouter", "azure"})),
+    (re.compile(r"^(gpt-|o[1-9]([.-]|$))", re.IGNORECASE),
+     frozenset({"openai", "azure", "openrouter"})),
+    (re.compile(r"^deepseek-", re.IGNORECASE),
+     frozenset({"deepseek", "openrouter", "ollama"})),
+    (re.compile(r"^gemini-", re.IGNORECASE),
+     frozenset({"google", "openrouter"})),
+)
+
+
+def assert_models_match_provider(provider: str, model_ids) -> None:
+    """Fail fast when a model id belongs to a different provider.
+
+    Production ran for days with ``llm_provider=deepseek`` and
+    ``claude-haiku-4-5`` / ``claude-sonnet-5`` as the model ids — the
+    leftovers of an earlier claude-cli deploy, since Cloud Run's
+    ``--update-env-vars`` MERGES rather than replaces. The only signal was
+    a RuntimeWarning ("not in the known model list … Continuing anyway"),
+    so every call was refused and the pipeline degraded to evidence-starved
+    rejections with nothing pointing at the config.
+
+    A wrong-provider model can never work, so this raises rather than warns.
+    """
+    provider_key = (provider or "").lower()
+    wrong = [
+        model for model in model_ids
+        for pattern, owners in _MODEL_FAMILY_OWNERS
+        if pattern.match(model or "") and provider_key not in owners
+    ]
+    if wrong:
+        raise ValueError(
+            f"model/provider mismatch: {sorted(set(wrong))} cannot be served by "
+            f"provider {provider_key!r}. Set TRADINGAGENTS_LLM_PROVIDER to the "
+            "owning provider, or set model ids that provider serves. (Cloud Run "
+            "--update-env-vars merges, so stale model ids survive a provider change.)"
+        )
+
+
 @dataclass
 class ModelBundle:
     quick: object
@@ -68,6 +112,7 @@ def bundle_from_config(
     from tradingagents.llm_clients import create_llm_client
 
     routing = config.models
+    assert_models_match_provider(routing.llm_provider, routing.all_model_ids())
     floating = [m for m in routing.all_model_ids() if not is_pinned_model(m)]
     if floating:
         if routing.require_pinned_models:

@@ -18,6 +18,7 @@ import pandas as pd
 
 from tradingagents.contracts import MetricReading, OHLCVBar, Timeframe
 from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.pro.ingestion.base import build_bars
 from tradingagents.pro.ingestion.derived import pearson_correlation
 
 OhlcvLoader = Callable[[str, str], pd.DataFrame]
@@ -33,21 +34,25 @@ def _frame_to_bars(frame: pd.DataFrame, symbol: str, limit: int) -> list[OHLCVBa
     if frame is None or frame.empty:
         raise NoMarketDataError(symbol, detail="empty OHLCV frame")
     frame = frame.tail(limit)
-    bars = []
-    for _, row in frame.iterrows():
-        day = pd.Timestamp(row["Date"]).date() if "Date" in row else pd.Timestamp(row.name).date()
-        bars.append(
-            OHLCVBar(
-                timeframe=Timeframe.D1,
-                start=datetime.combine(day, time.min, tzinfo=timezone.utc),
-                open=float(row["Open"]),
-                high=float(row["High"]),
-                low=float(row["Low"]),
-                close=float(row["Close"]),
-                volume=float(row.get("Volume", 0.0)),
-            )
-        )
-    return bars
+
+    def rows():
+        for _, row in frame.iterrows():
+            day = (pd.Timestamp(row["Date"]).date() if "Date" in row
+                   else pd.Timestamp(row.name).date())
+            yield {
+                "timeframe": Timeframe.D1,
+                "start": datetime.combine(day, time.min, tzinfo=timezone.utc),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row.get("Volume", 0.0)),
+            }
+
+    # one malformed row (high/low not bracketing open/close) used to raise
+    # out of run_once and kill the whole loop iteration — observed in prod
+    # on EURUSD=X and USDJPY=X daily bars
+    return build_bars(rows(), feed="yfinance", symbol=symbol)
 
 
 class YFinanceDailyBarsFeed:

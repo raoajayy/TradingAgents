@@ -389,6 +389,7 @@ class PaperTradingService:
         }
         if run.rejection:
             self.metrics.inc("rejections_total", stage=run.rejection["stage"])
+            self._alert_if_provider_down(run.rejection)
             return summary
         if rec is not None:
             self.metrics.inc("recommendations_total", action=rec.action.value)
@@ -936,6 +937,29 @@ class PaperTradingService:
         return sum(ranges) / len(ranges) if ranges else None
 
     # --- unchanged-bar loop skip ----------------------------------------------------
+
+    def _alert_if_provider_down(self, rejection: dict) -> None:
+        """Page when a run died because the MODEL layer failed, not the market.
+
+        Rejections are routine and must stay quiet, so this fires only on
+        the join-stage reason that names an LLM failure. Without it a dead
+        provider is silent: the 402 outage produced days of rejected runs
+        with a green /health/live and no alert of any kind.
+        """
+        if rejection.get("stage") != "join":
+            return
+        reasons = [str(r) for r in rejection.get("reasons", [])]
+        if not any("failed the structured LLM call" in r for r in reasons):
+            return
+        refused = any("REFUSED" in r for r in reasons)
+        try:
+            self.alerts.emit(
+                "critical" if refused else "warning",
+                "llm_provider_down",
+                "; ".join(reasons) or "model provider failure",
+            )
+        except Exception:  # alerting must never break the loop
+            logger.exception("llm_provider_down alert failed")
 
     def _skip_unchanged_bar(self, snapshot: MarketSnapshot) -> bool:
         """True when the loop already ran this symbol on this driving bar.

@@ -73,22 +73,47 @@ def enrich_calendar(releases: list[dict]) -> list[dict]:
     by_release: dict[str, list[dict]] = {}
     for row in rows:
         by_release.setdefault(str(row.get("release", "")), []).append(row)
+    today = date.today()
     kept: list[dict] = []
     for group in by_release.values():
         group.sort(key=lambda r: str(r.get("date", "")))
+        head: dict | None = None      # first row of the current run
+        head_day: date | None = None
+        run_length = 0
         prev: date | None = None
+
+        def flush(head=None, head_day=None, run_length=0):
+            """Keep a run's head unless it is the moving FRED artifact.
+
+            The query window always starts at ``today``, so a multi-day run
+            anchored at today re-materializes with a NEW head every day it
+            persists — which is how "FOMC Press Release" blocked production
+            on 07-29, 07-30, 08-01, 08-02 and 08-07, one fresh "today at
+            14:00 ET" per refetch. A genuine same-day release arrives as a
+            single row, so requiring run_length > 1 keeps real events.
+            """
+            if head is None:
+                return
+            if run_length > 1 and head_day == today:
+                return
+            kept.append(head)
+
         for row in group:
             try:
                 day = date.fromisoformat(str(row.get("date", "")))
             except ValueError:
+                flush(head, head_day, run_length)
                 kept.append(row)
-                prev = None
+                head = head_day = prev = None
+                run_length = 0
                 continue
             if prev is not None and (day - prev) == timedelta(days=1):
-                prev = day  # extend the run; drop the row
+                run_length += 1     # extend the run; drop the row
+                prev = day
                 continue
-            prev = day
-            kept.append(row)
+            flush(head, head_day, run_length)
+            head, head_day, prev, run_length = row, day, day, 1
+        flush(head, head_day, run_length)
 
     for row in kept:
         hm = _time_et_for(str(row.get("release", "")))
@@ -113,10 +138,12 @@ def next_major_event(releases: list[dict], now: datetime) -> dict | None:
     countdown chips and the pipeline's event gate. Events without a known
     time count from end-of-day ET (conservative: still upcoming)."""
     best: tuple[datetime, dict] | None = None
+    best_exact = False
     for row in releases:
         if not row.get("major"):
             continue
         ts = row.get("ts_utc")
+        exact = bool(ts)
         if ts:
             try:
                 instant = datetime.fromisoformat(ts)
@@ -133,7 +160,13 @@ def next_major_event(releases: list[dict], now: datetime) -> dict | None:
             continue
         if best is None or instant < best[0]:
             best = (instant, row)
+            best_exact = exact
     if best is None:
         return None
-    return {**best[1], "at": best[0].isoformat(),
+    # ``at_is_exact`` distinguishes a published agency time from the 23:59 ET
+    # placeholder. Both are fine for a countdown chip, but the event GATE
+    # must not block on a guess: an unknown-time major otherwise blocked
+    # every run from 19:59-23:59 ET, silently defeating the documented
+    # "date-only events pass open" branch in gates.event_gate.
+    return {**best[1], "at": best[0].isoformat(), "at_is_exact": best_exact,
             "seconds_until": int((best[0] - now).total_seconds())}

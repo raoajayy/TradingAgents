@@ -44,10 +44,34 @@ _git_sha_cache: str | None = None
 _prompt_hash_cache: str | None = None
 
 
+#: written by deploy/Dockerfile.pro at build time from the GIT_SHA build arg
+BUILD_SHA_FILE = Path("/etc/tradingagents-build-sha")
+
+
+def _baked_sha() -> str:
+    try:
+        return BUILD_SHA_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def _compute_git_sha() -> str:
-    # Cloud Run images have no .git directory; the build stamps GIT_SHA
-    # into the environment instead.
+    # Cloud Run images have no .git directory. Two sources, and the BAKED
+    # one wins: `--update-env-vars` MERGES, so a GIT_SHA left over from an
+    # earlier deploy survives a new image and the order-audit stamp then
+    # attributes trades to code that is not running. Observed in prod —
+    # env GIT_SHA=071fd14 while the image contained later commits.
+    baked = _baked_sha()
     env_sha = (os.environ.get("GIT_SHA") or "").strip()
+    if baked and baked != "unknown":
+        if env_sha and env_sha != baked:
+            logger.warning(
+                "GIT_SHA env (%s) disagrees with the image's baked build sha "
+                "(%s); trusting the image. A stale env var means the deploy "
+                "did not refresh it — audit provenance would be wrong.",
+                env_sha, baked,
+            )
+        return baked
     if env_sha:
         return env_sha
     try:

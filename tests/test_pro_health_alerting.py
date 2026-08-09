@@ -235,6 +235,59 @@ class TestLiveHealth:
                              max_run_age_seconds=5400)
         assert not report.ok and "run_recency" in report.degraded
 
+    def test_dead_provider_is_unhealthy(self, tmp_path):
+        """Production ran for days on a provider refusing 100% of calls with
+        HTTP 402 while every health probe stayed green — feeds fine, venue
+        reachable, kill switch clear, and run_recency fresh because rejected
+        runs still count as loop iterations."""
+        from tradingagents.pro.health import live_health
+
+        state = self._state(tmp_path)
+        for _ in range(164):
+            state.metrics.inc("llm_failures_total", schema="EvidenceDraft")
+
+        report = live_health(state)
+        assert not report.ok
+        assert "models" in report.degraded
+        detail = next(c.detail for c in report.checks if c.name == "models")
+        assert "refused every call" in detail and "billing" in detail
+
+    def test_dead_provider_does_not_gate_execution(self, tmp_path):
+        """The dead-man switch keys off execution_ok. A model outage must not
+        trip it: flattening live positions because the LLM is down converts a
+        research outage into forced trading."""
+        from tradingagents.pro.health import live_health
+
+        state = self._state(tmp_path)
+        for _ in range(50):
+            state.metrics.inc("llm_failures_total", schema="EvidenceDraft")
+
+        report = live_health(state)
+        assert not report.ok            # visible on /health/live
+        assert report.execution_ok      # ...but does not stop trading
+
+    def test_healthy_provider_passes_and_partial_failures_tolerated(self, tmp_path):
+        from tradingagents.pro.health import live_health
+
+        state = self._state(tmp_path)
+        for _ in range(90):
+            state.metrics.inc("llm_calls_total", schema="EvidenceDraft")
+        for _ in range(10):  # 10% failure — agents abstain on parse errors
+            state.metrics.inc("llm_failures_total", schema="EvidenceDraft")
+
+        report = live_health(state)
+        assert report.ok
+        assert "models" not in report.degraded
+
+    def test_no_model_check_before_any_call(self, tmp_path):
+        """A freshly restarted instance has made no calls; absence of data is
+        not evidence of failure."""
+        from tradingagents.pro.health import live_health
+
+        report = live_health(self._state(tmp_path))
+        assert [c for c in report.checks if c.name == "models"] == []
+        assert report.ok
+
     def test_feeds_only_degradation_keeps_execution_ok(self):
         # the dead-man heartbeat consumes execution_ok: an optional data
         # feed outage (coinmetrics, 2026-08-08) must NOT starve it — it
@@ -416,3 +469,77 @@ class TestHasLlmKey:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("shutil.which", lambda name: None)
         assert not pro_main.has_llm_key()
+
+
+class TestRotationCursor:
+    """The rotation cursor must survive restarts.
+
+    It used to be an in-process itertools.cycle while the seen-bar state
+    persisted to GCS, so every container restart replayed the roster from
+    XAUUSD — already marked seen for the day — and the tail of the roster
+    (EURUSD/USDJPY) could go days without ever being reached.
+    """
+
+    def _prefs(self, tmp_path):
+        from tradingagents.pro.dashboard.prefs import PrefsStore
+
+        return PrefsStore(tmp_path / "prefs.json")
+
+    def test_cursor_advances_and_wraps(self, tmp_path):
+        prefs = self._prefs(tmp_path)
+        assert [prefs.next_rotation_index(6) for _ in range(8)] == \
+            [0, 1, 2, 3, 4, 5, 0, 1]
+
+    def test_cursor_survives_a_restart(self, tmp_path):
+        prefs = self._prefs(tmp_path)
+        [prefs.next_rotation_index(6) for _ in range(4)]  # consumed 0..3
+
+        restarted = self._prefs(tmp_path)  # fresh process, same store
+        assert restarted.next_rotation_index(6) == 4, \
+            "a restart must resume the rotation, not replay it from the head"
+
+    def test_roster_shrinking_does_not_index_out_of_range(self, tmp_path):
+        prefs = self._prefs(tmp_path)
+        [prefs.next_rotation_index(6) for _ in range(6)]
+        prefs.next_rotation_index(6)
+        assert prefs.next_rotation_index(2) in (0, 1)
+
+    def test_zero_length_roster_is_safe(self, tmp_path):
+        assert self._prefs(tmp_path).next_rotation_index(0) == 0
+
+
+class TestBuildShaProvenance:
+    """The audit stamp must describe the code actually running."""
+
+    def test_baked_sha_wins_over_a_stale_env_var(self, tmp_path, monkeypatch):
+        from tradingagents.pro import versioning
+
+        baked = tmp_path / "sha"
+        baked.write_text("e6582e4", encoding="utf-8")
+        monkeypatch.setattr(versioning, "BUILD_SHA_FILE", baked)
+        monkeypatch.setenv("GIT_SHA", "071fd14")   # the prod drift, verbatim
+        versioning.reset_cache()
+
+        # --update-env-vars MERGES, so the stale env var outlives its image
+        assert versioning.git_sha() == "e6582e4"
+        versioning.reset_cache()
+
+    def test_env_is_used_when_nothing_is_baked(self, tmp_path, monkeypatch):
+        from tradingagents.pro import versioning
+
+        monkeypatch.setattr(versioning, "BUILD_SHA_FILE", tmp_path / "absent")
+        monkeypatch.setenv("GIT_SHA", "abc1234")
+        versioning.reset_cache()
+        assert versioning.git_sha() == "abc1234"
+        versioning.reset_cache()
+
+    def test_unknown_baked_value_falls_back_to_env(self, tmp_path, monkeypatch):
+        from tradingagents.pro import versioning
+
+        baked = tmp_path / "sha"
+        baked.write_text("unknown", encoding="utf-8")  # ARG default
+        monkeypatch.setattr(versioning, "BUILD_SHA_FILE", baked)
+        monkeypatch.setenv("GIT_SHA", "abc1234")
+        versioning.reset_cache()
+        assert versioning.git_sha() == "abc1234"
+        versioning.reset_cache()

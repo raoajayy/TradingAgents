@@ -51,6 +51,9 @@ class PipelineState(TypedDict, total=False):
     snapshot: MarketSnapshot
     equity: float  # per-run override of the builder's equity (backtests)
     evidence_by_team: Annotated[dict[str, list[AgentEvidence]], _merge_team_evidence]
+    # why silent agents were silent, per team: {team: {cause: count}}. Same
+    # parallel-write shape as evidence_by_team, so it needs the same merge.
+    abstentions_by_team: Annotated[dict[str, dict[str, int]], _merge_team_evidence]
     quant_metrics: dict[str, MetricReading]
     risk_metrics: dict[str, MetricReading]
     run_timeframe: object  # Timeframe inferred from the snapshot's bars

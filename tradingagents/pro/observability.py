@@ -71,6 +71,18 @@ class MetricsRegistry:
     def counter(self, name: str, **labels: str) -> float:
         return self._counters.get(self._key(name, labels), 0.0)
 
+    def counter_total(self, name: str) -> float:
+        """Sum a counter across every label combination.
+
+        ``llm_calls_total`` and ``llm_failures_total`` are partitioned by
+        schema, so health/alerting questions ("is the provider answering at
+        all?") need the family total, not one arbitrary label set.
+        """
+        prefix = f"{name}{{"
+        with self._lock:
+            return sum(value for key, value in self._counters.items()
+                       if key == name or key.startswith(prefix))
+
     def gauge(self, name: str, **labels: str) -> float:
         return self._gauges.get(self._key(name, labels), 0.0)
 
@@ -163,6 +175,30 @@ class _TrackedRunnable:
             raise
         self._tracker._record(self._schema.__name__, prompt, result)
         return result
+
+
+# Provider status codes that will NEVER succeed on retry: the call is
+# refused for account/auth reasons, not load. Retrying one burns the whole
+# budget plus its backoff sleeps on every call — in the 402 outage that was
+# ~55 agents x retries x 0.5s+ per run, for a result that could not change.
+_TERMINAL_STATUS_CODES = frozenset({401, 402, 403, 404})
+
+
+def is_retryable_llm_error(exc: BaseException) -> bool:
+    """False for provider refusals that cannot be fixed by trying again.
+
+    Duck-typed on ``status_code`` (openai.APIStatusError, httpx.HTTPStatusError
+    via ``response``) so it needs no provider SDK import and degrades to
+    "retryable" for anything it cannot classify — an unknown error keeps the
+    old behavior rather than being silently dropped.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status not in _TERMINAL_STATUS_CODES
+    return True
 
 
 def supports_streaming(llm) -> bool:

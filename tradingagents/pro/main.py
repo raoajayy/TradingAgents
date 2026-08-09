@@ -30,7 +30,8 @@ Env:
                                 P3-04: a width breach scales the position by
                                 cap/width (floor 0.25) instead of blocking
     PRO_MAX_RUNS                recorder retention / boot-RAM knob
-                                (int, default 500)
+                                (int, default 150 — ~620 KB resident per
+                                retained run; raise only with headroom)
     PRO_TWAP_SLICES / PRO_TWAP_WINDOW_MIN
                                 P3-10 TWAP entry slicing (int slices /
                                 float minutes); unset = single orders
@@ -55,6 +56,11 @@ from tradingagents.contracts import utc_now
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 3600.0
+
+#: retained runs held in RAM. ~620 KB each (full snapshot + evidence +
+#: debate), so this is the single largest tunable memory cost in the
+#: process. Sized for a 1 GiB container; see the comment at the call site.
+DEFAULT_MAX_RUNS = 150
 
 
 class _MappedBars:
@@ -574,11 +580,17 @@ def build_service(llm=None, data_dir: str | Path | None = None):
                        embedder=make_default_embedder())
     state = DashboardState(memory=memory)
     # PRO_MAX_RUNS: boot-RAM knob — every retained run holds a full snapshot
-    # (bars, news, debate transcript), so this bounds resident memory after
-    # a restart reloads the store (default 500, the recorder's own default)
+    # (250 bars + indicators + evidence + debate transcript), measured at
+    # ~620 KB resident per run. The old default of 500 meant ~305 MB of
+    # permanently resident history in a 1 GiB container, which left no room
+    # for the interpreter (~200 MB with pandas/numpy), the embedding model,
+    # the bar cache and a couple of provider subprocesses — the container
+    # was OOM-killed mid-run, and a run that dies mid-flight leaves no
+    # record at all. 150 keeps ~93 MB of history; raise it when the
+    # container has headroom.
     state.recorder = PipelineRecorder(
         store=event_store,
-        max_runs=int(os.environ.get("PRO_MAX_RUNS") or 500),
+        max_runs=int(os.environ.get("PRO_MAX_RUNS") or DEFAULT_MAX_RUNS),
     )
     state.prefs = PrefsStore(store=event_store)
     from tradingagents.pro.dashboard.backtest_firestore import build_run_store
@@ -648,8 +660,6 @@ def build_service(llm=None, data_dir: str | Path | None = None):
     # so LLM spend stays flat while the whole universe accrues decisions —
     # each of the 6 symbols every 6h. Builders are shared across ticks
     # (feed instances carry caches / respect rate limits).
-    import itertools
-
     from tradingagents.contracts import ASSET_BY_SYMBOL, AssetClass as AC
 
     crypto_builders = {sym: _crypto_snapshot_builder(sym,
@@ -657,11 +667,21 @@ def build_service(llm=None, data_dir: str | Path | None = None):
                        for sym in CRYPTO_WIRING}
     fx_builders = {sym: _fx_snapshot_builder(sym, vintage_sink=_vintage_sink)
                    for sym in FX_WIRING}
-    rotation = itertools.cycle(("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD",
-                                "EURUSD", "USDJPY"))
+    ROTATION = ("XAUUSD", "BTC-USD", "ETH-USD", "SOL-USD", "EURUSD", "USDJPY")
 
     def snapshot_source():
-        symbol = next(rotation)
+        # cursor persisted, not an in-process itertools.cycle: the cycle
+        # restarted at XAUUSD on every container restart while the
+        # seen-bar state persisted, so the head symbols were skipped as
+        # "unchanged" and the tail (EURUSD/USDJPY) could go days without a
+        # run. Fail-open to the head if prefs are unavailable.
+        try:
+            index = state.prefs.next_rotation_index(len(ROTATION))
+        except Exception:
+            logger.warning("rotation cursor unavailable; starting at the head",
+                           exc_info=True)
+            index = 0
+        symbol = ROTATION[index]
         # symbol passed explicitly: AssetClass.FX spans multiple pairs.
         # risk=limits: the SAME env-armed limits object as the service
         # config — a per-run config that dropped it would silently disarm
