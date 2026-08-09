@@ -143,6 +143,25 @@ def system_status(router, equity: float | None = None, arming=None,
     engaged = router.kill_switch.engaged
     positions, unrealized_total = open_positions_view(
         router, equity, ticks=ticks, marketdata=marketdata, memory=memory)
+    # book drift halts every NEW entry (service._run_once) while exits and
+    # reads keep working. That is a different state from a kill switch, and
+    # it must be visible: a silently-halted armed system looks like a
+    # working one (observed live — an ETH-USD SELL recorded "accepted" while
+    # drift from an externally-opened position had halted entries).
+    drift = getattr(router, "last_reconciliation", None)
+    entries_blocked = {"blocked": False, "reason": ""}
+    if drift is not None and not drift.in_sync:
+        detail = "; ".join(part for part in (
+            f"unknown on venue: {', '.join(drift.unknown_on_venue)}"
+            if drift.unknown_on_venue else "",
+            f"missing on venue: {', '.join(drift.missing_on_venue)}"
+            if drift.missing_on_venue else "",
+            "; ".join(drift.quantity_mismatches),
+        ) if part)
+        entries_blocked = {
+            "blocked": True,
+            "reason": f"book drift — {detail}" if detail else "book drift",
+        }
     return {
         "attached": True,
         "kill_switch": {"engaged": engaged, "reason": router.kill_switch.reason},
@@ -151,6 +170,7 @@ def system_status(router, equity: float | None = None, arming=None,
         "unrealized_total": unrealized_total,
         "equity": equity,
         "trading_halted": engaged or breaker.tripped,
+        "entries_blocked": entries_blocked,
         "arming": arming_view,
         "live_armed": live_armed,
     }

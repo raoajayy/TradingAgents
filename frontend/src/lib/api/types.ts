@@ -169,6 +169,11 @@ export const StatusSchema = z
     trading_halted: z.boolean().nullable(),
     kill_switch: z.object({ engaged: z.boolean(), reason: z.string() }).optional(),
     circuit_breaker: z.object({ tripped: z.boolean(), reason: z.string() }).optional(),
+    // book drift halts NEW entries while exits keep working — a distinct
+    // state from a kill switch, and one the operator must never miss
+    entries_blocked: z
+      .object({ blocked: z.boolean(), reason: z.string() })
+      .optional(),
     open_positions: z
       .array(
         z.object({

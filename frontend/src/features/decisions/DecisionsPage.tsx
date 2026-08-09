@@ -270,6 +270,29 @@ export default function DecisionsPage() {
                 </span>
               </div>
             )}
+            {/* the verdict cleared the gates but a PRE-TRADE halt (book
+                drift, degraded/stale feeds, order cap, exit cooldown) stopped
+                it before the venue — distinct from a venue rejection, and it
+                used to read as "accepted" */}
+            {timeline.data?.execution_status?.startsWith("blocked:") && (
+              <div
+                data-testid="entry-blocked-banner"
+                className="mb-3 flex items-start gap-2 rounded-[12px] border border-stale/40 bg-neutral-muted px-3 py-2 text-[13px]"
+              >
+                <ShieldAlert size={15} className="mt-0.5 shrink-0 text-stale" aria-hidden />
+                <span>
+                  <span className="font-bold text-stale">
+                    Entry blocked before the venue
+                  </span>{" "}
+                  — no position was opened.{" "}
+                  <span className="text-fg-muted">
+                    {timeline.data.execution_status
+                      .replace(/^blocked:/, "")
+                      .replace(/_/g, " ")}
+                  </span>
+                </span>
+              </div>
+            )}
             {isLatest ? (
               recommendation.isPending ? (
                 <SkeletonCard lines={5} />

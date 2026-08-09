@@ -5,7 +5,12 @@ import { Outlet, useLocation, useNavigate } from "react-router";
 import { AuthGate } from "./AuthGate";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { Sidebar } from "./Sidebar";
-import { ArmingBanner, HaltBanner, StatusStrip } from "./StatusStrip";
+import {
+  ArmingBanner,
+  EntriesBlockedBanner,
+  HaltBanner,
+  StatusStrip,
+} from "./StatusStrip";
 import { CommandPalette } from "@/components/CommandPalette";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { RunPipelineDialog } from "@/components/RunPipelineDialog";
@@ -146,6 +151,7 @@ export function AppShell() {
           <Sidebar />
           <div className="flex min-w-0 grow flex-col gap-3">
             <HaltBanner />
+            <EntriesBlockedBanner />
             <ArmingBanner />
             {!isTradePage && <StatusStrip />}
             <main className="min-h-0 min-w-0 grow overflow-y-auto max-md:pb-20">

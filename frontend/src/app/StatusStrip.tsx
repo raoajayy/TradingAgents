@@ -114,6 +114,26 @@ export function HaltBanner() {
   );
 }
 
+/** Entries-blocked banner: NEW entries are halted (book drift) while exits
+ * and reads keep working — narrower than a kill switch, and previously
+ * invisible: a SELL recorded "accepted" while the router never saw it,
+ * because reconciliation had halted entries. State the halt. */
+export function EntriesBlockedBanner() {
+  const status = useStatus();
+  const blocked = status.data?.entries_blocked;
+  // the full halt already owns the screen; don't stack two alarms
+  if (!blocked?.blocked || status.data?.trading_halted) return null;
+  return (
+    <div
+      role="alert"
+      className="rounded-2xl bg-stale px-4 py-2 text-sm font-bold text-on-solid"
+      data-testid="entries-blocked-banner"
+    >
+      ⚠ NEW ENTRIES BLOCKED — {blocked.reason}. Exits and flatten still work.
+    </div>
+  );
+}
+
 /** Live-armed banner: a sibling of HaltBanner, immovable, shown whenever
  * any pair is armed at a live tier. Real capital is exposed — say so. */
 export function ArmingBanner() {

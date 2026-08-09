@@ -493,3 +493,62 @@ class TestEventHookAndRecorderCap:
             for _ in range(3)
         ]
         assert [r.run_id for r in recorder.runs] == ids[1:]  # oldest dropped
+
+
+class TestBlockedEntriesAreRecorded:
+    """A pre-trade halt must be visible ON THE RUN.
+
+    Observed live 2026-08-09: an ETH-USD SELL cleared every gate, the
+    service refused to route it because reconciliation was out of sync
+    (a position opened outside the system), and the run still read
+    "accepted:paper" — so every dashboard surface painted an executed
+    trade over a flat book and the halt itself was silent.
+    """
+
+    def test_reconciliation_drift_blocks_and_is_recorded(self):
+        # 130.0 is the close the scripted pipeline turns into an accepted BUY
+        service = make_service([130.0])
+        # drift: the local book claims a position the venue has never heard of
+        service.router.local_book["XAUUSD"] = 1.0
+
+        summary = service.run_once()
+
+        assert summary["order_status"] == "blocked:reconciliation"
+        assert summary["in_sync"] is False
+        run = service.dashboard.recorder.runs[-1]
+        status = run.state.get("execution_status") or ""
+        assert status.startswith("blocked:reconciliation"), status
+        assert "disagree" in status  # says WHY, not just that
+        # and nothing reached the venue
+        assert service.open_positions == {}
+
+    def test_clean_book_still_routes(self):
+        service = make_service([130.0])
+        summary = service.run_once()
+        assert summary["in_sync"] is True
+        assert summary["order_status"] != "blocked:reconciliation"
+        run = service.dashboard.recorder.runs[-1]
+        assert not (run.state.get("execution_status") or "").startswith("blocked")
+
+
+class TestStatusSurfacesBlockedEntries:
+    def test_status_reports_entries_blocked_with_reason(self):
+        from tradingagents.pro.dashboard.service import system_status
+
+        service = make_service([130.0])
+        service.router.local_book["XAUUSD"] = 1.0
+        service.router.reconcile()
+
+        status = system_status(service.router, equity=100_000.0)
+        assert status["entries_blocked"]["blocked"] is True
+        assert "XAUUSD" in status["entries_blocked"]["reason"]
+        # drift is NOT a full halt: exits and flatten must stay available
+        assert status["trading_halted"] is False
+
+    def test_clean_book_reports_not_blocked(self):
+        from tradingagents.pro.dashboard.service import system_status
+
+        service = make_service([130.0])
+        service.router.reconcile()
+        status = system_status(service.router, equity=100_000.0)
+        assert status["entries_blocked"]["blocked"] is False

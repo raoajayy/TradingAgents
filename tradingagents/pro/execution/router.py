@@ -599,6 +599,10 @@ class ExecutionRouter:
             "unknown_on_venue": list(report.unknown_on_venue),
             "quantity_mismatches": list(report.quantity_mismatches),
         })
+        # retained so the dashboard can STATE the halt: drift blocks every new
+        # entry (see service._run_once), and a silent halt on an armed system
+        # reads exactly like a working one
+        self.last_reconciliation = report
         return report
 
     # --- internals -----------------------------------------------------------

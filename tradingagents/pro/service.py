@@ -397,10 +397,16 @@ class PaperTradingService:
             # cooldown: never re-enter on the same bar that closed a position
             # (exit-bar churn); the next iteration may enter fresh
             summary["order_status"] = "cooldown"
+            self._mark_not_executed(run, "cooldown",
+                                    "position closed on this bar")
             return summary
         if not reconciliation.in_sync:
             # book drift is an incident, not a trading opportunity
             summary["order_status"] = "blocked:reconciliation"
+            self._mark_not_executed(
+                run, "blocked:reconciliation",
+                "local book and venue disagree — new entries halted until "
+                "the drift is resolved")
             return summary
         if (
             rec is not None
@@ -423,6 +429,9 @@ class PaperTradingService:
                     f"{list(snapshot.missing_feeds)}", symbol=rec.symbol,
                 )
                 summary["order_status"] = "blocked:data_health"
+                self._mark_not_executed(
+                    run, "blocked:data_health",
+                    f"degraded feeds: {list(snapshot.missing_feeds)}")
                 return summary
             # P1-06 stale-data gate: never open a position on bars older
             # than 3x the driving timeframe — a vendor incident must fail
@@ -445,6 +454,10 @@ class PaperTradingService:
                         symbol=rec.symbol,
                     )
                     summary["order_status"] = "blocked:stale_data"
+                    self._mark_not_executed(
+                        run, "blocked:stale_data",
+                        f"last bar {age_s / 3600:.1f}h old "
+                        f"({last_bar.timeframe.value})")
                     return summary
             spread_bps = None
             if snapshot.quote and snapshot.quote.bid and snapshot.quote.ask:
@@ -460,6 +473,10 @@ class PaperTradingService:
                     symbol=rec.symbol,
                 )
                 summary["order_status"] = "blocked:daily_order_cap"
+                self._mark_not_executed(
+                    run, "blocked:daily_order_cap",
+                    f"daily order cap ({self.config.risk.max_orders_per_day}) "
+                    "reached")
                 return summary
             equity = self.router.adapter.account().equity
             result = self.router.submit_recommendation(
@@ -478,8 +495,7 @@ class PaperTradingService:
                 # write the venue verdict back onto the run: every dashboard
                 # surface reads run.state["execution_status"], and leaving it
                 # "accepted:paper" painted an executed SELL over a flat book
-                run.state["execution_status"] = f"rejected:order ({reason})"
-                self.dashboard.recorder.repersist(run)
+                self._mark_not_executed(run, "rejected:order", reason)
             if result.status == "filled":
                 self.metrics.inc("orders_filled_total")
                 position = OpenPosition(
@@ -498,6 +514,27 @@ class PaperTradingService:
                 self._register_pending_live_tca(rec, snapshot)
         self._maybe_daily_pnl_summary(snapshot)
         return summary
+
+    def _mark_not_executed(self, run, status: str, reason: str = "") -> None:
+        """Record on the RUN that an accepted recommendation never reached the
+        venue, and why.
+
+        The graph's ``execution_status`` says "accepted:<mode>" as soon as the
+        decision clears the gates — but the service applies further pre-trade
+        halts (book drift, degraded/stale feeds, order caps, exit-bar cooldown)
+        and the venue can still refuse. Leaving the run reading "accepted"
+        painted an executed trade over a flat book on every dashboard surface,
+        and made a halted system look like a trading one (observed live:
+        an ETH-USD SELL sat "accepted:paper" while reconciliation drift had
+        halted entries). Callers keep their own alert — this is the record.
+        """
+        run.state["execution_status"] = (
+            f"{status} ({reason})" if reason else status)
+        try:
+            self.dashboard.recorder.repersist(run)
+        except Exception:  # recording must never break the loop
+            logger.warning("could not repersist run %s", run.run_id,
+                           exc_info=True)
 
     # intel condition thresholds (Phase 4 v1 — operator defaults; a
     # prefs-backed builder can layer on later). Fires on CROSSINGS only:
