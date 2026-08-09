@@ -1,10 +1,11 @@
 # TradingAgents Pro — Architecture
 
-Living document. Updated at every phase checkpoint. The full Phase 1
-HLD/LLD, per-agent walkthroughs, diagrams, and ranked improvement
-recommendations live under `docs/analysis/` (authored in Phase 1; being
-restored after an iCloud incident — see DECISIONS.md ADR-0013); this file
-tracks how the Pro extension layers onto the base framework.
+Living document. Updated at every phase checkpoint. The system/data-flow/
+component diagrams (regenerated after the ADR-0013 iCloud loss) live in
+[`docs/analysis/ARCHITECTURE_DIAGRAMS.md`](docs/analysis/ARCHITECTURE_DIAGRAMS.md);
+hands-on setup, testing, extension recipes, the env-var reference, and
+troubleshooting live in [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md).
+This file tracks how the Pro extension layers onto the base framework.
 
 ## Base framework (as found, v0.3.1)
 
