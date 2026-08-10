@@ -2,6 +2,11 @@
 
 Derived from `docs/COMPETITIVE_TEARDOWN.md` (§21 roadmap, §22 backlog, top-25 ROI). Each task: files to touch, acceptance criteria (AC), effort, dependencies. IDs are stable — reference them in commits (`feat(p1-03): …`).
 
+> **EPOCH NOTE (10 Aug 2026):** new work is tracked in
+> [`docs/ROADMAP_2026H2.md`](ROADMAP_2026H2.md) (A-epoch, derived from
+> `docs/AUDIT_2026Q3.md` v2). P-epoch IDs below remain valid for history
+> and open P2–P5 items not superseded there.
+
 ---
 
 ## Phase 1 — Quick wins (2 weeks) · goal: prove/kill the core premise + free realism

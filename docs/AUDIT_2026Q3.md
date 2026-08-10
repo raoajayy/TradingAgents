@@ -736,6 +736,9 @@ manual ceremonies · doc/code divergence.
 
 ## 21. Roadmap
 
+> Executable version with stable task IDs, design changes (DC-1…DC-10),
+> and pre-registered gate rules: [`docs/ROADMAP_2026H2.md`](ROADMAP_2026H2.md).
+
 ### Phase 1 — Quick wins (2 weeks)
 | # | Item | Value | Complexity | Effort | ROI |
 |---|---|---|---|---|---|
