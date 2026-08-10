@@ -56,6 +56,11 @@ def main() -> int:
                         help="P2-03: re-run the frozen stability snapshots "
                              "named vs anonymized (tickers/dates masked) and "
                              "compare action agreement per symbol")
+    parser.add_argument("--agent-workers", type=int, default=8,
+                        help="parallel evidence-agent calls per pipeline run "
+                             "(default 8). Raise on a subprocess-per-call "
+                             "provider like claude-cli, where spawn latency "
+                             "— not tokens — sets the wall clock.")
     parser.add_argument("--seed", type=int, default=0,
                         help="label-mapping seed for --memorization-audit "
                              "(default 0)")
@@ -353,7 +358,7 @@ def main() -> int:
         from tradingagents.pro.evals.anonymize import run_memorization_audit
 
         rows = run_memorization_audit(bundle, config, samples=args.samples,
-                                      seed=args.seed, agent_workers=8)
+                                      seed=args.seed, agent_workers=args.agent_workers)
         payload = {
             "as_of": datetime.now(timezone.utc).isoformat(),
             "provider": routing.llm_provider,
@@ -402,7 +407,7 @@ def main() -> int:
             print(f"vintage store unavailable ({exc}); ablation builds "
                   "without point-in-time macro replay", file=sys.stderr)
         rows = run_ablation_series(bundle, abl_config, points=args.points,
-                                   agent_workers=8,
+                                   agent_workers=args.agent_workers,
                                    vintage_reader=vintage_reader)
         payload = {
             "as_of": datetime.now(timezone.utc).isoformat(),
@@ -440,7 +445,7 @@ def main() -> int:
                                  models=routing)
         snapshots = historical_snapshots(points=args.points, symbol="BTC-USD",
                                          asset=AC.BITCOIN)
-        report = study(bundle, crowd_config, snapshots, agent_workers=8)
+        report = study(bundle, crowd_config, snapshots, agent_workers=args.agent_workers)
         payload = {
             "as_of": datetime.now(timezone.utc).isoformat(),
             "provider": routing.llm_provider,
@@ -488,7 +493,7 @@ def main() -> int:
         from tradingagents.pro.evals.stability import run_stability_evals
 
         results = run_stability_evals(bundle, config, k=args.k,
-                                      agent_workers=8)
+                                      agent_workers=args.agent_workers)
         payload = {
             "as_of": datetime.now(timezone.utc).isoformat(),
             "provider": routing.llm_provider,
@@ -511,7 +516,7 @@ def main() -> int:
         return 0
 
     report = run_decision_evals(bundle, config, cases=cases,
-                                samples=args.samples, agent_workers=8)
+                                samples=args.samples, agent_workers=args.agent_workers)
     print(report.summary())
     quick_report = bundle.quick.report
     print(f"\nquick-model calls: {quick_report.calls}, "
